@@ -29,6 +29,7 @@ from family_finance.models import (
     ForecastEventInput,
     ForecastEventType,
     ForecastMethodology,
+    ForecastOverlay,
     ForecastPoolInput,
     ForecastPoolType,
     ForecastProjection,
@@ -201,8 +202,9 @@ class ForecastEngine:
         provisional: bool = False,
         issue_codes: Sequence[str] = (),
         assumption_hash_value: str = "",
+        overlay: ForecastOverlay | None = None,
     ) -> ForecastProjection:
-        self.validate(planning_revision, starting_pools, case)
+        self.validate(planning_revision, starting_pools, case, overlay=overlay)
         scenario_id = scenario_id or planning_revision.scenario_id
         source_revision_id = source_revision_id or planning_revision.revision_id
         source_revision_number = source_revision_number or planning_revision.revision_number
@@ -235,6 +237,7 @@ class ForecastEngine:
                 source_end,
                 case.events,
                 starting_pools,
+                overlay,
             )
             pool_results: list[MonthlyPoolResult] = []
             available_after_return: dict[str, Decimal] = {}
@@ -272,6 +275,17 @@ class ForecastEngine:
                 swept_by_pool[sweep_name] += swept_surplus
             cash_after_sweep = cash_before_sweep - swept_surplus
 
+            # Apartment planning uses capital-only draws at the very end of
+            # the selected month.  They therefore cannot be re-swept and do
+            # not enter ordinary income, expense, or household cash metrics.
+            requested_capital_by_pool: dict[str, Decimal] = defaultdict(lambda: ZERO)
+            if overlay is not None and month_number == overlay.closing_month:
+                for draw in overlay.capital_draws:
+                    requested_capital_by_pool[draw.pool_name] += draw.amount
+            fulfilled_capital_by_pool: dict[str, Decimal] = {}
+            total_requested_capital = sum(requested_capital_by_pool.values(), ZERO)
+            total_fulfilled_capital = ZERO
+
             for pool in starting_pools:
                 closing = (
                     available_after_return[pool.name]
@@ -279,6 +293,12 @@ class ForecastEngine:
                     - fulfilled_by_pool.get(pool.name, ZERO)
                 )
                 closing = max(ZERO, closing)
+                fulfilled_capital = min(
+                    requested_capital_by_pool.get(pool.name, ZERO), closing
+                )
+                fulfilled_capital_by_pool[pool.name] = fulfilled_capital
+                total_fulfilled_capital += fulfilled_capital
+                closing = max(ZERO, closing - fulfilled_capital)
                 pool_results.append(
                     MonthlyPoolResult(
                         month_number=month_number,
@@ -292,8 +312,10 @@ class ForecastEngine:
                         swept_surplus=swept_by_pool.get(pool.name, ZERO),
                         requested_withdrawal=requested_withdrawals.get(pool.name, ZERO),
                         fulfilled_withdrawal=fulfilled_by_pool.get(pool.name, ZERO),
-                        unmet_funding_gap=gaps_by_pool.get(pool.name, ZERO),
-                        closing_balance=closing,
+                    unmet_funding_gap=gaps_by_pool.get(pool.name, ZERO),
+                    requested_capital_draw=requested_capital_by_pool.get(pool.name, ZERO),
+                    fulfilled_capital_draw=fulfilled_capital,
+                    closing_balance=closing,
                     )
                 )
                 balances[pool.name] = closing
@@ -314,6 +336,8 @@ class ForecastEngine:
                     cash_before_sweep=cash_before_sweep,
                     cash_after_sweep=cash_after_sweep,
                     ending_balance=sum(balances.values(), ZERO),
+                    requested_capital_draws=total_requested_capital,
+                    fulfilled_capital_draws=total_fulfilled_capital,
                     pools=pool_results,
                 )
             )
@@ -345,6 +369,8 @@ class ForecastEngine:
         planning_revision: PlanningRevision,
         starting_pools: Sequence[ForecastPoolInput],
         case: ForecastCaseInput,
+        *,
+        overlay: ForecastOverlay | None = None,
     ) -> None:
         if not starting_pools:
             raise ForecastValidationError("A forecast requires at least one starting pool")
@@ -379,6 +405,20 @@ class ForecastEngine:
         for pool in starting_pools:
             if pool.opening_balance < ZERO or not pool.opening_balance.is_finite():
                 raise ForecastValidationError("Forecast opening balances must be finite and non-negative")
+        if overlay is not None:
+            item_by_id = {item.id: item for item in planning_revision.items}
+            for item_id in overlay.stopped_source_item_ids:
+                item = item_by_id.get(item_id)
+                if item is None:
+                    raise ForecastValidationError(
+                        f"Forecast overlay references unknown planning item {item_id!r}"
+                    )
+                if item.kind != PlanningItemKind.EXPENSE:
+                    raise ForecastValidationError(
+                        "Forecast overlays may stop only expense planning lines"
+                    )
+            for draw in overlay.capital_draws:
+                self._resolve_pool_name(draw.pool_name, None, starting_pools)
 
     @staticmethod
     def _validate_adjustments(
@@ -445,6 +485,7 @@ class ForecastEngine:
         source_end: date,
         events: Sequence[ForecastEventInput],
         pools: Sequence[ForecastPoolInput],
+        overlay: ForecastOverlay | None = None,
     ) -> tuple[Decimal, Decimal, dict[str, Decimal], dict[str, Decimal]]:
         income = ZERO
         expenses = ZERO
@@ -452,6 +493,12 @@ class ForecastEngine:
         withdrawals: dict[str, Decimal] = defaultdict(lambda: ZERO)
         for item in items:
             if not self._occurs(item, month, source_start, source_end):
+                continue
+            if (
+                overlay is not None
+                and month_number > overlay.closing_month
+                and item.id in set(overlay.stopped_source_item_ids)
+            ):
                 continue
             amount = item.amount
             if item.frequency == PlanningFrequency.MONTHLY and item.kind in {PlanningItemKind.INCOME, PlanningItemKind.EXPENSE}:
@@ -464,6 +511,14 @@ class ForecastEngine:
                 contributions[routes[item.id]] += amount
             elif item.kind == PlanningItemKind.SAVINGS_WITHDRAWAL:
                 withdrawals[routes[item.id]] += amount
+        if overlay is not None and month_number > overlay.closing_month:
+            expenses += sum((item.amount for item in overlay.post_move_expenses), ZERO)
+            mortgage_period = month_number - overlay.closing_month
+            if overlay.mortgage_payments:
+                if mortgage_period <= len(overlay.mortgage_payments):
+                    expenses += overlay.mortgage_payments[mortgage_period - 1]
+            else:
+                expenses += overlay.monthly_mortgage_payment
         for event in events:
             if event.month != month_number:
                 continue

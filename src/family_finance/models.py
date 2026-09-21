@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -941,6 +941,8 @@ class MonthlyPoolResult(BaseModel):
     requested_withdrawal: Decimal
     fulfilled_withdrawal: Decimal
     unmet_funding_gap: Decimal
+    requested_capital_draw: Decimal = Decimal(0)
+    fulfilled_capital_draw: Decimal = Decimal(0)
     closing_balance: Decimal
 
 
@@ -960,11 +962,587 @@ class TotalMonthlyResult(BaseModel):
     cash_before_sweep: Decimal = Decimal(0)
     cash_after_sweep: Decimal = Decimal(0)
     ending_balance: Decimal = Decimal(0)
+    requested_capital_draws: Decimal = Decimal(0)
+    fulfilled_capital_draws: Decimal = Decimal(0)
     pools: list[MonthlyPoolResult] = Field(default_factory=list)
 
     @property
     def funding_gap(self) -> Decimal:
         return self.unmet_funding_gap
+
+
+class ForecastOverlayExpense(BaseModel):
+    """A typed post-event expense applied by the shared forecast engine."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    label: str
+    amount: Decimal
+
+    @field_validator("label")
+    @classmethod
+    def require_overlay_expense_label(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("Forecast overlay expense labels must be non-empty")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def require_overlay_expense_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Forecast overlay expense amounts must be finite and non-negative")
+        return value
+
+
+class ForecastCapitalDraw(BaseModel):
+    """A capital-only pool draw made after a selected forecast month closes."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    pool_name: str = Field(validation_alias=AliasChoices("pool_name", "pool", "name"))
+    amount: Decimal
+
+    @field_validator("pool_name")
+    @classmethod
+    def require_capital_draw_pool(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("Forecast capital draws must reference a pool")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def require_capital_draw_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Forecast capital draw amounts must be finite and non-negative")
+        return value
+
+
+class ForecastOverlay(BaseModel):
+    """Optional typed additions to :class:`ForecastEngine`'s monthly calculation.
+
+    The overlay deliberately separates capital movements from household income
+    and expenses.  It is used by apartment planning and is safe to omit for all
+    existing Phase 5 forecasts.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    closing_month: int = Field(
+        ge=1, le=36, validation_alias=AliasChoices("closing_month", "purchase_month")
+    )
+    stopped_source_item_ids: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("stopped_source_item_ids", "stopped_source_line_ids"),
+    )
+    post_move_expenses: list[ForecastOverlayExpense] = Field(default_factory=list)
+    monthly_mortgage_payment: Decimal = Decimal(0)
+    mortgage_payments: list[Decimal] = Field(default_factory=list)
+    capital_draws: list[ForecastCapitalDraw] = Field(default_factory=list)
+
+    @field_validator("monthly_mortgage_payment")
+    @classmethod
+    def require_overlay_payment(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Forecast overlay mortgage payments must be finite and non-negative")
+        return value
+
+    @field_validator("mortgage_payments")
+    @classmethod
+    def require_overlay_payment_schedule(cls, value: list[Decimal]) -> list[Decimal]:
+        normalized = []
+        for payment in value:
+            payment = Decimal(payment)
+            if not payment.is_finite() or payment < 0:
+                raise ValueError("Forecast overlay mortgage schedules must be finite and non-negative")
+            normalized.append(payment)
+        return normalized
+
+
+class EquityRequirement(BaseModel):
+    """The user-authored minimum equity rule for a purchase."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    mode: Literal["percentage", "amount"] = Field(
+        default="percentage", validation_alias=AliasChoices("mode", "kind", "type")
+    )
+    value: Decimal
+
+    @field_validator("value")
+    @classmethod
+    def require_equity_value(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Equity requirements must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_equity_mode(self) -> EquityRequirement:
+        if self.mode == "percentage" and self.value > 1:
+            raise ValueError("Percentage equity requirements must be fractional values between 0 and 1")
+        return self
+
+    @property
+    def kind(self) -> str:
+        return self.mode
+
+    def minimum_amount(self, purchase_price: Decimal) -> Decimal:
+        return purchase_price * self.value if self.mode == "percentage" else self.value
+
+
+class MortgageAssumption(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    principal: Decimal = Field(
+        validation_alias=AliasChoices("principal", "mortgage_principal")
+    )
+    annual_nominal_rate: Decimal = Field(
+        validation_alias=AliasChoices("annual_nominal_rate", "annual_rate", "rate")
+    )
+    term_months: int = Field(ge=12, le=480)
+
+    @field_validator("principal", "annual_nominal_rate")
+    @classmethod
+    def validate_mortgage_numbers(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Mortgage principal and rate must be finite and non-negative")
+        return value
+
+    @property
+    def mortgage_principal(self) -> Decimal:
+        return self.principal
+
+    @property
+    def annual_rate(self) -> Decimal:
+        return self.annual_nominal_rate
+
+    @property
+    def rate(self) -> Decimal:
+        return self.annual_nominal_rate
+
+
+class PurchaseCostInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    label: str = Field(validation_alias=AliasChoices("label", "name"))
+    amount: Decimal = Decimal(0)
+
+    @field_validator("label")
+    @classmethod
+    def require_purchase_cost_label(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("Purchase cost labels must be non-empty")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def validate_purchase_cost_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Purchase costs must be finite and non-negative")
+        return value
+
+
+class PoolDrawInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    pool_name: str | None = Field(
+        default=None, validation_alias=AliasChoices("pool_name", "pool", "name")
+    )
+    pool_id: str | None = None
+    amount: Decimal
+
+    @field_validator("pool_name", "pool_id")
+    @classmethod
+    def normalize_pool_reference(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    @field_validator("amount")
+    @classmethod
+    def validate_pool_draw_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Pool draws must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def require_pool_reference(self) -> PoolDrawInput:
+        if not (self.pool_name or self.pool_id):
+            raise ValueError("A pool draw must reference one forecast pool")
+        if self.pool_name and self.pool_id:
+            raise ValueError("A pool draw must use pool_name or pool_id, not both")
+        return self
+
+
+class HousingCostInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    label: str = Field(validation_alias=AliasChoices("label", "name"))
+    amount: Decimal = Decimal(0)
+
+    @field_validator("label")
+    @classmethod
+    def require_housing_cost_label(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("Housing cost labels must be non-empty")
+        return value
+
+    @field_validator("amount")
+    @classmethod
+    def validate_housing_cost_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Housing costs must be finite and non-negative")
+        return value
+
+
+class ApartmentGuardrails(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    minimum_remaining_liquidity: Decimal | None = Field(
+        default=None, validation_alias=AliasChoices("minimum_remaining_liquidity", "min_remaining_liquidity")
+    )
+    maximum_housing_cost_to_income_ratio: Decimal | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "maximum_housing_cost_to_income_ratio", "max_housing_cost_to_income_ratio", "maximum_housing_ratio"
+        ),
+    )
+
+    @field_validator("minimum_remaining_liquidity", "maximum_housing_cost_to_income_ratio")
+    @classmethod
+    def validate_guardrail(cls, value: Decimal | None) -> Decimal | None:
+        if value is None:
+            return None
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Apartment guardrails must be finite and non-negative")
+        return value
+
+    @property
+    def maximum_housing_ratio(self) -> Decimal | None:
+        return self.maximum_housing_cost_to_income_ratio
+
+
+class PurchaseAlternativeInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    name: str
+    forecast_role: ForecastRole = Field(
+        validation_alias=AliasChoices("forecast_role", "role", "case")
+    )
+    purchase_month: int = Field(ge=1, le=36)
+    property_price: Decimal = Field(
+        validation_alias=AliasChoices("property_price", "purchase_price", "price")
+    )
+    family_gift: Decimal = Decimal(0)
+    purchase_costs: list[PurchaseCostInput] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("purchase_costs", "purchase_cost_lines", "costs"),
+    )
+    equity_requirement: EquityRequirement = Field(
+        default_factory=lambda: EquityRequirement(mode="amount", value=Decimal(0))
+    )
+    mortgage: MortgageAssumption = Field(
+        default_factory=lambda: MortgageAssumption(principal=Decimal(0), annual_nominal_rate=Decimal(0), term_months=360)
+    )
+    pool_draws: list[PoolDrawInput] = Field(
+        default_factory=list, validation_alias=AliasChoices("pool_draws", "pool_draw_inputs")
+    )
+    stopped_housing_line_ids: list[str] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices(
+            "stopped_housing_line_ids", "stopped_housing_lines", "stopped_expense_line_ids"
+        ),
+    )
+    housing_costs: list[HousingCostInput] = Field(
+        default_factory=list,
+        validation_alias=AliasChoices("housing_costs", "ownership_costs", "recurring_ownership_costs"),
+    )
+    confirmed: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def expand_flat_assumptions(cls, value):
+        if not isinstance(value, dict):
+            return value
+        data = dict(value)
+        if "mortgage" not in data and any(
+            key in data for key in ("mortgage_principal", "mortgage_rate", "annual_nominal_rate", "mortgage_term_months")
+        ):
+            data["mortgage"] = {
+                "principal": data.pop("mortgage_principal", 0),
+                "annual_nominal_rate": data.pop("mortgage_rate", data.pop("annual_nominal_rate", 0)),
+                "term_months": data.pop("mortgage_term_months", 360),
+            }
+        if "equity_requirement" not in data and any(
+            key in data for key in ("equity_mode", "equity_kind", "equity_value")
+        ):
+            data["equity_requirement"] = {
+                "mode": data.pop("equity_mode", data.pop("equity_kind", "amount")),
+                "value": data.pop("equity_value", 0),
+            }
+        return data
+
+    @field_validator("name")
+    @classmethod
+    def require_alternative_name(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value or len(value) > 200:
+            raise ValueError("Apartment alternative names must be non-empty and at most 200 characters")
+        return value
+
+    @field_validator("property_price", "family_gift")
+    @classmethod
+    def validate_purchase_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Purchase price and family gift must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_alternative(self) -> PurchaseAlternativeInput:
+        if len({item.label.casefold() for item in self.purchase_costs}) != len(self.purchase_costs):
+            raise ValueError("Purchase cost labels must be unique within an alternative")
+        if len({item.label.casefold() for item in self.housing_costs}) != len(self.housing_costs):
+            raise ValueError("Housing cost labels must be unique within an alternative")
+        if len({(item.pool_name or item.pool_id or "").casefold() for item in self.pool_draws}) != len(self.pool_draws):
+            raise ValueError("Each forecast pool may have at most one apartment draw")
+        return self
+
+    @property
+    def role(self) -> ForecastRole:
+        return self.forecast_role
+
+    @property
+    def purchase_price(self) -> Decimal:
+        return self.property_price
+
+    @property
+    def stopped_housing_lines(self) -> list[str]:
+        return self.stopped_housing_line_ids
+
+
+class ApartmentRevisionSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    study_id: str | None = None
+    revision_id: str | None = None
+    revision_number: int = 1
+    assumption_hash: str = ""
+    created_at: datetime | None = None
+    forecast_id: str
+    forecast_revision_id: str
+    forecast_revision_number: int
+    forecast_assumption_hash: str
+    currency: str
+    policy_version: str = "apartment-planning-v1"
+    source_quality_acknowledged: bool = False
+    guardrails: ApartmentGuardrails = Field(default_factory=ApartmentGuardrails)
+    alternatives: list[PurchaseAlternativeInput]
+    notes: str = ""
+
+    @model_validator(mode="after")
+    def require_alternatives(self) -> ApartmentRevisionSnapshot:
+        if not 2 <= len(self.alternatives) <= 4:
+            raise ValueError("An apartment study requires between 2 and 4 alternatives")
+        names = [item.name.casefold() for item in self.alternatives]
+        if len(set(names)) != len(names):
+            raise ValueError("Apartment alternative names must be unique")
+        return self
+
+    @property
+    def source_revision_id(self) -> str:
+        return self.forecast_revision_id
+
+    @property
+    def source_revision_number(self) -> int:
+        return self.forecast_revision_number
+
+    @property
+    def source_assumption_hash(self) -> str:
+        return self.forecast_assumption_hash
+
+
+class ApartmentStudySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    study_id: str
+    name: str
+    forecast_id: str
+    forecast_revision_id: str
+    forecast_revision_number: int
+    forecast_assumption_hash: str
+    currency: str
+    current_revision_number: int
+    archived: bool = False
+    clone_of_study_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def id(self) -> str:
+        return self.study_id
+
+    @property
+    def source_revision_id(self) -> str:
+        return self.forecast_revision_id
+
+    @property
+    def source_revision_number(self) -> int:
+        return self.forecast_revision_number
+
+    @property
+    def source_assumption_hash(self) -> str:
+        return self.forecast_assumption_hash
+
+
+class MortgageScheduleRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    period: int = Field(ge=1, le=480)
+    payment_month: int | None = Field(default=None, ge=1, le=480)
+    payment: Decimal
+    interest: Decimal
+    principal: Decimal
+    remaining_principal: Decimal
+
+
+class PurchaseReadiness(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    equity_requirement_met: bool
+    sources_cover_uses: bool
+    mortgage_within_required_equity: bool
+    minimum_liquidity_met: bool = True
+    housing_ratio_guardrail_met: bool = True
+    ready: bool
+    failures: list[str] = Field(default_factory=list)
+
+
+class ApartmentMonthlyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month_number: int = Field(ge=1, le=36)
+    month: date
+    income: Decimal
+    expenses: Decimal
+    housing_cost: Decimal = Decimal(0)
+    removed_housing_costs: Decimal = Decimal(0)
+    net_cash_flow_change: Decimal = Decimal(0)
+    cash_after_sweep: Decimal
+    ending_balance: Decimal
+    pools: dict[str, Decimal] = Field(default_factory=dict)
+
+
+class PurchaseProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alternative_name: str
+    forecast_role: ForecastRole
+    purchase_month: int
+    purchase_price: Decimal
+    purchase_costs: Decimal
+    total_uses: Decimal
+    proposed_equity: Decimal
+    required_equity: Decimal
+    mortgage_principal: Decimal
+    family_gift: Decimal
+    requested_pool_draws: Decimal
+    fulfilled_pool_draws: Decimal
+    total_sources: Decimal
+    funding_gap: Decimal
+    available_pool_balances: dict[str, Decimal] = Field(default_factory=dict)
+    remaining_liquidity_by_pool: dict[str, Decimal] = Field(default_factory=dict)
+    remaining_liquidity: Decimal
+    mortgage_schedule: list[MortgageScheduleRow] = Field(default_factory=list)
+    total_interest: Decimal
+    total_repayment: Decimal
+    monthly: list[ApartmentMonthlyResult] = Field(default_factory=list)
+    readiness: PurchaseReadiness
+    maximum_housing_ratio: Decimal | None = None
+    worst_monthly_cash_flow: Decimal
+    month_36_balance: Decimal
+    source_projection: ForecastProjection
+
+    @property
+    def closing_gap(self) -> Decimal:
+        return self.funding_gap
+
+    @property
+    def month_36_ending_balance(self) -> Decimal:
+        return self.month_36_balance
+
+    @property
+    def months(self) -> list[ApartmentMonthlyResult]:
+        return self.monthly
+
+
+class ApartmentComparisonRow(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    alternative_name: str
+    purchase_month: int
+    purchase_price: Decimal
+    forecast_role: ForecastRole
+    mortgage_payment: Decimal
+    total_interest: Decimal
+    closing_gap: Decimal
+    remaining_liquidity: Decimal
+    maximum_housing_ratio: Decimal | None
+    worst_monthly_cash_flow: Decimal
+    month_36_balance: Decimal
+
+
+class ApartmentComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    currency: str
+    alternatives: list[ApartmentComparisonRow] = Field(default_factory=list)
+
+    @property
+    def rows(self) -> list[ApartmentComparisonRow]:
+        return self.alternatives
+
+    @property
+    def results(self) -> list[ApartmentComparisonRow]:
+        return self.alternatives
+
+
+class ApartmentDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    projections: list[PurchaseProjection] = Field(default_factory=list)
+    comparison: ApartmentComparison | None = None
+    assumption_hash: str = ""
+    source_quality_warning: bool = False
+
+
+class ApartmentRevisionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_id: str
+    study_id: str
+    revision_number: int
+    forecast_id: str
+    forecast_revision_id: str
+    forecast_revision_number: int
+    forecast_assumption_hash: str
+    policy_version: str
+    assumption_hash: str
+    created_at: datetime | None = None
+    notes: str = ""
 
 
 class ForecastProjection(BaseModel):
@@ -1180,10 +1758,24 @@ class ClassificationReviewItem(BaseModel):
     issues: list[DataQualityIssue] = Field(default_factory=list)
 
 
+# ``PurchaseProjection`` refers to ``ForecastProjection``, declared below the
+# overlay contracts in the source file.  Resolve that forward reference once
+# all model declarations are available.
+PurchaseProjection.model_rebuild()
+
+
 __all__ = [
     "AccountDescriptor",
     "ActualPlanComparison",
     "ActualPlanMonth",
+    "ApartmentComparison",
+    "ApartmentComparisonRow",
+    "ApartmentDraft",
+    "ApartmentGuardrails",
+    "ApartmentMonthlyResult",
+    "ApartmentRevisionSnapshot",
+    "ApartmentRevisionSummary",
+    "ApartmentStudySummary",
     "AuditCheck",
     "AuditReport",
     "BackupManifest",
@@ -1200,11 +1792,13 @@ __all__ = [
     "DataQualityDashboard",
     "DataQualityIssue",
     "EconomicClass",
+    "EquityRequirement",
     "ExpenseBehavior",
     "ExpenseDashboard",
     "ForecastAdjustment",
     "ForecastAdjustmentInput",
     "ForecastAdjustmentOperation",
+    "ForecastCapitalDraw",
     "ForecastCase",
     "ForecastCaseInput",
     "ForecastComparison",
@@ -1215,6 +1809,8 @@ __all__ = [
     "ForecastEventType",
     "ForecastMethodology",
     "ForecastMonthlyResult",
+    "ForecastOverlay",
+    "ForecastOverlayExpense",
     "ForecastPool",
     "ForecastPoolInput",
     "ForecastPoolType",
@@ -1227,6 +1823,7 @@ __all__ = [
     "ForecastRoutingInput",
     "ForecastSummary",
     "ForecastTargetType",
+    "HousingCostInput",
     "ImportInspection",
     "ImportPreview",
     "ImportResult",
@@ -1238,6 +1835,8 @@ __all__ = [
     "MonthlyPlan",
     "MonthlyPoolResult",
     "MonthlySeriesPoint",
+    "MortgageAssumption",
+    "MortgageScheduleRow",
     "NormalizedTransactionCandidate",
     "OverviewDashboard",
     "ParsedSourceRecord",
@@ -1250,7 +1849,12 @@ __all__ = [
     "PlanningScenarioSummary",
     "PlanningSeedOrigin",
     "PlanningSeedPreview",
+    "PoolDrawInput",
     "PotentialRecurringSpending",
+    "PurchaseAlternativeInput",
+    "PurchaseCostInput",
+    "PurchaseProjection",
+    "PurchaseReadiness",
     "ReconciliationDecision",
     "ScenarioComparison",
     "ScenarioComparisonSeries",

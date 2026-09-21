@@ -14,11 +14,24 @@ from alembic.script import ScriptDirectory
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
+from family_finance.apartment import apartment_assumption_hash
 from family_finance.config import Settings
 from family_finance.forecasting import assumption_hash
-from family_finance.models import AuditCheck, AuditReport, ForecastRevisionSnapshot
+from family_finance.models import (
+    ApartmentRevisionSnapshot,
+    AuditCheck,
+    AuditReport,
+    ForecastRevisionSnapshot,
+)
 from family_finance.persistence.db import Database
 from family_finance.persistence.models import (
+    ApartmentAlternativeRow,
+    ApartmentHousingCostRow,
+    ApartmentPoolDrawRow,
+    ApartmentPurchaseCostRow,
+    ApartmentRevisionRow,
+    ApartmentStoppedHousingLineRow,
+    ApartmentStudyRow,
     ForecastAdjustmentRow,
     ForecastCaseRow,
     ForecastEventRow,
@@ -70,6 +83,7 @@ class AuditService:
             self._safe_check(self._batch_count_check),
             self._safe_check(self._planning_invariant_check),
             self._safe_check(self._forecast_invariant_check),
+            self._safe_check(self._apartment_invariant_check),
         ]
         return AuditReport(passed=all(check.passed for check in checks), checks=checks)
 
@@ -341,6 +355,143 @@ class AuditService:
                                     codes.append("FORECAST_ADJUSTMENT_OVERLAP")
                                 occupied.add(key)
         return self._check("forecast_invariants", not codes, *sorted(set(codes)))
+
+    def _apartment_invariant_check(self) -> AuditCheck:
+        """Verify apartment study continuity and pinned forecast integrity."""
+
+        codes: list[str] = []
+        with self.database.session() as session:
+            studies = session.execute(select(ApartmentStudyRow)).scalars().all()
+            for study in studies:
+                forecast = session.get(ForecastRow, study.forecast_id)
+                forecast_revision = session.get(ForecastRevisionRow, study.forecast_revision_id)
+                if (
+                    forecast is None
+                    or forecast_revision is None
+                    or forecast_revision.forecast_id != study.forecast_id
+                    or forecast_revision.revision_number != study.forecast_revision_number
+                    or forecast_revision.assumption_hash != study.forecast_assumption_hash
+                ):
+                    codes.append("APARTMENT_PINNED_FORECAST_INVALID")
+                revisions = session.execute(
+                    select(ApartmentRevisionRow)
+                    .where(ApartmentRevisionRow.study_id == study.id)
+                    .order_by(ApartmentRevisionRow.revision_number)
+                ).scalars().all()
+                numbers = [row.revision_number for row in revisions]
+                if numbers != list(range(1, study.current_revision_number + 1)):
+                    codes.append("APARTMENT_REVISION_SEQUENCE_INVALID")
+                if not revisions or revisions[-1].revision_number != study.current_revision_number:
+                    codes.append("APARTMENT_CURRENT_REVISION_POINTER_INVALID")
+                for revision in revisions:
+                    if (
+                        revision.forecast_id != study.forecast_id
+                        or revision.forecast_revision_id != study.forecast_revision_id
+                        or revision.forecast_revision_number != study.forecast_revision_number
+                        or revision.forecast_assumption_hash != study.forecast_assumption_hash
+                    ):
+                        codes.append("APARTMENT_PINNED_FORECAST_INVALID")
+                    try:
+                        snapshot = ApartmentRevisionSnapshot.model_validate(json.loads(revision.assumptions_json))
+                        if apartment_assumption_hash(snapshot) != revision.assumption_hash:
+                            codes.append("APARTMENT_ASSUMPTION_HASH_INVALID")
+                        if len(snapshot.alternatives) < 2 or len(snapshot.alternatives) > 4:
+                            codes.append("APARTMENT_ALTERNATIVE_SET_INVALID")
+                        if len({item.name.casefold() for item in snapshot.alternatives}) != len(snapshot.alternatives):
+                            codes.append("APARTMENT_ALTERNATIVE_NAMES_INVALID")
+                        for alternative in snapshot.alternatives:
+                            if alternative.forecast_role.value not in {"conservative", "baseline", "optimistic"}:
+                                codes.append("APARTMENT_FORECAST_ROLE_INVALID")
+                            if alternative.purchase_month < 1 or alternative.purchase_month > 36:
+                                codes.append("APARTMENT_PURCHASE_MONTH_INVALID")
+                        codes.extend(self._apartment_normalized_row_codes(session, revision.id, snapshot))
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        codes.append("APARTMENT_ASSUMPTIONS_INVALID")
+        return self._check("apartment_invariants", not codes, *sorted(set(codes)))
+
+    @staticmethod
+    def _apartment_normalized_row_codes(session, revision_id: str, snapshot: ApartmentRevisionSnapshot) -> list[str]:
+        codes: list[str] = []
+        rows = session.execute(
+            select(ApartmentAlternativeRow)
+            .where(ApartmentAlternativeRow.revision_id == revision_id)
+            .order_by(ApartmentAlternativeRow.name)
+        ).scalars().all()
+        if len(rows) != len(snapshot.alternatives):
+            codes.append("APARTMENT_ALTERNATIVE_ROWS_INVALID")
+        expected_by_name = {item.name.casefold(): item for item in snapshot.alternatives}
+        actual_by_name = {row.name.casefold(): row for row in rows}
+        if set(expected_by_name) != set(actual_by_name):
+            codes.append("APARTMENT_NORMALIZED_ALTERNATIVES_INVALID")
+        for name, expected in expected_by_name.items():
+            row = actual_by_name.get(name)
+            if row is None:
+                continue
+            try:
+                scalar_match = (
+                    row.forecast_role == expected.forecast_role.value
+                    and row.purchase_month == expected.purchase_month
+                    and Decimal(row.property_price) == expected.property_price
+                    and Decimal(row.family_gift) == expected.family_gift
+                    and row.equity_mode == expected.equity_requirement.mode
+                    and Decimal(row.equity_value) == expected.equity_requirement.value
+                    and Decimal(row.mortgage_principal) == expected.mortgage.principal
+                    and Decimal(row.mortgage_annual_nominal_rate) == expected.mortgage.annual_nominal_rate
+                    and row.mortgage_term_months == expected.mortgage.term_months
+                    and bool(row.confirmed) == expected.confirmed
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                scalar_match = False
+            if not scalar_match:
+                codes.append("APARTMENT_NORMALIZED_ALTERNATIVE_INVALID")
+
+            purchase_costs = session.execute(
+                select(ApartmentPurchaseCostRow)
+                .where(ApartmentPurchaseCostRow.alternative_id == row.id)
+                .order_by(ApartmentPurchaseCostRow.label, ApartmentPurchaseCostRow.id)
+            ).scalars().all()
+            expected_costs = sorted((item.label, item.amount) for item in expected.purchase_costs)
+            try:
+                actual_costs = sorted((item.label, Decimal(item.amount)) for item in purchase_costs)
+            except (InvalidOperation, TypeError, ValueError):
+                actual_costs = []
+            if actual_costs != expected_costs:
+                codes.append("APARTMENT_NORMALIZED_PURCHASE_COSTS_INVALID")
+
+            draws = session.execute(
+                select(ApartmentPoolDrawRow)
+                .where(ApartmentPoolDrawRow.alternative_id == row.id)
+                .order_by(ApartmentPoolDrawRow.pool_name, ApartmentPoolDrawRow.id)
+            ).scalars().all()
+            expected_draws = sorted((item.pool_name or item.pool_id or "", item.amount) for item in expected.pool_draws)
+            try:
+                actual_draws = sorted((item.pool_name, Decimal(item.amount)) for item in draws)
+            except (InvalidOperation, TypeError, ValueError):
+                actual_draws = []
+            if actual_draws != expected_draws:
+                codes.append("APARTMENT_NORMALIZED_POOL_DRAWS_INVALID")
+
+            stopped = session.execute(
+                select(ApartmentStoppedHousingLineRow)
+                .where(ApartmentStoppedHousingLineRow.alternative_id == row.id)
+                .order_by(ApartmentStoppedHousingLineRow.source_item_id, ApartmentStoppedHousingLineRow.id)
+            ).scalars().all()
+            if [item.source_item_id for item in stopped] != sorted(expected.stopped_housing_line_ids):
+                codes.append("APARTMENT_NORMALIZED_STOPPED_LINES_INVALID")
+
+            housing = session.execute(
+                select(ApartmentHousingCostRow)
+                .where(ApartmentHousingCostRow.alternative_id == row.id)
+                .order_by(ApartmentHousingCostRow.label, ApartmentHousingCostRow.id)
+            ).scalars().all()
+            expected_housing = sorted((item.label, item.amount) for item in expected.housing_costs)
+            try:
+                actual_housing = sorted((item.label, Decimal(item.amount)) for item in housing)
+            except (InvalidOperation, TypeError, ValueError):
+                actual_housing = []
+            if actual_housing != expected_housing:
+                codes.append("APARTMENT_NORMALIZED_HOUSING_COSTS_INVALID")
+        return codes
 
 
 def _statistics_total(value: str) -> int | None:

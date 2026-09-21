@@ -403,6 +403,116 @@ class ForecastEventRow(Base):
     )
 
 
+class ApartmentStudyRow(Base):
+    __tablename__ = "apartment_studies"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    forecast_id: Mapped[str] = mapped_column(ForeignKey("savings_forecasts.id"))
+    forecast_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_revisions.id")
+    )
+    forecast_revision_number: Mapped[int] = mapped_column(Integer)
+    forecast_assumption_hash: Mapped[str] = mapped_column(Text)
+    currency: Mapped[str] = mapped_column(Text)
+    current_revision_number: Mapped[int] = mapped_column(Integer, default=1)
+    clone_of_study_id: Mapped[str | None] = mapped_column(
+        ForeignKey("apartment_studies.id"), nullable=True
+    )
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ApartmentRevisionRow(Base):
+    __tablename__ = "apartment_study_revisions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    study_id: Mapped[str] = mapped_column(
+        ForeignKey("apartment_studies.id", ondelete="CASCADE")
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    forecast_id: Mapped[str] = mapped_column(ForeignKey("savings_forecasts.id"))
+    forecast_revision_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_revisions.id")
+    )
+    forecast_revision_number: Mapped[int] = mapped_column(Integer)
+    forecast_assumption_hash: Mapped[str] = mapped_column(Text)
+    policy_version: Mapped[str] = mapped_column(Text)
+    assumption_hash: Mapped[str] = mapped_column(Text)
+    assumptions_json: Mapped[str] = mapped_column(Text)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    source_quality_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("idx_apartment_revisions_unique", "study_id", "revision_number", unique=True),
+    )
+
+
+class ApartmentAlternativeRow(Base):
+    __tablename__ = "apartment_alternatives"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("apartment_study_revisions.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(Text)
+    forecast_role: Mapped[str] = mapped_column(Text)
+    purchase_month: Mapped[int] = mapped_column(Integer)
+    property_price: Mapped[str] = mapped_column(Text)
+    family_gift: Mapped[str] = mapped_column(Text)
+    equity_mode: Mapped[str] = mapped_column(Text)
+    equity_value: Mapped[str] = mapped_column(Text)
+    mortgage_principal: Mapped[str] = mapped_column(Text)
+    mortgage_annual_nominal_rate: Mapped[str] = mapped_column(Text)
+    mortgage_term_months: Mapped[int] = mapped_column(Integer)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+
+class ApartmentPurchaseCostRow(Base):
+    __tablename__ = "apartment_purchase_costs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    alternative_id: Mapped[str] = mapped_column(
+        ForeignKey("apartment_alternatives.id", ondelete="CASCADE")
+    )
+    label: Mapped[str] = mapped_column(Text)
+    amount: Mapped[str] = mapped_column(Text)
+
+
+class ApartmentPoolDrawRow(Base):
+    __tablename__ = "apartment_pool_draws"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    alternative_id: Mapped[str] = mapped_column(
+        ForeignKey("apartment_alternatives.id", ondelete="CASCADE")
+    )
+    pool_name: Mapped[str] = mapped_column(Text)
+    amount: Mapped[str] = mapped_column(Text)
+
+
+class ApartmentStoppedHousingLineRow(Base):
+    __tablename__ = "apartment_stopped_housing_lines"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    alternative_id: Mapped[str] = mapped_column(
+        ForeignKey("apartment_alternatives.id", ondelete="CASCADE")
+    )
+    source_item_id: Mapped[str] = mapped_column(ForeignKey("planning_items.id"))
+
+
+class ApartmentHousingCostRow(Base):
+    __tablename__ = "apartment_housing_costs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    alternative_id: Mapped[str] = mapped_column(
+        ForeignKey("apartment_alternatives.id", ondelete="CASCADE")
+    )
+    label: Mapped[str] = mapped_column(Text)
+    amount: Mapped[str] = mapped_column(Text)
+
+
 # Readable aliases for repository consumers that prefer domain-style names.
 Account = AccountRow
 Transaction = TransactionRow
@@ -421,6 +531,13 @@ __all__ = [
     "AnalysisOverride",
     "AnalysisOverrideModel",
     "AnalysisOverrideRow",
+    "ApartmentAlternativeRow",
+    "ApartmentHousingCostRow",
+    "ApartmentPoolDrawRow",
+    "ApartmentPurchaseCostRow",
+    "ApartmentRevisionRow",
+    "ApartmentStoppedHousingLineRow",
+    "ApartmentStudyRow",
     "Base",
     "CategoryRow",
     "ClassificationRule",

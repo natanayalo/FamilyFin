@@ -67,6 +67,14 @@ class ImportService:
         # explicit name documents that this is a savings-only forecast.
         self.forecasting_service = self.savings_forecast_service
         self.forecast_service = self.savings_forecast_service
+        from family_finance.apartment import ApartmentPlanningService
+
+        self.apartment_planning_service = ApartmentPlanningService(
+            self.database,
+            forecast_service=self.savings_forecast_service,
+            planning_service=self.planning_service,
+        )
+        self.apartment_service = self.apartment_planning_service
 
     def inspect_familybiz(self, file_bytes: bytes):
         return self.parser.inspect(file_bytes)

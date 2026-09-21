@@ -14,12 +14,15 @@ def main() -> None:
     import streamlit as st
     from sqlalchemy.exc import SQLAlchemyError
 
+    from family_finance.apartment import ApartmentValidationError
     from family_finance.dashboard import DashboardService
     from family_finance.forecasting import ForecastValidationError
     from family_finance.formatting import format_amount, format_month, format_rate
     from family_finance.models import (
+        ApartmentGuardrails,
         DashboardFilters,
         EconomicClass,
+        EquityRequirement,
         ExpenseBehavior,
         ForecastAdjustmentInput,
         ForecastAdjustmentOperation,
@@ -31,10 +34,15 @@ def main() -> None:
         ForecastRole,
         ForecastRoutingInput,
         ForecastTargetType,
+        HousingCostInput,
+        MortgageAssumption,
         PlanningFrequency,
         PlanningItem,
         PlanningItemInput,
         PlanningItemKind,
+        PoolDrawInput,
+        PurchaseAlternativeInput,
+        PurchaseCostInput,
     )
     from family_finance.planning import (
         DuplicateSeedError,
@@ -975,6 +983,392 @@ def main() -> None:
             st.subheader("Saved forecasts")
             st.dataframe([item.model_dump(mode="json") for item in saved], use_container_width=True, hide_index=True)
 
+    def apartment_plan_page() -> None:
+        st.title("Apartment Plan")
+        st.caption(
+            "Compare 2–4 manually specified purchases against one immutable forecast revision. "
+            "Estimate—not an offer or guarantee."
+        )
+        planning = service.planning_service
+        forecasting = service.savings_forecast_service
+        apartment = service.apartment_planning_service
+        forecasts = forecasting.list_forecasts(include_archived=False)
+        if not forecasts:
+            st.info("Create and save a Savings Forecast first. Apartment studies pin to an exact forecast revision.")
+            return
+        forecast_id = st.selectbox(
+            "Saved forecast",
+            [item.forecast_id for item in forecasts],
+            format_func=lambda value: next(item.name for item in forecasts if item.forecast_id == value),
+            key="apartment-forecast",
+        )
+        forecast = forecasting.get_forecast(forecast_id)
+        saved_studies = [
+            item for item in apartment.list_studies(include_archived=True)
+            if item.forecast_id == forecast_id
+        ]
+        study_choices = [("new", "New apartment study")] + [
+            (item.study_id, f"{item.name} · study revision {item.current_revision_number}")
+            for item in saved_studies
+        ]
+        selected_study_id = st.selectbox(
+            "Open saved apartment study",
+            [item[0] for item in study_choices],
+            format_func=lambda value: next(label for key, label in study_choices if key == value),
+            key="apartment-open-study",
+        )
+        editing_study = next(
+            (item for item in saved_studies if item.study_id == selected_study_id), None
+        )
+        editing_snapshot = None
+        editing_revision_number = None
+        if editing_study is not None:
+            saved_revision_choices = apartment.list_revisions(editing_study.study_id)
+            editing_revision_number = st.selectbox(
+                "Saved study revision",
+                [item.revision_number for item in saved_revision_choices],
+                index=len(saved_revision_choices) - 1,
+                key=f"apartment-saved-revision-{editing_study.study_id}",
+            )
+            editing_snapshot = apartment.get_revision(
+                editing_study.study_id, editing_revision_number
+            )
+            st.caption(
+                f"Editing {editing_study.name} revision {editing_revision_number}; "
+                f"saving appends revision {editing_study.current_revision_number + 1}."
+            )
+            with st.expander("Saved assumptions", expanded=False):
+                st.json(editing_snapshot.model_dump(mode="json"))
+            lifecycle_cols = st.columns(3)
+            if lifecycle_cols[0].button(
+                "Restore selected revision", key=f"apartment-restore-{editing_study.study_id}"
+            ):
+                try:
+                    apartment.restore_revision(
+                        editing_study.study_id,
+                        editing_revision_number,
+                        expected_revision_number=editing_study.current_revision_number,
+                    )
+                    st.success("Saved revision restored as a new current revision")
+                    st.rerun()
+                except (ApartmentValidationError, ValueError) as exc:
+                    st.error(str(exc))
+            if lifecycle_cols[1].button(
+                "Clone study", key=f"apartment-clone-{editing_study.study_id}"
+            ):
+                try:
+                    apartment.clone_study(editing_study.study_id)
+                    st.success("Study cloned")
+                    st.rerun()
+                except (ApartmentValidationError, ValueError) as exc:
+                    st.error(str(exc))
+            archive_label = "Unarchive study" if editing_study.archived else "Archive study"
+            if lifecycle_cols[2].button(
+                archive_label, key=f"apartment-archive-{editing_study.study_id}"
+            ):
+                try:
+                    apartment.archive_study(editing_study.study_id, not editing_study.archived)
+                    st.success("Study status updated")
+                    st.rerun()
+                except (ApartmentValidationError, ValueError) as exc:
+                    st.error(str(exc))
+        forecast_revisions = forecasting.list_revisions(forecast_id)
+        revision_options = (
+            [editing_study.forecast_revision_number]
+            if editing_study is not None
+            else [item.revision_number for item in forecast_revisions]
+        )
+        forecast_revision_number = st.selectbox(
+            "Exact forecast revision",
+            revision_options,
+            index=0 if editing_study is not None else len(revision_options) - 1,
+            disabled=editing_study is not None,
+            key="apartment-forecast-revision",
+        )
+        forecast_snapshot = forecasting.get_revision(forecast_id, forecast_revision_number)
+        st.caption(
+            f"Pinned source: forecast revision {forecast_snapshot.revision_number} · "
+            f"hash {forecast_snapshot.assumption_hash} · {forecast.currency}"
+        )
+        source_plan = planning.get_revision(forecast.scenario_id, forecast_snapshot.source_revision_number)
+        if source_plan.provisional:
+            st.warning("The pinned forecast inherits provisional planning-source issues.")
+
+        editor_context = (
+            f"{editing_study.study_id}-{editing_revision_number}"
+            if editing_study is not None
+            else "new"
+        )
+
+        guardrail_cols = st.columns(2)
+        loaded_guardrails = editing_snapshot.guardrails if editing_snapshot is not None else ApartmentGuardrails()
+        minimum_liquidity_text = guardrail_cols[0].text_input(
+            "Minimum remaining liquidity (optional)",
+            value=(
+                str(loaded_guardrails.minimum_remaining_liquidity)
+                if loaded_guardrails.minimum_remaining_liquidity is not None
+                else ""
+            ),
+            key=f"apartment-min-liquidity-{editor_context}",
+        )
+        maximum_ratio_text = guardrail_cols[1].text_input(
+            "Maximum housing / gross income ratio (optional)",
+            value=(
+                str(loaded_guardrails.maximum_housing_cost_to_income_ratio)
+                if loaded_guardrails.maximum_housing_cost_to_income_ratio is not None
+                else ""
+            ),
+            key=f"apartment-max-ratio-{editor_context}",
+        )
+        try:
+            guardrails = ApartmentGuardrails(
+                minimum_remaining_liquidity=Decimal(minimum_liquidity_text) if minimum_liquidity_text.strip() else None,
+                maximum_housing_cost_to_income_ratio=Decimal(maximum_ratio_text) if maximum_ratio_text.strip() else None,
+            )
+        except (ValueError, TypeError) as exc:
+            guardrails = ApartmentGuardrails()
+            st.error(f"Guardrail validation: {exc}")
+
+        count = st.number_input(
+            "Number of alternatives",
+            min_value=2,
+            max_value=4,
+            value=len(editing_snapshot.alternatives) if editing_snapshot is not None else 2,
+            step=1,
+            key=f"apartment-count-{editor_context}",
+        )
+        expense_items = [item for item in source_plan.items if item.kind.value == "expense"]
+        pool_names = [pool.name for pool in forecast_snapshot.starting_pools]
+        alternatives = []
+        confirmations = []
+        for index in range(int(count)):
+            template = (
+                editing_snapshot.alternatives[index]
+                if editing_snapshot is not None and index < len(editing_snapshot.alternatives)
+                else None
+            )
+            with st.expander(f"Alternative {index + 1}", expanded=True):
+                cols = st.columns(4)
+                name = cols[0].text_input(
+                    "Name",
+                    value=template.name if template is not None else f"Option {index + 1}",
+                    key=f"apartment-name-{editor_context}-{index}",
+                )
+                role_options = [item.value for item in ForecastRole]
+                role_default = template.forecast_role.value if template is not None else ForecastRole.BASELINE.value
+                role = cols[1].selectbox(
+                    "Forecast role",
+                    role_options,
+                    index=role_options.index(role_default),
+                    key=f"apartment-role-{editor_context}-{index}",
+                )
+                purchase_month = cols[2].number_input(
+                    "Purchase month",
+                    min_value=1,
+                    max_value=36,
+                    value=template.purchase_month if template is not None else 12,
+                    key=f"apartment-month-{editor_context}-{index}",
+                )
+                price_text = cols[3].text_input(
+                    "Property price",
+                    value=str(template.property_price) if template is not None else "0",
+                    key=f"apartment-price-{editor_context}-{index}",
+                )
+                gift_text = st.text_input(
+                    "Family gift",
+                    value=str(template.family_gift) if template is not None else "0",
+                    key=f"apartment-gift-{editor_context}-{index}",
+                )
+                equity_cols = st.columns(2)
+                equity_options = ["percentage", "amount"]
+                equity_default = template.equity_requirement.mode if template is not None else "percentage"
+                equity_mode = equity_cols[0].selectbox(
+                    "Minimum equity",
+                    equity_options,
+                    index=equity_options.index(equity_default),
+                    key=f"apartment-equity-mode-{editor_context}-{index}",
+                )
+                equity_value = (
+                    template.equity_requirement.value * Decimal(100)
+                    if template is not None and equity_default == "percentage"
+                    else template.equity_requirement.value if template is not None else Decimal(0)
+                )
+                equity_text = equity_cols[1].text_input(
+                    "Equity value",
+                    value=str(equity_value),
+                    key=f"apartment-equity-{editor_context}-{index}",
+                )
+                mortgage_cols = st.columns(3)
+                mortgage_text = mortgage_cols[0].text_input(
+                    "Mortgage principal",
+                    value=str(template.mortgage.principal) if template is not None else "0",
+                    key=f"apartment-mortgage-{editor_context}-{index}",
+                )
+                mortgage_rate_text = mortgage_cols[1].text_input(
+                    "Mortgage annual nominal rate (%)",
+                    value=str(template.mortgage.annual_nominal_rate * Decimal(100)) if template is not None else "0",
+                    key=f"apartment-rate-{editor_context}-{index}",
+                )
+                mortgage_term = mortgage_cols[2].number_input(
+                    "Mortgage term (months)",
+                    min_value=12,
+                    max_value=480,
+                    value=template.mortgage.term_months if template is not None else 360,
+                    key=f"apartment-term-{editor_context}-{index}",
+                )
+                cost_rows = st.data_editor(
+                    [item.model_dump(mode="json") for item in template.purchase_costs]
+                    if template is not None
+                    else [
+                        {"label": "Taxes or fees (manual)", "amount": "0"},
+                        {"label": "Legal or inspection (manual)", "amount": "0"},
+                        {"label": "Other purchase cost", "amount": "0"},
+                    ],
+                    num_rows="dynamic", use_container_width=True, hide_index=True,
+                    key=f"apartment-costs-{editor_context}-{index}",
+                )
+                try:
+                    available = apartment.available_pool_balances(
+                        forecast_id,
+                        role,
+                        int(purchase_month),
+                        forecast_revision_number=forecast_revision_number,
+                    )
+                    st.dataframe(
+                        [{"pool": pool, "available at month-end before purchase draw": balance} for pool, balance in available.items()],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+                except (ApartmentValidationError, ValueError) as exc:
+                    st.error(f"Available pool balance: {exc}")
+                draw_rows = st.data_editor(
+                    [
+                        {"pool_name": pool, "amount": str(next((item.amount for item in template.pool_draws if item.pool_name == pool), Decimal(0)))}
+                        for pool in pool_names
+                    ] if template is not None else [{"pool_name": pool, "amount": "0"} for pool in pool_names],
+                    num_rows="dynamic", use_container_width=True, hide_index=True,
+                    key=f"apartment-draws-{editor_context}-{index}",
+                )
+                st.caption("Available pool balances at the end of the selected purchase month are shown in the draft below; draws are exact user requests.")
+                stopped = st.multiselect(
+                    "Current housing lines to stop after moving",
+                    [item.id for item in expense_items],
+                    format_func=lambda value: next(item.label for item in expense_items if item.id == value),
+                    default=template.stopped_housing_line_ids if template is not None else [],
+                    key=f"apartment-stopped-{editor_context}-{index}",
+                )
+                housing_rows = st.data_editor(
+                    [item.model_dump(mode="json") for item in template.housing_costs]
+                    if template is not None
+                    else [{"label": "Maintenance", "amount": "0"}, {"label": "Insurance", "amount": "0"}, {"label": "Municipal or other", "amount": "0"}],
+                    num_rows="dynamic", use_container_width=True, hide_index=True,
+                    key=f"apartment-housing-{editor_context}-{index}",
+                )
+                confirmed = st.checkbox(
+                    "I reviewed and confirm this alternative",
+                    value=template.confirmed if template is not None else False,
+                    key=f"apartment-confirm-{editor_context}-{index}",
+                )
+                confirmations.append(confirmed)
+                try:
+                    costs = [PurchaseCostInput(label=str(row.get("label") or "").strip(), amount=Decimal(str(row.get("amount") or "0"))) for row in cost_rows if str(row.get("label") or "").strip()]
+                    draws = [PoolDrawInput(pool_name=str(row.get("pool_name") or "").strip(), amount=Decimal(str(row.get("amount") or "0"))) for row in draw_rows if str(row.get("pool_name") or "").strip()]
+                    housing = [HousingCostInput(label=str(row.get("label") or "").strip(), amount=Decimal(str(row.get("amount") or "0"))) for row in housing_rows if str(row.get("label") or "").strip()]
+                    alternatives.append(PurchaseAlternativeInput(
+                        name=name,
+                        forecast_role=role,
+                        purchase_month=int(purchase_month),
+                        property_price=Decimal(price_text),
+                        family_gift=Decimal(gift_text),
+                        purchase_costs=costs,
+                        equity_requirement=EquityRequirement(mode=equity_mode, value=Decimal(equity_text) / Decimal(100) if equity_mode == "percentage" else Decimal(equity_text)),
+                        mortgage=MortgageAssumption(principal=Decimal(mortgage_text), annual_nominal_rate=Decimal(mortgage_rate_text) / Decimal(100), term_months=int(mortgage_term)),
+                        pool_draws=draws,
+                        stopped_housing_line_ids=stopped,
+                        housing_costs=housing,
+                        confirmed=confirmed,
+                    ))
+                except (ValueError, TypeError) as exc:
+                    st.error(f"Alternative validation: {exc}")
+
+        draft = None
+        if len(alternatives) == int(count):
+            try:
+                draft = apartment.project_draft(
+                    forecast_id, alternatives, forecast_revision_number=forecast_revision_number, guardrails=guardrails
+                )
+            except (ApartmentValidationError, ValueError) as exc:
+                st.error(f"Apartment draft validation: {exc}")
+        if draft is not None:
+            st.subheader("Alternative comparison")
+            st.dataframe([item.model_dump(mode="json") for item in draft.comparison.alternatives], use_container_width=True, hide_index=True)
+            for projection in draft.projections:
+                with st.expander(f"{projection.alternative_name}: sources, uses, and readiness"):
+                    st.dataframe([{
+                        "purchase price": projection.purchase_price,
+                        "purchase costs": projection.purchase_costs,
+                        "total uses": projection.total_uses,
+                        "mortgage": projection.mortgage_principal,
+                        "family gift": projection.family_gift,
+                        "fulfilled pool draws": projection.fulfilled_pool_draws,
+                        "funding gap": projection.funding_gap,
+                        "remaining liquidity": projection.remaining_liquidity,
+                        "ready": projection.readiness.ready,
+                    }], use_container_width=True, hide_index=True)
+                    if projection.readiness.failures:
+                        st.warning("; ".join(projection.readiness.failures))
+                    st.dataframe([item.model_dump(mode="json") for item in projection.monthly], use_container_width=True, hide_index=True)
+                    with st.expander("Mortgage schedule and formulas"):
+                        st.dataframe([item.model_dump(mode="json") for item in projection.mortgage_schedule], use_container_width=True, hide_index=True)
+                        st.json({
+                            "monthly_rate": "annual nominal rate / 12",
+                            "payment": "P × r / (1 - (1 + r)^-n); zero rate uses P / n",
+                            "rounding": "half-even to cents; final payment clears remaining principal",
+                            "source_forecast_revision": forecast_snapshot.revision_number,
+                            "source_forecast_hash": forecast_snapshot.assumption_hash,
+                            "assumption_hash": draft.assumption_hash,
+                            "disclaimer": "Estimate—not an offer or guarantee.",
+                        })
+            study_name = st.text_input(
+                "Study name",
+                value=editing_study.name if editing_study is not None else f"{forecast.name} apartment plan",
+                key=f"apartment-study-name-{editor_context}",
+            )
+            source_ack = True
+            if source_plan.provisional:
+                source_ack = st.checkbox(
+                    "I acknowledge inherited provisional source issues",
+                    value=editing_snapshot.source_quality_acknowledged if editing_snapshot is not None else False,
+                    key=f"apartment-source-ack-{editor_context}",
+                )
+            can_save = all(confirmations) and (not source_plan.provisional or source_ack)
+            save_label = "Save new apartment study" if editing_study is None else "Save new study revision"
+            if st.button(save_label, type="primary", disabled=not can_save, key=f"apartment-save-{editor_context}"):
+                try:
+                    if editing_study is None:
+                        apartment.create_study(
+                            study_name, forecast_id, alternatives,
+                            forecast_revision_number=forecast_revision_number,
+                            guardrails=guardrails,
+                            source_quality_acknowledged=source_ack,
+                        )
+                        st.success("Apartment study saved")
+                    else:
+                        apartment.save_revision(
+                            editing_study.study_id,
+                            alternatives=alternatives,
+                            guardrails=guardrails,
+                            expected_revision_number=editing_study.current_revision_number,
+                            source_quality_acknowledged=source_ack,
+                        )
+                        st.success("Apartment study revision saved")
+                    st.rerun()
+                except (ApartmentValidationError, ValueError) as exc:
+                    st.error(str(exc))
+        if saved_studies:
+            st.subheader("Saved apartment studies")
+            st.dataframe([item.model_dump(mode="json") for item in saved_studies], use_container_width=True, hide_index=True)
+
     pages = [
         st.Page(overview_page, title="Overview", icon="📊"),
         st.Page(expenses_page, title="Expenses", icon="🧾"),
@@ -982,6 +1376,7 @@ def main() -> None:
         st.Page(classification_page, title="Classification", icon="🏷️"),
         st.Page(planning_page, title="Planning", icon="📅"),
         st.Page(savings_forecast_page, title="Savings Forecast", icon="📈"),
+        st.Page(apartment_plan_page, title="Apartment Plan", icon="🏠"),
     ]
     navigation = st.navigation(pages)
     navigation.run()

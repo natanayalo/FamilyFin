@@ -15,9 +15,11 @@ from typing import Any
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
+from family_finance.apartment import apartment_assumption_hash
 from family_finance.config import Settings
 from family_finance.forecasting import assumption_hash
 from family_finance.models import (
+    ApartmentRevisionSnapshot,
     AuditCheck,
     BackupManifest,
     BackupVerification,
@@ -187,6 +189,7 @@ class BackupService:
                 checks.append(BackupService._verify_provenance(connection))
                 checks.append(BackupService._verify_planning(connection))
                 checks.append(BackupService._verify_forecasting(connection))
+                checks.append(BackupService._verify_apartment_planning(connection))
                 source_hashes = {
                     str(row[0])
                     for row in connection.execute("SELECT sha256 FROM source_files").fetchall()
@@ -420,6 +423,149 @@ class BackupService:
             passed=not invalid,
             issue_codes=sorted(set(invalid)),
         )
+
+    @staticmethod
+    def _verify_apartment_planning(connection: sqlite3.Connection) -> AuditCheck:
+        invalid: list[str] = []
+        studies = connection.execute(
+            "SELECT id, forecast_id, forecast_revision_id, forecast_revision_number, forecast_assumption_hash, current_revision_number "
+            "FROM apartment_studies"
+        ).fetchall()
+        for study_id, forecast_id, forecast_revision_id, forecast_revision_number, forecast_hash, current_revision in studies:
+            source = connection.execute(
+                "SELECT forecast_id, revision_number, assumption_hash FROM savings_forecast_revisions WHERE id = ?",
+                (forecast_revision_id,),
+            ).fetchone()
+            if (
+                not source
+                or source[0] != forecast_id
+                or int(source[1]) != int(forecast_revision_number)
+                or source[2] != forecast_hash
+            ):
+                invalid.append("APARTMENT_PINNED_FORECAST_INVALID")
+            numbers = [
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT revision_number FROM apartment_study_revisions WHERE study_id = ? ORDER BY revision_number",
+                    (study_id,),
+                ).fetchall()
+            ]
+            if numbers != list(range(1, int(current_revision) + 1)):
+                invalid.append("APARTMENT_REVISION_SEQUENCE_INVALID")
+            for revision_id, revision_source_id, revision_source_number, revision_hash, assumptions in connection.execute(
+                "SELECT id, forecast_revision_id, forecast_revision_number, assumption_hash, assumptions_json "
+                "FROM apartment_study_revisions WHERE study_id = ?",
+                (study_id,),
+            ).fetchall():
+                if revision_source_id != forecast_revision_id or int(revision_source_number) != int(forecast_revision_number):
+                    invalid.append("APARTMENT_PINNED_FORECAST_INVALID")
+                snapshot = None
+                try:
+                    snapshot = ApartmentRevisionSnapshot.model_validate(json.loads(assumptions))
+                    if apartment_assumption_hash(snapshot) != revision_hash:
+                        invalid.append("APARTMENT_ASSUMPTION_HASH_INVALID")
+                    names = [item.name.casefold() for item in snapshot.alternatives]
+                    if not 2 <= len(names) <= 4 or len(set(names)) != len(names):
+                        invalid.append("APARTMENT_ALTERNATIVE_SET_INVALID")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    invalid.append("APARTMENT_ASSUMPTIONS_INVALID")
+                child_count = connection.execute(
+                    "SELECT COUNT(*) FROM apartment_alternatives WHERE revision_id = ?",
+                    (revision_id,),
+                ).fetchone()[0]
+                if not 2 <= int(child_count) <= 4:
+                    invalid.append("APARTMENT_ALTERNATIVE_ROWS_INVALID")
+                if snapshot is not None:
+                    invalid.extend(
+                        BackupService._apartment_normalized_row_codes(connection, revision_id, snapshot)
+                    )
+        return AuditCheck(
+            name="apartment_invariants",
+            passed=not invalid,
+            issue_codes=sorted(set(invalid)),
+        )
+
+    @staticmethod
+    def _apartment_normalized_row_codes(connection: sqlite3.Connection, revision_id: str, snapshot: ApartmentRevisionSnapshot) -> list[str]:
+        invalid: list[str] = []
+        rows = connection.execute(
+            "SELECT id, name, forecast_role, purchase_month, property_price, family_gift, equity_mode, equity_value, "
+            "mortgage_principal, mortgage_annual_nominal_rate, mortgage_term_months, confirmed "
+            "FROM apartment_alternatives WHERE revision_id = ? ORDER BY name, id",
+            (revision_id,),
+        ).fetchall()
+        if len(rows) != len(snapshot.alternatives):
+            invalid.append("APARTMENT_ALTERNATIVE_ROWS_INVALID")
+        expected_by_name = {item.name.casefold(): item for item in snapshot.alternatives}
+        actual_by_name = {str(row[1]).casefold(): row for row in rows}
+        if set(expected_by_name) != set(actual_by_name):
+            invalid.append("APARTMENT_NORMALIZED_ALTERNATIVES_INVALID")
+        for name, expected in expected_by_name.items():
+            row = actual_by_name.get(name)
+            if row is None:
+                continue
+            try:
+                scalar_match = (
+                    row[2] == expected.forecast_role.value
+                    and int(row[3]) == expected.purchase_month
+                    and Decimal(row[4]) == expected.property_price
+                    and Decimal(row[5]) == expected.family_gift
+                    and row[6] == expected.equity_requirement.mode
+                    and Decimal(row[7]) == expected.equity_requirement.value
+                    and Decimal(row[8]) == expected.mortgage.principal
+                    and Decimal(row[9]) == expected.mortgage.annual_nominal_rate
+                    and int(row[10]) == expected.mortgage.term_months
+                    and bool(row[11]) == expected.confirmed
+                )
+            except (InvalidOperation, TypeError, ValueError):
+                scalar_match = False
+            if not scalar_match:
+                invalid.append("APARTMENT_NORMALIZED_ALTERNATIVE_INVALID")
+
+            alt_id = row[0]
+            costs = connection.execute(
+                "SELECT label, amount FROM apartment_purchase_costs WHERE alternative_id = ? ORDER BY label, id",
+                (alt_id,),
+            ).fetchall()
+            expected_costs = sorted((item.label, item.amount) for item in expected.purchase_costs)
+            try:
+                actual_costs = sorted((str(item[0]), Decimal(item[1])) for item in costs)
+            except (InvalidOperation, TypeError, ValueError):
+                actual_costs = []
+            if actual_costs != expected_costs:
+                invalid.append("APARTMENT_NORMALIZED_PURCHASE_COSTS_INVALID")
+
+            draws = connection.execute(
+                "SELECT pool_name, amount FROM apartment_pool_draws WHERE alternative_id = ? ORDER BY pool_name, id",
+                (alt_id,),
+            ).fetchall()
+            expected_draws = sorted((item.pool_name or item.pool_id or "", item.amount) for item in expected.pool_draws)
+            try:
+                actual_draws = sorted((str(item[0]), Decimal(item[1])) for item in draws)
+            except (InvalidOperation, TypeError, ValueError):
+                actual_draws = []
+            if actual_draws != expected_draws:
+                invalid.append("APARTMENT_NORMALIZED_POOL_DRAWS_INVALID")
+
+            stopped = connection.execute(
+                "SELECT source_item_id FROM apartment_stopped_housing_lines WHERE alternative_id = ? ORDER BY source_item_id, id",
+                (alt_id,),
+            ).fetchall()
+            if [str(item[0]) for item in stopped] != sorted(expected.stopped_housing_line_ids):
+                invalid.append("APARTMENT_NORMALIZED_STOPPED_LINES_INVALID")
+
+            housing = connection.execute(
+                "SELECT label, amount FROM apartment_housing_costs WHERE alternative_id = ? ORDER BY label, id",
+                (alt_id,),
+            ).fetchall()
+            expected_housing = sorted((item.label, item.amount) for item in expected.housing_costs)
+            try:
+                actual_housing = sorted((str(item[0]), Decimal(item[1])) for item in housing)
+            except (InvalidOperation, TypeError, ValueError):
+                actual_housing = []
+            if actual_housing != expected_housing:
+                invalid.append("APARTMENT_NORMALIZED_HOUSING_COSTS_INVALID")
+        return invalid
 
 
 __all__ = ["BackupService"]
