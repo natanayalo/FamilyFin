@@ -1,0 +1,24 @@
+.venv/
+.uv-bootstrap/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+.env
+.DS_Store
+
+# Local financial data and database state
+data/local/
+data/*.xlsx
+data/*.xlsm
+data/*.xls
+data/*.csv
+*.sqlite3
+*.db
+*.log
+
+# Streamlit state
+.streamlit/secrets.toml

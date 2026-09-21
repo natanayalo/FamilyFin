@@ -1,0 +1,25 @@
+# Development roadmap
+
+## Phase 0 and Phase 1 delivered in this repository
+
+1. Repository and privacy-safe local setup.
+2. Evidence-based source analysis, architecture, data model, and roadmap.
+3. Strict FamilyBiz workbook inspector and normalizer.
+4. Pydantic contracts for inspection, parsed records, candidates, previews, decisions, statistics, and quality issues.
+5. SQLite schema with an Alembic initial migration.
+6. Content-addressed archives, atomic commits, duplicate-file idempotency, occurrence-aware matching, and unresolved cases.
+7. Streamlit import flow with sanitized preview, freshness warning, history, and reconciliation visibility.
+8. Synthetic tests for source variants, invalid files, idempotency, duplicate multiplicity, update/reconciliation behavior, rollback, and provenance.
+
+## Next hardening work
+
+- Add a database invariant audit command and property-based occurrence tests.
+- Add a clean SQLite backup command and restore verification.
+- Add an explicit account mapping workflow for new providers.
+- Verify Alembic upgrade/downgrade on a disposable database in CI.
+- Add structured local logging that emits counts and issue codes only.
+
+## Later phases
+
+Phase 2 adds analysis overrides, economic classification, transfer/refund handling, and classification review. Phase 3 adds household dashboards and trends using booking date and explicit currency scope. Phase 4 can use the separate planning CSV as a planning seed. Balances, pending activity, installments, loans, FX conversion, and net worth require additional source data and remain out of scope until supplied.
+
