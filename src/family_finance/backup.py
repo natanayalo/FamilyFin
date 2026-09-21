@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import shutil
 import sqlite3
 import uuid
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -14,7 +16,13 @@ from alembic.config import Config
 from alembic.script import ScriptDirectory
 
 from family_finance.config import Settings
-from family_finance.models import AuditCheck, BackupManifest, BackupVerification
+from family_finance.forecasting import assumption_hash
+from family_finance.models import (
+    AuditCheck,
+    BackupManifest,
+    BackupVerification,
+    ForecastRevisionSnapshot,
+)
 from family_finance.persistence.db import Database
 from family_finance.persistence.models import PlanningSourceFileRow, SourceFileRow
 
@@ -178,6 +186,7 @@ class BackupService:
                 )
                 checks.append(BackupService._verify_provenance(connection))
                 checks.append(BackupService._verify_planning(connection))
+                checks.append(BackupService._verify_forecasting(connection))
                 source_hashes = {
                     str(row[0])
                     for row in connection.execute("SELECT sha256 FROM source_files").fetchall()
@@ -314,6 +323,100 @@ class BackupService:
             invalid.append("PLANNING_AMOUNT_INVALID")
         return AuditCheck(
             name="planning_invariants",
+            passed=not invalid,
+            issue_codes=sorted(set(invalid)),
+        )
+
+    @staticmethod
+    def _verify_forecasting(connection: sqlite3.Connection) -> AuditCheck:
+        invalid: list[str] = []
+        forecasts = connection.execute(
+            "SELECT id, scenario_id, source_revision_id, source_revision_number, horizon_months, current_revision_number "
+            "FROM savings_forecasts"
+        ).fetchall()
+        for forecast_id, scenario_id, source_revision_id, source_revision_number, horizon_months, current_revision in forecasts:
+            if int(horizon_months) != 36:
+                invalid.append("FORECAST_HORIZON_INVALID")
+            source = connection.execute(
+                "SELECT scenario_id, revision_number FROM planning_scenario_revisions WHERE id = ?",
+                (source_revision_id,),
+            ).fetchone()
+            if not source or source[0] != scenario_id or int(source[1]) != int(source_revision_number):
+                invalid.append("FORECAST_SOURCE_PLAN_REFERENCE_INVALID")
+            numbers = [
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT revision_number FROM savings_forecast_revisions WHERE forecast_id = ? ORDER BY revision_number",
+                    (forecast_id,),
+                ).fetchall()
+            ]
+            if numbers != list(range(1, int(current_revision) + 1)):
+                invalid.append("FORECAST_REVISION_SEQUENCE_INVALID")
+            for revision_id, revision_source_id, revision_source_number, stored_hash, assumptions in connection.execute(
+                "SELECT id, source_revision_id, source_revision_number, assumption_hash, assumptions_json "
+                "FROM savings_forecast_revisions WHERE forecast_id = ?",
+                (forecast_id,),
+            ).fetchall():
+                if revision_source_id != source_revision_id or int(revision_source_number) != int(source_revision_number):
+                    invalid.append("FORECAST_SOURCE_PLAN_REFERENCE_INVALID")
+                try:
+                    snapshot = ForecastRevisionSnapshot.model_validate(json.loads(assumptions))
+                    if assumption_hash(snapshot) != stored_hash:
+                        invalid.append("FORECAST_ASSUMPTION_HASH_INVALID")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    invalid.append("FORECAST_ASSUMPTIONS_INVALID")
+                roles = [
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT role FROM savings_forecast_cases WHERE revision_id = ? ORDER BY role",
+                        (revision_id,),
+                    ).fetchall()
+                ]
+                if roles != ["baseline", "conservative", "optimistic"]:
+                    invalid.append("FORECAST_CASE_SET_INVALID")
+                case_rows = connection.execute(
+                    "SELECT id, annual_return_rate, sweep_enabled, sweep_pool_id "
+                    "FROM savings_forecast_cases WHERE revision_id = ?",
+                    (revision_id,),
+                ).fetchall()
+                for case_id, annual_return_rate, sweep_enabled, sweep_pool_id in case_rows:
+                    try:
+                        rate = Decimal(str(annual_return_rate))
+                        if not rate.is_finite() or rate <= Decimal(-1):
+                            invalid.append("FORECAST_RETURN_RATE_INVALID")
+                    except (InvalidOperation, TypeError, ValueError):
+                        invalid.append("FORECAST_RETURN_RATE_INVALID")
+                    pool_ids = {
+                        str(row[0])
+                        for row in connection.execute(
+                            "SELECT id FROM savings_forecast_pools WHERE case_id = ?",
+                            (case_id,),
+                        ).fetchall()
+                    }
+                    if not pool_ids:
+                        invalid.append("FORECAST_POOL_SET_EMPTY")
+                    if bool(sweep_enabled) and str(sweep_pool_id) not in pool_ids:
+                        invalid.append("FORECAST_SWEEP_POOL_INVALID")
+                    for pool_id, source_item_id in connection.execute(
+                        "SELECT pool_id, source_item_id FROM savings_forecast_routings WHERE case_id = ?",
+                        (case_id,),
+                    ).fetchall():
+                        if str(pool_id) not in pool_ids:
+                            invalid.append("FORECAST_ROUTING_POOL_INVALID")
+                        item = connection.execute(
+                            "SELECT revision_id, kind FROM planning_items WHERE id = ?",
+                            (source_item_id,),
+                        ).fetchone()
+                        if not item or item[0] != source_revision_id or item[1] not in {"savings_contribution", "savings_withdrawal"}:
+                            invalid.append("FORECAST_ROUTING_SOURCE_INVALID")
+                    for event_type, pool_id in connection.execute(
+                        "SELECT event_type, pool_id FROM savings_forecast_events WHERE case_id = ?",
+                        (case_id,),
+                    ).fetchall():
+                        if event_type in {"contribution", "withdrawal"} and str(pool_id) not in pool_ids:
+                            invalid.append("FORECAST_EVENT_POOL_INVALID")
+        return AuditCheck(
+            name="forecast_invariants",
             passed=not invalid,
             issue_codes=sorted(set(invalid)),
         )

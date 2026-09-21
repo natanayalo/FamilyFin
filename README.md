@@ -4,17 +4,34 @@ Family Finance is a local-first household finance application. Phase 1 establish
 
 ## Local setup
 
-The project uses Python 3.12 and uv.
+The project uses Python 3.12 and uv. If `uv` is already on your `PATH`:
 
     uv sync --dev
     uv run family-finance inspect "data/familybiz report 21-09-26.xlsx"
     uv run streamlit run streamlit_app.py
 
-If uv is not available on PATH, bootstrap it in the ignored local environment:
+If `zsh` reports `command not found: uv`, install it in the ignored local
+bootstrap environment and use that executable explicitly. Installing a
+command into a virtual environment does not automatically add it to `PATH`:
 
     python3 -m venv .uv-bootstrap
     .uv-bootstrap/bin/python -m pip install uv
     .uv-bootstrap/bin/uv sync --dev
+    .uv-bootstrap/bin/uv run family-finance inspect "data/familybiz report 21-09-26.xlsx"
+    .uv-bootstrap/bin/uv run streamlit run streamlit_app.py
+
+`inspect` is read-only and does not populate the dashboard. To import the
+workbook, open the Streamlit app, go to **Data Quality**, upload the same XLSX,
+choose **Inspect and preview**, then choose **Commit import**. The dashboard
+will populate after the commit.
+
+Alternatively, add the bootstrap directory to the current shell session and
+then use the shorter commands:
+
+    export PATH="$PWD/.uv-bootstrap/bin:$PATH"
+    uv sync --dev
+    uv run family-finance inspect "data/familybiz report 21-09-26.xlsx"
+    uv run streamlit run streamlit_app.py
 
 The database and archived uploads live under data/local/, which is intentionally excluded from Git. Streamlit is configured for localhost and telemetry is disabled.
 

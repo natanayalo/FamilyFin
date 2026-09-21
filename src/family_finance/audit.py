@@ -15,9 +15,17 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
 
 from family_finance.config import Settings
-from family_finance.models import AuditCheck, AuditReport
+from family_finance.forecasting import assumption_hash
+from family_finance.models import AuditCheck, AuditReport, ForecastRevisionSnapshot
 from family_finance.persistence.db import Database
 from family_finance.persistence.models import (
+    ForecastAdjustmentRow,
+    ForecastCaseRow,
+    ForecastEventRow,
+    ForecastPoolRow,
+    ForecastRevisionRow,
+    ForecastRoutingRow,
+    ForecastRow,
     ImportBatchRow,
     PlanningItemRow,
     PlanningScenarioRevisionRow,
@@ -61,6 +69,7 @@ class AuditService:
             self._safe_check(self._transaction_provenance_check),
             self._safe_check(self._batch_count_check),
             self._safe_check(self._planning_invariant_check),
+            self._safe_check(self._forecast_invariant_check),
         ]
         return AuditReport(passed=all(check.passed for check in checks), checks=checks)
 
@@ -242,6 +251,96 @@ class AuditService:
                         if item.frequency == "one_time" and not (item.occurrence_month and not item.start_month and not item.end_month):
                             codes.append("PLANNING_SCHEDULE_INVALID")
         return self._check("planning_invariants", not codes, *sorted(set(codes)))
+
+    def _forecast_invariant_check(self) -> AuditCheck:
+        """Verify saved forecast continuity without recalculating projections."""
+
+        codes: list[str] = []
+        with self.database.session() as session:
+            forecasts = session.execute(select(ForecastRow)).scalars().all()
+            for forecast in forecasts:
+                if forecast.horizon_months != 36:
+                    codes.append("FORECAST_HORIZON_INVALID")
+                source = session.get(PlanningScenarioRevisionRow, forecast.source_revision_id)
+                if source is None or source.scenario_id != forecast.scenario_id or source.revision_number != forecast.source_revision_number:
+                    codes.append("FORECAST_SOURCE_PLAN_REFERENCE_INVALID")
+                revisions = session.execute(
+                    select(ForecastRevisionRow)
+                    .where(ForecastRevisionRow.forecast_id == forecast.id)
+                    .order_by(ForecastRevisionRow.revision_number)
+                ).scalars().all()
+                numbers = [row.revision_number for row in revisions]
+                if numbers != list(range(1, forecast.current_revision_number + 1)):
+                    codes.append("FORECAST_REVISION_SEQUENCE_INVALID")
+                if not revisions or revisions[-1].revision_number != forecast.current_revision_number:
+                    codes.append("FORECAST_CURRENT_REVISION_POINTER_INVALID")
+                for revision in revisions:
+                    if revision.source_revision_id != forecast.source_revision_id or revision.source_revision_number != forecast.source_revision_number:
+                        codes.append("FORECAST_SOURCE_PLAN_REFERENCE_INVALID")
+                    try:
+                        payload = json.loads(revision.assumptions_json)
+                        snapshot_hash = assumption_hash(ForecastRevisionSnapshot.model_validate(payload))
+                        if snapshot_hash != revision.assumption_hash:
+                            codes.append("FORECAST_ASSUMPTION_HASH_INVALID")
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        codes.append("FORECAST_ASSUMPTIONS_INVALID")
+                    cases = session.execute(
+                        select(ForecastCaseRow).where(ForecastCaseRow.revision_id == revision.id)
+                    ).scalars().all()
+                    roles = sorted(case.role for case in cases)
+                    if roles != ["baseline", "conservative", "optimistic"]:
+                        codes.append("FORECAST_CASE_SET_INVALID")
+                    for case in cases:
+                        try:
+                            rate = Decimal(case.annual_return_rate)
+                            if not rate.is_finite() or rate <= Decimal(-1):
+                                codes.append("FORECAST_RETURN_RATE_INVALID")
+                        except (InvalidOperation, TypeError, ValueError):
+                            codes.append("FORECAST_RETURN_RATE_INVALID")
+                        pools = session.execute(
+                            select(ForecastPoolRow).where(ForecastPoolRow.case_id == case.id)
+                        ).scalars().all()
+                        pool_ids = {pool.id for pool in pools}
+                        if not pools:
+                            codes.append("FORECAST_POOL_SET_EMPTY")
+                        for pool in pools:
+                            try:
+                                amount = Decimal(pool.opening_balance)
+                                if amount < 0 or not amount.is_finite():
+                                    codes.append("FORECAST_OPENING_BALANCE_INVALID")
+                            except (InvalidOperation, ValueError):
+                                codes.append("FORECAST_OPENING_BALANCE_INVALID")
+                            if pool.pool_type not in {"cash", "investment"}:
+                                codes.append("FORECAST_POOL_TYPE_INVALID")
+                        if case.sweep_enabled and case.sweep_pool_id not in pool_ids:
+                            codes.append("FORECAST_SWEEP_POOL_INVALID")
+                        routes = session.execute(
+                            select(ForecastRoutingRow).where(ForecastRoutingRow.case_id == case.id)
+                        ).scalars().all()
+                        for route in routes:
+                            if route.pool_id not in pool_ids:
+                                codes.append("FORECAST_ROUTING_POOL_INVALID")
+                            item = session.get(PlanningItemRow, route.source_item_id)
+                            if item is None or item.revision_id != forecast.source_revision_id or item.kind not in {"savings_contribution", "savings_withdrawal"}:
+                                codes.append("FORECAST_ROUTING_SOURCE_INVALID")
+                        events = session.execute(
+                            select(ForecastEventRow).where(ForecastEventRow.case_id == case.id)
+                        ).scalars().all()
+                        for event in events:
+                            if event.event_type in {"contribution", "withdrawal"} and event.pool_id not in pool_ids:
+                                codes.append("FORECAST_EVENT_POOL_INVALID")
+                        adjustments = session.execute(
+                            select(ForecastAdjustmentRow).where(ForecastAdjustmentRow.case_id == case.id)
+                        ).scalars().all()
+                        occupied: set[tuple[str, int]] = set()
+                        for adjustment in adjustments:
+                            end = adjustment.end_month or 36
+                            for month in range(adjustment.start_month, end + 1):
+                                key = (f"{adjustment.target_type}:{adjustment.target}", month)
+                                if key in occupied:
+                                    codes.append("FORECAST_ADJUSTMENT_OVERLAP")
+                                occupied.add(key)
+        return self._check("forecast_invariants", not codes, *sorted(set(codes)))
 
 
 def _statistics_total(value: str) -> int | None:

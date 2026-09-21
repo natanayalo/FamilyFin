@@ -1,7 +1,8 @@
 """Persist planning seed quality, snapshots, and item notes."""
 
-from alembic import op
 from sqlalchemy import CheckConstraint
+
+from alembic import op
 
 revision = "0005_planning_quality"
 down_revision = "0004_budget_planning"

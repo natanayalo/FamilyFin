@@ -57,6 +57,16 @@ class ImportService:
             metrics=self.metrics_service,
             classifier=self.classification_service,
         )
+        from family_finance.forecasting import SavingsForecastService
+
+        self.savings_forecast_service = SavingsForecastService(
+            self.database,
+            planning_service=self.planning_service,
+        )
+        # Short aliases keep the application surface convenient while the
+        # explicit name documents that this is a savings-only forecast.
+        self.forecasting_service = self.savings_forecast_service
+        self.forecast_service = self.savings_forecast_service
 
     def inspect_familybiz(self, file_bytes: bytes):
         return self.parser.inspect(file_bytes)

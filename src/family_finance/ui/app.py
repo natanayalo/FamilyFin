@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from datetime import date
 from decimal import Decimal
@@ -14,11 +15,22 @@ def main() -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
     from family_finance.dashboard import DashboardService
+    from family_finance.forecasting import ForecastValidationError
     from family_finance.formatting import format_amount, format_month, format_rate
     from family_finance.models import (
         DashboardFilters,
         EconomicClass,
         ExpenseBehavior,
+        ForecastAdjustmentInput,
+        ForecastAdjustmentOperation,
+        ForecastCaseInput,
+        ForecastEventInput,
+        ForecastEventType,
+        ForecastPoolInput,
+        ForecastPoolType,
+        ForecastRole,
+        ForecastRoutingInput,
+        ForecastTargetType,
         PlanningFrequency,
         PlanningItem,
         PlanningItemInput,
@@ -171,7 +183,8 @@ def main() -> None:
                 }
                 for item in result.series
             ).set_index("month")
-            st.line_chart(trend)
+            trend = trend.apply(pd.to_numeric, errors="coerce").astype(float)
+            st.line_chart(trend, y=category_names)
         st.subheader("Exact transaction drill-down")
         month_options = [item.month for item in result.series]
         selected_month = st.selectbox("Month", month_options, format_func=format_month)
@@ -259,7 +272,10 @@ def main() -> None:
         quality = dashboard.data_quality(filters)
         cols = st.columns(6)
         cols[0].metric("Accepted rows", sum(quality.currencies.values()))
-        cols[1].metric("Freshness", quality.freshness_date or "Unavailable")
+        cols[1].metric(
+            "Freshness",
+            quality.freshness_date.isoformat() if quality.freshness_date else "Unavailable",
+        )
         cols[2].metric("Open reconciliation", quality.open_reconciliation_cases)
         cols[3].metric("Unclassified", quality.unclassified_transaction_count)
         cols[4].metric("Incomplete months", len(quality.incomplete_months))
@@ -695,12 +711,277 @@ def main() -> None:
         st.subheader("Actual versus plan")
         st.dataframe([item.model_dump(mode="json") for item in actual.months], use_container_width=True, hide_index=True)
 
+    def savings_forecast_page() -> None:
+        st.title("Savings Forecast")
+        st.caption("Local-only 36-month projections from user-provided starting balances. Forecasts never infer wealth from transactions.")
+        planning = service.planning_service
+        forecasting = service.savings_forecast_service
+        scenarios = planning.list_scenarios(include_archived=False)
+        if not scenarios:
+            st.info("Create a planning scenario first. A forecast is pinned to one exact planning revision.")
+            return
+        scenario_id = st.selectbox(
+            "Planning scenario",
+            [item.scenario_id for item in scenarios],
+            format_func=lambda value: next(item.name for item in scenarios if item.scenario_id == value),
+            key="forecast-scenario",
+        )
+        scenario = planning.get_scenario(scenario_id)
+        revisions = planning.list_revisions(scenario_id)
+        revision_number = st.selectbox(
+            "Exact planning revision",
+            [item.revision_number for item in revisions],
+            index=len(revisions) - 1,
+            key="forecast-source-revision",
+        )
+        source = planning.get_revision(scenario_id, revision_number)
+        st.caption(f"Pinned source: revision {source.revision_number} · {scenario.currency} · {source.revision_id}")
+        if source.provisional:
+            st.warning("This planning revision is provisional: " + ", ".join(source.issue_codes or ["seed quality gaps"]) + ".")
+
+        st.subheader("Shared starting pools")
+        pool_rows = st.data_editor(
+            st.session_state.get("forecast-pools", [{
+                "name": "Cash",
+                "pool_type": ForecastPoolType.CASH.value,
+                "opening_balance": "0",
+                "as_of_date": scenario.start_month.isoformat(),
+            }]),
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="forecast-pools-editor",
+            column_config={
+                "pool_type": st.column_config.SelectboxColumn("Type", options=[value.value for value in ForecastPoolType], required=True),
+                "opening_balance": st.column_config.TextColumn("User-provided starting balance", required=True),
+                "as_of_date": st.column_config.TextColumn("As-of date (YYYY-MM-DD)", required=True),
+            },
+        )
+        try:
+            pools = [
+                ForecastPoolInput(
+                    name=str(row.get("name") or "").strip(),
+                    pool_type=row.get("pool_type"),
+                    opening_balance=Decimal(str(row.get("opening_balance") or "0")),
+                    as_of_date=date.fromisoformat(str(row.get("as_of_date") or scenario.start_month)),
+                )
+                for row in pool_rows
+                if str(row.get("name") or "").strip()
+            ]
+        except (ValueError, TypeError) as exc:
+            pools = []
+            st.error(f"Starting pool validation: {exc}")
+        pool_names = [pool.name for pool in pools]
+        saving_items = [
+            item for item in source.items
+            if item.kind in {PlanningItemKind.SAVINGS_CONTRIBUTION, PlanningItemKind.SAVINGS_WITHDRAWAL}
+        ]
+        case_inputs = []
+        acknowledgements = []
+        st.subheader("Cases")
+        for role in ForecastRole:
+            with st.expander(role.value.capitalize(), expanded=role == ForecastRole.BASELINE):
+                rate = st.text_input("Effective annual return (%)", value="0", key=f"forecast-rate-{role.value}")
+                route_values = []
+                for item in saving_items:
+                    selected_pool = st.selectbox(
+                        f"Route {item.label}",
+                        pool_names or ["(add a pool)"],
+                        key=f"forecast-route-{role.value}-{item.id}",
+                    )
+                    if pool_names:
+                        route_values.append(ForecastRoutingInput(source_item_id=item.id, pool_name=selected_pool))
+                sweep_enabled = st.checkbox("Sweep positive surplus", key=f"forecast-sweep-{role.value}")
+                sweep_pool = None
+                if sweep_enabled:
+                    sweep_pool = st.selectbox("Sweep pool", pool_names or ["(add a pool)"], key=f"forecast-sweep-pool-{role.value}")
+                adjustment_rows = st.data_editor(
+                    st.session_state.get(
+                        f"forecast-adjustments-{role.value}",
+                        [{"target_type": "line", "target": "", "operation": "fixed_delta", "value": "0", "start_month": 1, "end_month": ""}],
+                    ),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"forecast-adjustments-editor-{role.value}",
+                    column_config={
+                        "target_type": st.column_config.SelectboxColumn("Target", options=[value.value for value in ForecastTargetType]),
+                        "operation": st.column_config.SelectboxColumn("Operation", options=[value.value for value in ForecastAdjustmentOperation]),
+                    },
+                )
+                event_rows = st.data_editor(
+                    st.session_state.get(
+                        f"forecast-events-{role.value}",
+                        [{"event_type": "income", "month": 1, "amount": "0", "label": "One-time event", "pool_name": ""}],
+                    ),
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"forecast-events-editor-{role.value}",
+                    column_config={"event_type": st.column_config.SelectboxColumn("Event", options=[value.value for value in ForecastEventType])},
+                )
+                confirmed = st.checkbox(
+                    f"I reviewed and confirm the {role.value} case",
+                    key=f"forecast-confirm-{role.value}",
+                )
+                acknowledgements.append(confirmed)
+                try:
+                    adjustments = [
+                        ForecastAdjustmentInput(
+                            target_type=row.get("target_type"),
+                            target=str(row.get("target") or ""),
+                            operation=row.get("operation"),
+                            value=Decimal(str(row.get("value") or "0")),
+                            start_month=int(row.get("start_month") or 1),
+                            end_month=int(row["end_month"]) if row.get("end_month") not in (None, "") else None,
+                        )
+                        for row in adjustment_rows
+                        if str(row.get("target") or "").strip()
+                    ]
+                    events = [
+                        ForecastEventInput(
+                            event_type=row.get("event_type"),
+                            month=int(row.get("month") or 1),
+                            amount=Decimal(str(row.get("amount") or "0")),
+                            label=str(row.get("label") or "One-time event"),
+                            pool_name=str(row.get("pool_name") or "").strip() or None,
+                        )
+                        for row in event_rows
+                        if str(row.get("event_type") or "").strip()
+                    ]
+                    case_inputs.append(ForecastCaseInput(
+                        role=role,
+                        annual_return_rate=Decimal(rate) / Decimal(100),
+                        routes=route_values,
+                        sweep_enabled=sweep_enabled,
+                        sweep_pool_name=sweep_pool,
+                        adjustments=adjustments,
+                        events=events,
+                        confirmed=confirmed,
+                    ))
+                except (ValueError, TypeError) as exc:
+                    st.error(f"{role.value.capitalize()} case validation: {exc}")
+
+        # A confirmation belongs to the exact reviewed assumptions.  Any
+        # edit to a case changes its signature and clears that case's review
+        # acknowledgement on the next rerun.
+        for case in case_inputs:
+            signature = json.dumps(
+                case.model_dump(mode="json", exclude={"confirmed"}),
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            signature_key = f"forecast-case-signature-{case.role.value}"
+            previous_signature = st.session_state.get(signature_key)
+            if previous_signature is not None and previous_signature != signature:
+                st.session_state[f"forecast-confirm-{case.role.value}"] = False
+                case.confirmed = False
+            st.session_state[signature_key] = signature
+        acknowledgements = [case.confirmed for case in case_inputs]
+
+        draft = None
+        if len(case_inputs) == 3 and pools:
+            try:
+                draft = forecasting.project_draft(
+                    scenario_id,
+                    pools,
+                    case_inputs,
+                    source_revision_number=revision_number,
+                    provisional_acknowledged=False,
+                )
+            except (ForecastValidationError, ValueError) as exc:
+                st.error(f"Draft validation: {exc}")
+        if draft is not None:
+            horizon = st.radio("View horizon", [12, 24, 36], horizontal=True, key="forecast-horizon")
+            selected_role = st.selectbox("Case result", [role.value for role in ForecastRole], key="forecast-result-role")
+            projection = draft[ selected_role ]
+            if projection.first_shortfall_month:
+                st.warning(f"Funding shortfall begins in month {projection.first_shortfall_month}; savings are never automatically drawn to cover deficits.")
+            st.subheader("Projected balances")
+            st.dataframe(
+                [
+                    {
+                        "pool": pool.name,
+                        "date": pool.as_of_date,
+                        "balance": pool.opening_balance,
+                        "status": "User-provided starting balance",
+                    }
+                    for pool in pools
+                ],
+                use_container_width=True,
+                hide_index=True,
+            )
+            import pandas as pd
+            import plotly.express as px
+            visible_months = projection.months[:horizon]
+            chart_rows = [
+                {"month": item.month, "pool": pool.pool_name, "balance": pool.closing_balance, "status": "Projected"}
+                for item in visible_months for pool in item.pools
+            ]
+            if chart_rows:
+                st.plotly_chart(px.line(pd.DataFrame(chart_rows), x="month", y="balance", color="pool", markers=True), use_container_width=True)
+            st.dataframe([item.model_dump(mode="json") for item in visible_months], use_container_width=True, hide_index=True)
+            st.subheader("Case comparison")
+            comparison_rows = []
+            for role, checkpoints in draft.comparison.checkpoints.items():
+                for checkpoint in checkpoints:
+                    if checkpoint.horizon_month <= horizon:
+                        comparison_rows.append({"case": role.value, **checkpoint.model_dump(mode="json")})
+            st.dataframe(comparison_rows, use_container_width=True, hide_index=True)
+            with st.expander("Formula and assumption inspector"):
+                inspector_cases = {}
+                for case in case_inputs:
+                    inspector_cases[case.role.value] = {
+                        "annual_return_rate": str(case.annual_return_rate),
+                        "routes": [route.model_dump(mode="json") for route in case.routes],
+                        "sweep": {
+                            "enabled": case.sweep_enabled,
+                            "pool_name": case.sweep_pool_name,
+                            "pool_id": case.sweep_pool_id,
+                        },
+                        "adjustments": [item.model_dump(mode="json") for item in case.adjustments],
+                        "events": [item.model_dump(mode="json") for item in case.events],
+                    }
+                st.json({
+                    "pinned_plan_revision": {"scenario_id": scenario_id, "revision_id": source.revision_id, "revision_number": source.revision_number},
+                    "policy_version": "savings-forecast-v1",
+                    "assumption_hash": draft.assumption_hash,
+                    "opening_balance_provenance": "User-provided starting balance",
+                    "calculation_order": draft[ForecastRole.BASELINE].methodology.calculation_order,
+                    "cases": inspector_cases,
+                    "disclaimer": draft[ForecastRole.BASELINE].methodology.projection_disclaimer,
+                })
+            forecast_name = st.text_input("Forecast name", value=f"{scenario.name} savings forecast", key="forecast-name")
+            provisional_ack = True
+            if source.provisional:
+                provisional_ack = st.checkbox("I acknowledge that the source planning revision is provisional.", key="forecast-provisional-ack")
+            can_save = all(acknowledgements) and (not source.provisional or provisional_ack)
+            if st.button("Save forecast", type="primary", disabled=not can_save, key="forecast-save"):
+                try:
+                    forecasting.create_forecast(
+                        forecast_name,
+                        scenario_id,
+                        pools,
+                        case_inputs,
+                        source_revision_number=revision_number,
+                        provisional_acknowledged=provisional_ack,
+                    )
+                    st.success("Forecast saved")
+                    st.rerun()
+                except (ForecastValidationError, ValueError) as exc:
+                    st.error(str(exc))
+        saved = forecasting.list_forecasts(include_archived=True)
+        if saved:
+            st.subheader("Saved forecasts")
+            st.dataframe([item.model_dump(mode="json") for item in saved], use_container_width=True, hide_index=True)
+
     pages = [
         st.Page(overview_page, title="Overview", icon="📊"),
         st.Page(expenses_page, title="Expenses", icon="🧾"),
         st.Page(data_quality_page, title="Data Quality", icon="✅"),
         st.Page(classification_page, title="Classification", icon="🏷️"),
         st.Page(planning_page, title="Planning", icon="📅"),
+        st.Page(savings_forecast_page, title="Savings Forecast", icon="📈"),
     ]
     navigation = st.navigation(pages)
     navigation.run()

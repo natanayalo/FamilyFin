@@ -274,6 +274,135 @@ class PlanningSeedImportRow(Base):
     )
 
 
+class ForecastRow(Base):
+    """Stable identity for a saved savings forecast."""
+
+    __tablename__ = "savings_forecasts"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    scenario_id: Mapped[str] = mapped_column(ForeignKey("planning_scenarios.id"))
+    source_revision_id: Mapped[str] = mapped_column(ForeignKey("planning_scenario_revisions.id"))
+    source_revision_number: Mapped[int] = mapped_column(Integer)
+    currency: Mapped[str] = mapped_column(Text)
+    horizon_months: Mapped[int] = mapped_column(Integer, default=36)
+    current_revision_number: Mapped[int] = mapped_column(Integer, default=1)
+    clone_of_forecast_id: Mapped[str | None] = mapped_column(
+        ForeignKey("savings_forecasts.id"), nullable=True
+    )
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ForecastRevisionRow(Base):
+    __tablename__ = "savings_forecast_revisions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    forecast_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecasts.id", ondelete="CASCADE")
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    source_revision_id: Mapped[str] = mapped_column(ForeignKey("planning_scenario_revisions.id"))
+    source_revision_number: Mapped[int] = mapped_column(Integer)
+    policy_version: Mapped[str] = mapped_column(Text)
+    assumption_hash: Mapped[str] = mapped_column(Text)
+    assumptions_json: Mapped[str] = mapped_column(Text)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("idx_savings_forecast_revisions_unique", "forecast_id", "revision_number", unique=True),
+        Index("idx_savings_forecast_revisions_forecast", "forecast_id", "revision_number"),
+    )
+
+
+class ForecastCaseRow(Base):
+    __tablename__ = "savings_forecast_cases"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_revisions.id", ondelete="CASCADE")
+    )
+    role: Mapped[str] = mapped_column(Text)
+    annual_return_rate: Mapped[str] = mapped_column(Text)
+    sweep_enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    # Deliberately not a SQL FK: pools point back to cases, so making this
+    # optional reference an FK would introduce a migration-time cycle.
+    # Forecast validation and the integrity audit enforce membership.
+    sweep_pool_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    confirmed: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    __table_args__ = (
+        Index("idx_savings_forecast_cases_unique", "revision_id", "role", unique=True),
+    )
+
+
+class ForecastPoolRow(Base):
+    __tablename__ = "savings_forecast_pools"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_cases.id", ondelete="CASCADE")
+    )
+    name: Mapped[str] = mapped_column(Text)
+    pool_type: Mapped[str] = mapped_column(Text)
+    opening_balance: Mapped[str] = mapped_column(Text)
+    as_of_date: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("idx_savings_forecast_pools_unique", "case_id", "name", unique=True),
+    )
+
+
+class ForecastRoutingRow(Base):
+    __tablename__ = "savings_forecast_routings"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_cases.id", ondelete="CASCADE")
+    )
+    source_item_id: Mapped[str] = mapped_column(ForeignKey("planning_items.id"))
+    pool_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_pools.id", ondelete="CASCADE")
+    )
+
+    __table_args__ = (
+        Index("idx_savings_forecast_routing_unique", "case_id", "source_item_id", unique=True),
+    )
+
+
+class ForecastAdjustmentRow(Base):
+    __tablename__ = "savings_forecast_adjustments"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_cases.id", ondelete="CASCADE")
+    )
+    target_type: Mapped[str] = mapped_column(Text)
+    target: Mapped[str] = mapped_column(Text)
+    operation: Mapped[str] = mapped_column(Text)
+    value: Mapped[str] = mapped_column(Text)
+    start_month: Mapped[int] = mapped_column(Integer)
+    end_month: Mapped[int | None] = mapped_column(Integer, nullable=True)
+
+
+class ForecastEventRow(Base):
+    __tablename__ = "savings_forecast_events"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    case_id: Mapped[str] = mapped_column(
+        ForeignKey("savings_forecast_cases.id", ondelete="CASCADE")
+    )
+    event_type: Mapped[str] = mapped_column(Text)
+    month: Mapped[int] = mapped_column(Integer)
+    amount: Mapped[str] = mapped_column(Text)
+    label: Mapped[str] = mapped_column(Text)
+    pool_id: Mapped[str | None] = mapped_column(
+        ForeignKey("savings_forecast_pools.id", ondelete="CASCADE"), nullable=True
+    )
+
+
 # Readable aliases for repository consumers that prefer domain-style names.
 Account = AccountRow
 Transaction = TransactionRow
@@ -297,6 +426,13 @@ __all__ = [
     "ClassificationRule",
     "ClassificationRuleModel",
     "ClassificationRuleRow",
+    "ForecastAdjustmentRow",
+    "ForecastCaseRow",
+    "ForecastEventRow",
+    "ForecastPoolRow",
+    "ForecastRevisionRow",
+    "ForecastRoutingRow",
+    "ForecastRow",
     "ImportBatchRow",
     "PlanningItemRow",
     "PlanningScenarioRevisionRow",

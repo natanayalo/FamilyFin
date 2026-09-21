@@ -713,6 +713,360 @@ class PlanningSeedPreview(BaseModel):
     savings_summary_count: int = 0
 
 
+class ForecastRole(StrEnum):
+    """The three explicit, user-authored forecast cases."""
+
+    CONSERVATIVE = "conservative"
+    BASELINE = "baseline"
+    OPTIMISTIC = "optimistic"
+
+
+class ForecastPoolType(StrEnum):
+    CASH = "cash"
+    INVESTMENT = "investment"
+
+
+class ForecastAdjustmentOperation(StrEnum):
+    REPLACEMENT = "replacement"
+    FIXED_DELTA = "fixed_delta"
+    PERCENTAGE_CHANGE = "percentage_change"
+
+
+class ForecastTargetType(StrEnum):
+    LINE = "line"
+    CATEGORY = "category"
+
+
+class ForecastEventType(StrEnum):
+    INCOME = "income"
+    EXPENSE = "expense"
+    CONTRIBUTION = "contribution"
+    WITHDRAWAL = "withdrawal"
+
+
+class ForecastPoolInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    pool_id: str | None = None
+    pool_type: ForecastPoolType
+    opening_balance: Decimal
+    as_of_date: date
+
+    @field_validator("name")
+    @classmethod
+    def require_pool_name(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value or len(value) > 200:
+            raise ValueError("Forecast pool name must be non-empty and at most 200 characters")
+        return value
+
+    @field_validator("opening_balance")
+    @classmethod
+    def require_opening_balance(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Forecast opening balances must be finite and non-negative")
+        return value
+
+
+class ForecastRoutingInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_item_id: str
+    pool_name: str | None = None
+    pool_id: str | None = None
+
+    @model_validator(mode="after")
+    def require_pool_reference(self) -> ForecastRoutingInput:
+        if not (self.pool_name or self.pool_id):
+            raise ValueError("A forecast route must reference one pool")
+        if self.pool_name and self.pool_id:
+            raise ValueError("A forecast route must use pool_name or pool_id, not both")
+        return self
+
+
+class ForecastAdjustmentInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    target_type: ForecastTargetType
+    target: str
+    operation: ForecastAdjustmentOperation
+    value: Decimal
+    start_month: int = Field(ge=1, le=36)
+    end_month: int | None = Field(default=None, ge=1, le=36)
+
+    @field_validator("target")
+    @classmethod
+    def require_target(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("Forecast adjustment target must be non-empty")
+        return value
+
+    @field_validator("value")
+    @classmethod
+    def require_adjustment_value(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite():
+            raise ValueError("Forecast adjustment value must be finite")
+        return value
+
+    @model_validator(mode="after")
+    def validate_months(self) -> ForecastAdjustmentInput:
+        if self.end_month is not None and self.end_month < self.start_month:
+            raise ValueError("Forecast adjustment end_month cannot precede start_month")
+        if self.operation == ForecastAdjustmentOperation.REPLACEMENT and self.value < 0:
+            raise ValueError("Forecast replacement values must be non-negative")
+        if self.operation == ForecastAdjustmentOperation.PERCENTAGE_CHANGE and self.value <= -1:
+            raise ValueError("Forecast percentage changes must be greater than -100 percent")
+        return self
+
+
+class ForecastEventInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    event_type: ForecastEventType
+    month: int = Field(ge=1, le=36)
+    amount: Decimal
+    label: str = "One-time event"
+    pool_name: str | None = None
+    pool_id: str | None = None
+
+    @field_validator("amount")
+    @classmethod
+    def require_event_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Forecast event amounts must be finite and non-negative")
+        return value
+
+    @model_validator(mode="after")
+    def validate_event_route(self) -> ForecastEventInput:
+        if self.event_type in {ForecastEventType.CONTRIBUTION, ForecastEventType.WITHDRAWAL}:
+            if not (self.pool_name or self.pool_id):
+                raise ValueError("Forecast savings events must route to one pool")
+            if self.pool_name and self.pool_id:
+                raise ValueError("A forecast event must use pool_name or pool_id, not both")
+        return self
+
+
+class ForecastCaseInput(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    role: ForecastRole
+    annual_return_rate: Decimal
+    routes: list[ForecastRoutingInput] = Field(default_factory=list)
+    sweep_enabled: bool = False
+    sweep_pool_name: str | None = None
+    sweep_pool_id: str | None = None
+    adjustments: list[ForecastAdjustmentInput] = Field(default_factory=list)
+    events: list[ForecastEventInput] = Field(default_factory=list)
+    confirmed: bool = False
+
+    @field_validator("annual_return_rate")
+    @classmethod
+    def require_return_rate(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value <= -1:
+            raise ValueError("Forecast annual return rates must be finite and greater than -100 percent")
+        return value
+
+    @model_validator(mode="after")
+    def validate_sweep(self) -> ForecastCaseInput:
+        if self.sweep_pool_name and self.sweep_pool_id:
+            raise ValueError("A sweep must use sweep_pool_name or sweep_pool_id, not both")
+        if self.sweep_enabled and not (self.sweep_pool_name or self.sweep_pool_id):
+            raise ValueError("An enabled sweep must select one pool")
+        return self
+
+
+class ForecastRevisionSnapshot(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str | None = None
+    revision_id: str | None = None
+    revision_number: int = 1
+    assumption_hash: str = ""
+    created_at: datetime | None = None
+    scenario_id: str
+    source_revision_id: str
+    source_revision_number: int
+    currency: str
+    horizon_months: int = 36
+    policy_version: str = "savings-forecast-v1"
+    provisional_acknowledged: bool = False
+    starting_pools: list[ForecastPoolInput] = Field(default_factory=list)
+    cases: list[ForecastCaseInput]
+    notes: str = ""
+
+    @model_validator(mode="after")
+    def require_exact_cases(self) -> ForecastRevisionSnapshot:
+        if self.horizon_months != 36:
+            raise ValueError("Savings forecasts always use a 36-month horizon")
+        roles = [case.role for case in self.cases]
+        if set(roles) != set(ForecastRole) or len(roles) != 3:
+            raise ValueError("A forecast revision must contain exactly conservative, baseline, and optimistic cases")
+        if len({pool.name.casefold() for pool in self.starting_pools}) != len(self.starting_pools):
+            raise ValueError("Forecast pool names must be unique")
+        if not self.starting_pools:
+            raise ValueError("A forecast requires at least one starting pool")
+        return self
+
+
+class ForecastMethodology(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    policy_version: str
+    source_plan_revision_id: str
+    source_plan_revision_number: int
+    calculation_order: list[str] = Field(default_factory=list)
+    projection_disclaimer: str = (
+        "Projected values are deterministic planning assumptions, not observed balances or guaranteed returns."
+    )
+
+
+class MonthlyPoolResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month_number: int
+    month: date
+    pool_id: str
+    pool_name: str
+    pool_type: ForecastPoolType
+    opening_balance: Decimal
+    estimated_return: Decimal
+    contributions: Decimal
+    swept_surplus: Decimal = Decimal(0)
+    requested_withdrawal: Decimal
+    fulfilled_withdrawal: Decimal
+    unmet_funding_gap: Decimal
+    closing_balance: Decimal
+
+
+class TotalMonthlyResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month_number: int
+    month: date
+    income: Decimal = Decimal(0)
+    expenses: Decimal = Decimal(0)
+    contributions: Decimal = Decimal(0)
+    requested_withdrawals: Decimal = Decimal(0)
+    fulfilled_withdrawals: Decimal = Decimal(0)
+    unmet_funding_gap: Decimal = Decimal(0)
+    swept_surplus: Decimal = Decimal(0)
+    estimated_returns: Decimal = Decimal(0)
+    cash_before_sweep: Decimal = Decimal(0)
+    cash_after_sweep: Decimal = Decimal(0)
+    ending_balance: Decimal = Decimal(0)
+    pools: list[MonthlyPoolResult] = Field(default_factory=list)
+
+    @property
+    def funding_gap(self) -> Decimal:
+        return self.unmet_funding_gap
+
+
+class ForecastProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str | None = None
+    scenario_id: str
+    source_revision_id: str
+    source_revision_number: int
+    currency: str
+    months: list[TotalMonthlyResult] = Field(default_factory=list)
+    provisional: bool = False
+    issue_codes: list[str] = Field(default_factory=list)
+    first_shortfall_month: int | None = None
+    assumption_hash: str = ""
+    methodology: ForecastMethodology | None = None
+
+    @property
+    def results(self) -> list[TotalMonthlyResult]:
+        return self.months
+
+
+class ForecastComparisonCheckpoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    horizon_month: int
+    ending_balance: Decimal
+    contributions: Decimal
+    swept_surplus: Decimal
+    withdrawals: Decimal
+    estimated_returns: Decimal
+    funding_gap: Decimal
+
+
+class ForecastComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    currency: str
+    checkpoints: dict[ForecastRole, list[ForecastComparisonCheckpoint]] = Field(default_factory=dict)
+
+
+class ForecastDraft(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    projections: dict[ForecastRole, ForecastProjection] = Field(default_factory=dict)
+    comparison: ForecastComparison | None = None
+    assumption_hash: str = ""
+    validation_errors: list[str] = Field(default_factory=list)
+
+    def __getitem__(self, role: ForecastRole | str) -> ForecastProjection:
+        return self.projections[ForecastRole(role)]
+
+    def get(self, role: ForecastRole | str, default=None):
+        return self.projections.get(ForecastRole(role), default)
+
+
+class ForecastRevisionSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_id: str
+    forecast_id: str
+    revision_number: int
+    source_revision_id: str
+    source_revision_number: int
+    policy_version: str
+    assumption_hash: str
+    created_at: datetime | None = None
+    notes: str = ""
+
+
+class ForecastSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str
+    name: str
+    scenario_id: str
+    source_revision_id: str
+    source_revision_number: int
+    currency: str
+    horizon_months: int = 36
+    current_revision_number: int
+    archived: bool = False
+    clone_of_forecast_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def id(self) -> str:
+        return self.forecast_id
+
+
+# Short domain-style aliases are useful to callers that do not need to
+# distinguish persisted inputs from the snapshot contracts.
+ForecastPool = ForecastPoolInput
+ForecastCase = ForecastCaseInput
+ForecastRouting = ForecastRoutingInput
+ForecastAdjustment = ForecastAdjustmentInput
+ForecastEvent = ForecastEventInput
+ForecastRevision = ForecastRevisionSnapshot
+ForecastMonthlyResult = TotalMonthlyResult
+
+
 class MonthlyPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -848,6 +1202,31 @@ __all__ = [
     "EconomicClass",
     "ExpenseBehavior",
     "ExpenseDashboard",
+    "ForecastAdjustment",
+    "ForecastAdjustmentInput",
+    "ForecastAdjustmentOperation",
+    "ForecastCase",
+    "ForecastCaseInput",
+    "ForecastComparison",
+    "ForecastComparisonCheckpoint",
+    "ForecastDraft",
+    "ForecastEvent",
+    "ForecastEventInput",
+    "ForecastEventType",
+    "ForecastMethodology",
+    "ForecastMonthlyResult",
+    "ForecastPool",
+    "ForecastPoolInput",
+    "ForecastPoolType",
+    "ForecastProjection",
+    "ForecastRevision",
+    "ForecastRevisionSnapshot",
+    "ForecastRevisionSummary",
+    "ForecastRole",
+    "ForecastRouting",
+    "ForecastRoutingInput",
+    "ForecastSummary",
+    "ForecastTargetType",
     "ImportInspection",
     "ImportPreview",
     "ImportResult",
@@ -857,6 +1236,7 @@ __all__ = [
     "MetricBreakdown",
     "MonthlyMetrics",
     "MonthlyPlan",
+    "MonthlyPoolResult",
     "MonthlySeriesPoint",
     "NormalizedTransactionCandidate",
     "OverviewDashboard",
@@ -874,6 +1254,7 @@ __all__ = [
     "ReconciliationDecision",
     "ScenarioComparison",
     "ScenarioComparisonSeries",
+    "TotalMonthlyResult",
     "TransactionContribution",
     "UnusualCategorySpending",
 ]

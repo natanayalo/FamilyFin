@@ -232,11 +232,25 @@ class Database:
             "planning_items",
             "planning_source_files",
             "planning_seed_imports",
+            "savings_forecasts",
+            "savings_forecast_revisions",
+            "savings_forecast_cases",
+            "savings_forecast_pools",
+            "savings_forecast_routings",
+            "savings_forecast_adjustments",
+            "savings_forecast_events",
         }:
             raise ValueError(table)
         from family_finance.persistence.models import (
             AnalysisOverrideRow,
             ClassificationRuleRow,
+            ForecastAdjustmentRow,
+            ForecastCaseRow,
+            ForecastEventRow,
+            ForecastPoolRow,
+            ForecastRevisionRow,
+            ForecastRoutingRow,
+            ForecastRow,
             ImportBatchRow,
             PlanningItemRow,
             PlanningScenarioRevisionRow,
@@ -260,6 +274,13 @@ class Database:
             "planning_items": PlanningItemRow,
             "planning_source_files": PlanningSourceFileRow,
             "planning_seed_imports": PlanningSeedImportRow,
+            "savings_forecasts": ForecastRow,
+            "savings_forecast_revisions": ForecastRevisionRow,
+            "savings_forecast_cases": ForecastCaseRow,
+            "savings_forecast_pools": ForecastPoolRow,
+            "savings_forecast_routings": ForecastRoutingRow,
+            "savings_forecast_adjustments": ForecastAdjustmentRow,
+            "savings_forecast_events": ForecastEventRow,
         }
         with self.session() as session:
             return int(session.execute(select(func.count()).select_from(models[table])).scalar_one())
