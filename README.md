@@ -20,6 +20,8 @@ The database and archived uploads live under data/local/, which is intentionally
 
 ## Scope
 
-The importer preserves source values and provenance, normalizes dates, text, and numbers for matching, keeps non-ILS rows visible but outside ILS totals, and never deletes a transaction because it disappears from a later export. Classification, dashboards, balances, installments, FX conversion, and net-worth calculations are later phases.
+The importer preserves source values and provenance, normalizes dates, text, and numbers for matching, keeps non-ILS rows visible but outside ILS totals, and never deletes a transaction because it disappears from a later export. Phase 2 adds SQLAlchemy-backed classification and monthly metrics; dashboards, balances, installments, FX conversion, and net-worth calculations remain later phases.
+
+See [`docs/financial_metrics.md`](docs/financial_metrics.md) for signs, formulas, completeness rules, exclusions, and source limitations.
 
 See docs/ for the evidence-based data analysis, architecture, data model, and roadmap.

@@ -10,7 +10,8 @@
 - transactions: current normalized logical state with decimal values stored as text to avoid floating-point loss.
 - transaction_sources: auditable links between each normalized transaction and source occurrences, including match method.
 - reconciliation_cases: open candidate links and later user decisions.
-- analysis_overrides: append-only user classifications. They never overwrite source rows or normalized import history.
+- analysis_overrides: append-only user classifications. They never overwrite source rows or normalized import history; a null value is a field tombstone used to clear the latest decision.
+- classification_rules: append-only exact source-key rule revisions. A later revision supersedes the prior revision; a tombstone disables the key without deleting history.
 
 ## Constraints and lifecycle
 
@@ -33,4 +34,5 @@ Accepted rows link to exactly one transaction occurrence. An unresolved row link
 The initial schema is frozen in `alembic/versions/0001_initial.py`; later
 constraints and indexes must be introduced through new revisions. The current
 `0002_source_link_invariants` revision enforces one transaction link and one
-reconciliation case per source row.
+reconciliation case per source row. `0003_financial_classification` adds the
+classification rule log and deterministic latest-override index.

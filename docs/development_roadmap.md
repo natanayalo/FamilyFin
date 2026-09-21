@@ -1,6 +1,6 @@
 # Development roadmap
 
-## Phase 0 and Phase 1 delivered in this repository
+## Phase 0 through Phase 2 delivered in this repository
 
 1. Repository and privacy-safe local setup.
 2. Evidence-based source analysis, architecture, data model, and roadmap.
@@ -10,6 +10,7 @@
 6. Content-addressed archives, atomic commits, duplicate-file idempotency, occurrence-aware matching, and unresolved cases.
 7. Streamlit import flow with sanitized preview, freshness warning, history, and reconciliation visibility.
 8. Synthetic tests for source variants, invalid files, idempotency, duplicate multiplicity, update/reconciliation behavior, rollback, and provenance.
+9. SQLAlchemy runtime repositories, append-only classification rules and overrides, deterministic classification, monthly metrics, completeness, contributor drill-down, and validation UI.
 
 ## Next hardening work
 
@@ -21,5 +22,4 @@
 
 ## Later phases
 
-Phase 2 adds analysis overrides, economic classification, transfer/refund handling, and classification review. Phase 3 adds household dashboards and trends using booking date and explicit currency scope. Phase 4 can use the separate planning CSV as a planning seed. Balances, pending activity, installments, loans, FX conversion, and net worth require additional source data and remain out of scope until supplied.
-
+Phase 3 adds polished household dashboards and trends using booking date and explicit currency scope. Phase 4 can use the separate planning CSV as a planning seed. Balances, pending activity, installments, loans, FX conversion, and net worth require additional source data and remain out of scope until supplied.

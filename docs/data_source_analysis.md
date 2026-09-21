@@ -40,5 +40,4 @@ The supplied CSV has 41 rows and 33 columns. It is a manually maintained plannin
 
 ## Explicitly unavailable fields
 
-The source does not provide a stable transaction ID, pending/completed status, balance, installment sequence, loan principal/interest split, or explicit transfer linkage. The importer does not invent these fields. Reliable Phase 1 outputs are source-backed transaction counts, totals by currency, category/movement labels, freshness, and import/reconciliation status. Economic classification and dashboards belong to later phases.
-
+The source does not provide a stable transaction ID, pending/completed status, balance, installment sequence, loan principal/interest split, or explicit transfer linkage. The importer does not invent these fields. Reliable import outputs are source-backed transaction counts, totals by currency, category/movement labels, freshness, and import/reconciliation status. Phase 2 classification remains conservative around these limitations; polished dashboards belong to later phases.

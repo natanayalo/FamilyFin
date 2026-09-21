@@ -21,13 +21,13 @@ Database startup runs Alembic upgrade to head. Runtime code does not create a se
 
 ## Database access decision
 
-Phase 1 explicitly approves Python's standard-library `sqlite3` for runtime
-queries and transaction boundaries. The application is local-only, targets one
-SQLite database, and currently benefits from keeping the persistence gateway
-dependency-light and explicit. SQLAlchemy remains the Alembic migration
-runtime, but it is not used as the application query layer. Before Phase 2
-adds a broader data model or more complex query composition, revisit this
-choice and adopt SQLAlchemy repositories if that complexity warrants it.
+Phase 2 uses SQLAlchemy 2.0 engines, sessions, declarative mappings, and
+repositories for runtime persistence. SQLite remains local-only. Connections
+enable foreign keys and WAL mode, and all mutating repository operations use an
+explicit `BEGIN IMMEDIATE` transaction so import, reconciliation, overrides,
+and reusable-rule revisions remain atomic. Monetary values continue to be
+stored as canonical decimal text and are converted to `Decimal` at the domain
+boundary.
 
 ## Atomic import flow
 

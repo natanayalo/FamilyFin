@@ -224,4 +224,4 @@ def test_runtime_database_setup_records_alembic_revision(tmp_path):
     app = service(tmp_path)
     with app.database.connect() as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision["version_num"] == "0002_source_link_invariants"
+    assert revision["version_num"] == "0003_financial_classification"

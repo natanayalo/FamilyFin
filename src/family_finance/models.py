@@ -7,7 +7,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
 
 
 class IssueSeverity(StrEnum):
@@ -159,3 +159,233 @@ class ImportResult(BaseModel):
     status: ImportStatus
     statistics: ImportStatistics
     issues: list[DataQualityIssue] = Field(default_factory=list)
+
+
+class EconomicClass(StrEnum):
+    INCOME = "income"
+    CONSUMPTION = "consumption"
+    REFUND = "refund"
+    INTERNAL_TRANSFER = "internal_transfer"
+    SAVINGS_TRANSFER = "savings_transfer"
+    CREDIT_CARD_SETTLEMENT = "credit_card_settlement"
+    DEBT_PRINCIPAL = "debt_principal"
+    UNCLASSIFIED = "unclassified"
+
+
+class ExpenseBehavior(StrEnum):
+    FIXED = "fixed"
+    VARIABLE = "variable"
+    UNKNOWN = "unknown"
+    NOT_APPLICABLE = "not_applicable"
+
+
+class ClassificationSource(StrEnum):
+    OVERRIDE = "override"
+    REUSABLE_RULE = "reusable_rule"
+    BUILTIN_RULE = "builtin_rule"
+    UNCLASSIFIED = "unclassified"
+
+
+class ClassificationRule(BaseModel):
+    """One append-only exact-match rule revision."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: int | None = None
+    account_kind: str
+    direction: str
+    source_category: str = Field(
+        validation_alias=AliasChoices("source_category", "category")
+    )
+    source_movement_type: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("source_movement_type", "movement_type"),
+    )
+    currency: str
+    economic_class: EconomicClass
+    analysis_category: str | None = None
+    expense_behavior: ExpenseBehavior = ExpenseBehavior.NOT_APPLICABLE
+    active: bool = True
+    tombstone: bool = False
+    revision: int = 1
+    supersedes_rule_id: int | None = None
+    reason: str = ""
+    created_at: datetime | None = None
+
+
+class ClassificationOverride(BaseModel):
+    """Transaction-specific append-only decisions.
+
+    ``None`` means no value was supplied when creating an override.  A clear is
+    represented in persistence by a separate tombstone row and is exposed by
+    the service's ``clear_override`` method.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: int
+    economic_class: EconomicClass | None = None
+    analysis_category: str | None = None
+    expense_behavior: ExpenseBehavior | None = None
+    reason: str = ""
+    created_at: datetime | None = None
+
+
+class ClassificationResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: int
+    booking_date: date
+    amount: Decimal
+    currency: str
+    account_kind: str
+    source_category: str
+    source_movement_type: str | None = None
+    economic_class: EconomicClass
+    expense_behavior: ExpenseBehavior
+    analysis_category: str | None = None
+    source: ClassificationSource
+    policy_version: str
+    explanation: str
+    issues: list[DataQualityIssue] = Field(default_factory=list)
+    rule_id: int | None = None
+    override_ids: list[int] = Field(default_factory=list)
+
+    @property
+    def is_review_required(self) -> bool:
+        return self.economic_class == EconomicClass.UNCLASSIFIED or bool(self.issues)
+
+    @property
+    def classification_source(self) -> ClassificationSource:
+        return self.source
+
+    @property
+    def effective_analysis_category(self) -> str | None:
+        return self.analysis_category
+
+
+class CompletenessAssessment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_period_complete: bool
+    classification_complete: bool
+    complete: bool
+    source_coverage: str = "unknown"
+    open_reconciliation_count: int = 0
+    unclassified_transaction_count: int = 0
+    unclassified_absolute_amount: Decimal = Decimal(0)
+    issues: list[str] = Field(default_factory=list)
+
+
+class MetricBreakdown(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    value: Decimal | None
+    contributor_transaction_ids: list[int] = Field(default_factory=list)
+    currency: str | None = None
+
+
+class MonthlyMetrics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month: date
+    currency: str
+    classification_policy_version: str
+    source_period_completeness: CompletenessAssessment
+    completeness: CompletenessAssessment
+    unclassified_transaction_count: int = 0
+    unclassified_absolute_amount: Decimal = Decimal(0)
+    data_freshness_date: date | None = None
+    gross_income: Decimal = Decimal(0)
+    gross_consumption: Decimal = Decimal(0)
+    refunds: Decimal = Decimal(0)
+    net_consumption: Decimal = Decimal(0)
+    operating_surplus_or_deficit: Decimal = Decimal(0)
+    savings_rate: Decimal | None = None
+    savings_contributions: Decimal = Decimal(0)
+    savings_withdrawals: Decimal = Decimal(0)
+    net_observed_savings_transfers: Decimal = Decimal(0)
+    fixed_consumption: Decimal = Decimal(0)
+    variable_consumption: Decimal = Decimal(0)
+    unknown_behavior_consumption: Decimal = Decimal(0)
+    spending_by_category: dict[str, Decimal] = Field(default_factory=dict)
+    historical_monthly_averages: dict[str, Decimal | None] = Field(default_factory=dict)
+    rolling_three_month_averages: dict[str, Decimal | None] = Field(default_factory=dict)
+    rolling_six_month_averages: dict[str, Decimal | None] = Field(default_factory=dict)
+    month_over_month_changes: dict[str, Decimal | None] = Field(default_factory=dict)
+    year_over_year_changes: dict[str, Decimal | None] = Field(default_factory=dict)
+    breakdowns: dict[str, MetricBreakdown] = Field(default_factory=dict)
+
+    @property
+    def policy_version(self) -> str:
+        return self.classification_policy_version
+
+    @property
+    def rolling_3_month_averages(self) -> dict[str, Decimal | None]:
+        return self.rolling_three_month_averages
+
+    @property
+    def rolling_6_month_averages(self) -> dict[str, Decimal | None]:
+        return self.rolling_six_month_averages
+
+    @property
+    def historical_averages(self) -> dict[str, Decimal | None]:
+        return self.historical_monthly_averages
+
+    @property
+    def operating_surplus(self) -> Decimal:
+        return self.operating_surplus_or_deficit
+
+    @property
+    def net_savings_transfers(self) -> Decimal:
+        return self.net_observed_savings_transfers
+
+    @property
+    def unknown_consumption(self) -> Decimal:
+        return self.unknown_behavior_consumption
+
+    def contributors_for(self, metric_name: str) -> list[int]:
+        breakdown = self.breakdowns.get(metric_name)
+        return list(breakdown.contributor_transaction_ids) if breakdown else []
+
+
+class ClassificationReviewItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: int
+    booking_date: date
+    amount: Decimal
+    currency: str
+    description: str
+    account_kind: str
+    source_category: str
+    source_movement_type: str | None = None
+    effective_classification: ClassificationResult
+    source_fields: dict[str, Any] = Field(default_factory=dict)
+    issues: list[DataQualityIssue] = Field(default_factory=list)
+
+
+__all__ = [
+    "AccountDescriptor",
+    "ClassificationOverride",
+    "ClassificationResult",
+    "ClassificationReviewItem",
+    "ClassificationRule",
+    "ClassificationSource",
+    "CompletenessAssessment",
+    "DataQualityIssue",
+    "EconomicClass",
+    "ExpenseBehavior",
+    "ImportInspection",
+    "ImportPreview",
+    "ImportResult",
+    "ImportStatistics",
+    "ImportStatus",
+    "MatchMethod",
+    "MetricBreakdown",
+    "MonthlyMetrics",
+    "NormalizedTransactionCandidate",
+    "ParsedSourceRecord",
+    "ReconciliationDecision",
+]
