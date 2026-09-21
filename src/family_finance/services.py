@@ -16,6 +16,7 @@ from family_finance.importers.familybiz import (
     FamilyBizParser,
     FamilyBizSchemaError,
 )
+from family_finance.logging import JsonEventLogger
 from family_finance.models import (
     DataQualityIssue,
     ImportPreview,
@@ -41,6 +42,7 @@ class ImportService:
         self.settings = settings or Settings.from_environment()
         self.settings.ensure_directories()
         self.database = database or Database(self.settings.database_path)
+        self.logger = JsonEventLogger(self.settings.log_path)
         self.parser = FamilyBizParser(self.settings)
         self.import_repository = ImportRepository()
         self.classification_service = ClassificationService(self.database)
@@ -65,7 +67,7 @@ class ImportService:
         }
         token = self._encode_token(token_payload)
         warning_count = len(parsed.issues)
-        return ImportPreview(
+        preview = ImportPreview(
             preview_token=token,
             inspection=parsed.inspection,
             parser_version=parsed.inspection.parser_version,
@@ -77,6 +79,12 @@ class ImportService:
             issue_counts=dict(Counter(issue.code for issue in parsed.issues)),
             preview_rows=parsed.inspection.preview_rows,
         )
+        self.logger.event(
+            "import_preview",
+            counts={"candidates": preview.candidate_count, "warnings": preview.warning_count},
+            issue_codes=list(preview.issue_counts),
+        )
+        return preview
 
     def commit_import(
         self,
@@ -85,6 +93,7 @@ class ImportService:
         filename: str | None = None,
     ) -> ImportResult:
         token = self._decode_token(preview_token)
+        self.classification_service.invalidate_cache()
         try:
             parsed = self.parser.parse(file_bytes, filename=filename)
         except FamilyBizSchemaError:
@@ -337,18 +346,30 @@ class ImportService:
                 session, batch_id, status.value, statistics.model_dump_json()
             )
 
-        return ImportResult(
+        result = ImportResult(
             batch_id=batch_id,
             status=status,
             statistics=statistics,
             issues=unresolved_issues,
         )
+        self.logger.event(
+            "import_commit",
+            counts={
+                "records": statistics.total_records,
+                "inserted": statistics.inserted,
+                "updated": statistics.updated,
+                "unresolved": statistics.unresolved,
+            },
+            issue_codes=[issue.code for issue in unresolved_issues],
+        )
+        return result
 
     def resolve_reconciliation(
         self,
         case_id: str,
         resolution: ReconciliationDecision | dict[str, Any],
     ) -> ImportResult:
+        self.classification_service.invalidate_cache()
         decision = (
             resolution
             if isinstance(resolution, ReconciliationDecision)
@@ -573,19 +594,27 @@ def _is_likely_fuzzy_revision(fuzzy_rows) -> bool:
 
 # Phase 2 services remain importable from the original application-services
 # module for callers that use the Phase 1 public entry point.
+from family_finance.audit import AuditService
+from family_finance.backup import BackupService
 from family_finance.classification import (
     ClassificationEngine,
     ClassificationService,
     FinancialClassificationService,
 )
+from family_finance.dashboard import DashboardService
+from family_finance.insights import InsightsService
 from family_finance.metrics import FinancialMetricsService, MetricsEngine, MetricsService
 
 __all__ = [
+    "AuditService",
+    "BackupService",
     "ClassificationEngine",
     "ClassificationService",
+    "DashboardService",
     "FinancialClassificationService",
     "FinancialMetricsService",
     "ImportService",
+    "InsightsService",
     "MetricsEngine",
     "MetricsService",
     "PreviewStaleError",

@@ -359,7 +359,13 @@ class FinancialRepository:
         result = []
         for transaction, account in rows:
             item = _model_dict(transaction)
-            item.update({"account_kind": account.account_kind})
+            item.update(
+                {
+                    "account_kind": account.account_kind,
+                    "account_label": account.display_label,
+                    "provider": account.provider,
+                }
+            )
             result.append(_decimalize(item))
         return result
 

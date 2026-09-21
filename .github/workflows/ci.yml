@@ -1,0 +1,33 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install locked dependencies
+        run: |
+          python -m pip install uv
+          uv sync --locked --dev
+      - name: Ruff
+        run: uv run ruff check src tests streamlit_app.py
+      - name: Tests
+        run: uv run pytest --cov=family_finance --cov-report=term-missing
+      - name: Compile
+        run: uv run python -m compileall -q src streamlit_app.py
+      - name: Migration cycle
+        run: |
+          temp_dir="$(mktemp -d)"
+          export FAMILY_FINANCE_DATABASE_URL="sqlite:///$temp_dir/migration.sqlite3"
+          uv run alembic upgrade head
+          uv run alembic downgrade base
+          uv run alembic upgrade head
+      - name: Diff whitespace
+        run: git diff --check

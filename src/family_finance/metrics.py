@@ -86,6 +86,7 @@ class MetricsService:
         )
         self.policy_version = policy_version
         self.source_coverage = source_coverage
+        self._series_context: dict[tuple[date, str], MonthlyMetrics] = {}
 
     def calculate_monthly_metrics(
         self,
@@ -99,28 +100,130 @@ class MetricsService:
         year_ago = self._calculate_basic(
             date(month_start.year - 1, month_start.month, 1), currency.upper()
         )
-        if basic.completeness.complete and previous.completeness.complete:
-            mom = {
+        historical = self._historical_months(month_start, currency.upper())
+        rolling_3 = self._rolling(month_start, currency.upper(), 3)
+        rolling_6 = self._rolling(month_start, currency.upper(), 6)
+        return self._enrich_basic(
+            basic,
+            previous,
+            year_ago,
+            historical,
+            rolling_3,
+            rolling_6,
+        )
+
+    def monthly_metrics(self, month: date | str, currency: str = "ILS") -> MonthlyMetrics:
+        return self.calculate_monthly_metrics(month, currency)
+
+    def calculate_monthly_series(
+        self,
+        start_month: date | str,
+        end_month: date | str,
+        currency: str = "ILS",
+    ) -> list[MonthlyMetrics]:
+        """Return an inclusive, month-aligned series using the existing metric policy."""
+
+        start = _month_start(start_month)
+        end = _month_start(end_month)
+        if start > end:
+            raise ValueError("start_month cannot be after end_month")
+        normalized_currency = str(currency).strip().upper()
+        if not normalized_currency:
+            raise ValueError("currency must be non-empty")
+        if not self.repository.accepted_transactions(
+            currency=normalized_currency,
+            start=start,
+            end=_next_month(end),
+        ):
+            self._series_context = {}
+            return []
+        all_dates = self.repository.all_accepted_booking_dates()
+        historical_start = min(all_dates).replace(day=1) if all_dates else start
+        context_start = min(
+            historical_start,
+            start,
+            _previous_month(start),
+            date(start.year - 1, start.month, 1),
+        )
+        rolling_start = start
+        for _ in range(5):
+            rolling_start = _previous_month(rolling_start)
+        context_start = min(context_start, rolling_start)
+
+        basic_by_month: dict[date, MonthlyMetrics] = {}
+        current = context_start
+        while current <= end:
+            basic_by_month[current] = self._calculate_basic(current, normalized_currency)
+            current = _next_month(current)
+
+        self._series_context = {
+            (month, normalized_currency): metrics for month, metrics in basic_by_month.items()
+        }
+        result: list[MonthlyMetrics] = []
+        current = start
+        while current <= end:
+            basic = basic_by_month[current]
+            previous = basic_by_month[_previous_month(current)]
+            year_ago = basic_by_month[date(current.year - 1, current.month, 1)]
+            historical: list[MonthlyMetrics] = []
+            historical_month = historical_start
+            while historical_month < current:
+                item = basic_by_month.get(historical_month)
+                if item and item.completeness.complete:
+                    historical.append(item)
+                historical_month = _next_month(historical_month)
+            rolling_3 = self._cached_rolling(basic_by_month, current, 3)
+            rolling_6 = self._cached_rolling(basic_by_month, current, 6)
+            result.append(
+                self._enrich_basic(
+                    basic,
+                    previous,
+                    year_ago,
+                    historical,
+                    rolling_3,
+                    rolling_6,
+                )
+            )
+            current = _next_month(current)
+        return result
+
+    def cached_monthly_metrics(self, month: date | str, currency: str = "ILS") -> MonthlyMetrics:
+        """Return a basic metric from the most recent series calculation when available."""
+
+        month_start = _month_start(month)
+        normalized_currency = currency.upper()
+        cached = self._series_context.get((month_start, normalized_currency))
+        return cached if cached is not None else self.calculate_monthly_metrics(month_start, normalized_currency)
+
+    def _enrich_basic(
+        self,
+        basic: MonthlyMetrics,
+        previous: MonthlyMetrics,
+        year_ago: MonthlyMetrics,
+        historical: list[MonthlyMetrics],
+        rolling_3: dict[str, Decimal | None],
+        rolling_6: dict[str, Decimal | None],
+    ) -> MonthlyMetrics:
+        mom = (
+            {
                 field: self._change(getattr(basic, field), getattr(previous, field))
                 for field in _COMPARISON_FIELDS
             }
-        else:
-            mom = {field: None for field in _COMPARISON_FIELDS}
-        if basic.completeness.complete and year_ago.completeness.complete:
-            yoy = {
+            if basic.completeness.complete and previous.completeness.complete
+            else {field: None for field in _COMPARISON_FIELDS}
+        )
+        yoy = (
+            {
                 field: self._change(getattr(basic, field), getattr(year_ago, field))
                 for field in _COMPARISON_FIELDS
             }
-        else:
-            yoy = {field: None for field in _COMPARISON_FIELDS}
-
-        historical = self._historical_months(month_start, currency.upper())
+            if basic.completeness.complete and year_ago.completeness.complete
+            else {field: None for field in _COMPARISON_FIELDS}
+        )
         historical_averages = {
             field: _average(getattr(item, field) for item in historical)
             for field in _COMPARISON_FIELDS
         }
-        rolling_3 = self._rolling(month_start, currency.upper(), 3)
-        rolling_6 = self._rolling(month_start, currency.upper(), 6)
         return basic.model_copy(
             update={
                 "historical_monthly_averages": historical_averages,
@@ -131,8 +234,22 @@ class MetricsService:
             }
         )
 
-    def monthly_metrics(self, month: date | str, currency: str = "ILS") -> MonthlyMetrics:
-        return self.calculate_monthly_metrics(month, currency)
+    @staticmethod
+    def _cached_rolling(
+        basic_by_month: dict[date, MonthlyMetrics], month: date, count: int
+    ) -> dict[str, Decimal | None]:
+        months: list[MonthlyMetrics] = []
+        current = month
+        for _ in range(count):
+            item = basic_by_month[current]
+            if not item.completeness.complete:
+                return {field: None for field in _COMPARISON_FIELDS}
+            months.append(item)
+            current = _previous_month(current)
+        return {
+            field: _average(getattr(item, field) for item in months)
+            for field in _COMPARISON_FIELDS
+        }
 
     def calculate(self, month: date | str, currency: str = "ILS") -> MonthlyMetrics:
         return self.calculate_monthly_metrics(month, currency)

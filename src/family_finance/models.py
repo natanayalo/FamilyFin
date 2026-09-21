@@ -7,7 +7,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class IssueSeverity(StrEnum):
@@ -350,6 +350,203 @@ class MonthlyMetrics(BaseModel):
         return list(breakdown.contributor_transaction_ids) if breakdown else []
 
 
+class DashboardFilters(BaseModel):
+    """Month-aligned, explicit-currency scope shared by every dashboard page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start_month: date
+    end_month: date
+    currency: str = "ILS"
+
+    @field_validator("start_month", "end_month", mode="before")
+    @classmethod
+    def parse_month(cls, value: date | str) -> date:
+        if isinstance(value, str) and len(value) == 7:
+            value = f"{value}-01"
+        return date.fromisoformat(value) if isinstance(value, str) else value
+
+    @field_validator("start_month", "end_month")
+    @classmethod
+    def require_month_start(cls, value: date) -> date:
+        if value.day != 1:
+            raise ValueError("Dashboard months must be the first day of a calendar month")
+        return value
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, value: str) -> str:
+        value = str(value).strip().upper()
+        if not value or len(value) > 12:
+            raise ValueError("Currency must be a non-empty short code")
+        return value
+
+    @model_validator(mode="after")
+    def require_forward_range(self) -> DashboardFilters:
+        if self.start_month > self.end_month:
+            raise ValueError("Dashboard start_month cannot be after end_month")
+        return self
+
+
+class MonthlySeriesPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month: date
+    currency: str
+    complete: bool
+    issue_codes: list[str] = Field(default_factory=list)
+    metrics: MonthlyMetrics
+
+
+class TransactionContribution(BaseModel):
+    """A display-independent transaction row used for every dashboard drill-down."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transaction_id: int
+    booking_date: date
+    description: str
+    amount: Decimal
+    currency: str
+    source_category: str
+    movement_type: str | None = None
+    account_label: str
+    account_kind: str
+    effective_classification: EconomicClass
+    classification_source: ClassificationSource
+    analysis_category: str | None = None
+    expense_behavior: ExpenseBehavior = ExpenseBehavior.NOT_APPLICABLE
+    source_category_original: str | None = None
+
+
+class DashboardComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    metric: str
+    current: Decimal | None
+    previous: Decimal | None
+    delta: Decimal | None
+    available: bool
+    reason: str | None = None
+
+
+class OverviewDashboard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: DashboardFilters
+    selected_month: MonthlySeriesPoint | None = None
+    series: list[MonthlySeriesPoint] = Field(default_factory=list)
+    headline: dict[str, Decimal | None] = Field(default_factory=dict)
+    comparisons: list[DashboardComparison] = Field(default_factory=list)
+    freshness_date: date | None = None
+    source_coverage: str = "unknown"
+    currency: str
+
+
+class CategorySummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    category: str
+    amount: Decimal
+    contributor_transaction_ids: list[int] = Field(default_factory=list)
+
+
+class ExpenseDashboard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filters: DashboardFilters
+    selected_month: MonthlySeriesPoint | None = None
+    series: list[MonthlySeriesPoint] = Field(default_factory=list)
+    categories: list[CategorySummary] = Field(default_factory=list)
+    behavior_totals: dict[str, Decimal] = Field(default_factory=dict)
+    category_comparisons: list[DashboardComparison] = Field(default_factory=list)
+    potential_recurring_spending: list[PotentialRecurringSpending] = Field(default_factory=list)
+    unusual_category_spending: list[UnusualCategorySpending] = Field(default_factory=list)
+    currency: str
+
+
+class DataQualityDashboard(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    latest_import: dict[str, Any] | None = None
+    freshness_date: date | None = None
+    covered_start: date | None = None
+    covered_end: date | None = None
+    currencies: dict[str, int] = Field(default_factory=dict)
+    issue_counts: dict[str, int] = Field(default_factory=dict)
+    incomplete_months: list[date] = Field(default_factory=list)
+    open_reconciliation_cases: int = 0
+    unclassified_transaction_count: int = 0
+    unclassified_absolute_amount: Decimal = Decimal(0)
+    source_coverage: str = "unknown"
+
+
+class PotentialRecurringSpending(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = "Potential pattern"
+    normalized_description: str
+    analysis_category: str
+    currency: str
+    account_kind: str
+    median_amount: Decimal
+    minimum_amount: Decimal
+    maximum_amount: Decimal
+    amount_range: tuple[Decimal, Decimal]
+    occurrence_months: list[date]
+    contributor_transaction_ids: list[int] = Field(default_factory=list)
+
+
+class UnusualCategorySpending(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    label: str = "Potential pattern"
+    month: date
+    category: str
+    currency: str
+    baseline_median: Decimal
+    target_total: Decimal
+    difference: Decimal
+    direction: str
+    rule: str
+    contributor_transaction_ids: list[int] = Field(default_factory=list)
+
+
+class AuditCheck(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    passed: bool
+    issue_codes: list[str] = Field(default_factory=list)
+
+
+class AuditReport(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    checks: list[AuditCheck] = Field(default_factory=list)
+
+
+class BackupManifest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    format_version: int = 1
+    created_at: datetime
+    schema_revision: str
+    files: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class BackupVerification(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    passed: bool
+    checks: list[AuditCheck] = Field(default_factory=list)
+
+
+# Insight result types are declared after the dashboard container for readability.
+ExpenseDashboard.model_rebuild()
+
+
 class ClassificationReviewItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -368,15 +565,24 @@ class ClassificationReviewItem(BaseModel):
 
 __all__ = [
     "AccountDescriptor",
+    "AuditCheck",
+    "AuditReport",
+    "BackupManifest",
+    "BackupVerification",
+    "CategorySummary",
     "ClassificationOverride",
     "ClassificationResult",
     "ClassificationReviewItem",
     "ClassificationRule",
     "ClassificationSource",
     "CompletenessAssessment",
+    "DashboardComparison",
+    "DashboardFilters",
+    "DataQualityDashboard",
     "DataQualityIssue",
     "EconomicClass",
     "ExpenseBehavior",
+    "ExpenseDashboard",
     "ImportInspection",
     "ImportPreview",
     "ImportResult",
@@ -385,7 +591,12 @@ __all__ = [
     "MatchMethod",
     "MetricBreakdown",
     "MonthlyMetrics",
+    "MonthlySeriesPoint",
     "NormalizedTransactionCandidate",
+    "OverviewDashboard",
     "ParsedSourceRecord",
+    "PotentialRecurringSpending",
     "ReconciliationDecision",
+    "TransactionContribution",
+    "UnusualCategorySpending",
 ]

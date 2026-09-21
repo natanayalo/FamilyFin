@@ -84,9 +84,14 @@ class ConnectionAdapter:
 
 
 class Database:
-    def __init__(self, path: str | Path) -> None:
+    def __init__(self, path: str | Path, *, read_only: bool = False) -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.read_only = read_only
+        if read_only:
+            if not self.path.is_file():
+                raise FileNotFoundError(self.path)
+        else:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
         self.engine = self._create_engine()
         self.session_factory = sessionmaker(
             bind=self.engine,
@@ -94,11 +99,18 @@ class Database:
             expire_on_commit=False,
             autoflush=False,
         )
-        self.initialize()
+        if not read_only:
+            self.initialize()
 
     def _create_engine(self) -> Engine:
+        if self.read_only:
+            # ``mode=ro`` preserves SQLite's WAL visibility.  ``immutable=1``
+            # would incorrectly ignore committed frames still held in the WAL.
+            url = f"sqlite:///file:{self.path.resolve().as_posix()}?mode=ro&uri=true"
+        else:
+            url = f"sqlite:///{self.path.resolve().as_posix()}"
         engine = create_engine(
-            f"sqlite:///{self.path.resolve().as_posix()}",
+            url,
             future=True,
             connect_args={"check_same_thread": False, "isolation_level": None},
         )
@@ -107,7 +119,10 @@ class Database:
         def _configure_sqlite(dbapi_connection, _connection_record) -> None:
             cursor = dbapi_connection.cursor()
             cursor.execute("PRAGMA foreign_keys = ON")
-            cursor.execute("PRAGMA journal_mode = WAL")
+            if self.read_only:
+                cursor.execute("PRAGMA query_only = ON")
+            else:
+                cursor.execute("PRAGMA journal_mode = WAL")
             cursor.close()
 
         return engine

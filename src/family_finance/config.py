@@ -26,6 +26,14 @@ class Settings:
     def archive_root(self) -> Path:
         return self.data_root / "imports"
 
+    @property
+    def log_root(self) -> Path:
+        return self.data_root / "logs"
+
+    @property
+    def log_path(self) -> Path:
+        return self.log_root / "family_finance.jsonl"
+
     @classmethod
     def from_environment(cls) -> Settings:
         root = Path(os.environ.get("FAMILY_FINANCE_DATA_ROOT", cls.data_root))
@@ -34,4 +42,4 @@ class Settings:
     def ensure_directories(self) -> None:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
-
+        self.log_root.mkdir(parents=True, exist_ok=True)

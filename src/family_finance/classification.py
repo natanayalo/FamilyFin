@@ -78,6 +78,7 @@ class ClassificationService:
         self.database = database
         self.repository = FinancialRepository(database)
         self.policy_version = policy_version
+        self._row_cache: dict[int, ClassificationResult] = {}
 
     def classify_one(self, transaction_id: int) -> ClassificationResult:
         transaction = self.repository.transaction(transaction_id)
@@ -87,6 +88,11 @@ class ClassificationService:
 
     def classify_transaction(self, transaction_id: int) -> ClassificationResult:
         return self.classify_one(transaction_id)
+
+    def invalidate_cache(self) -> None:
+        """Clear memoized results after import or other external row changes."""
+
+        self._row_cache.clear()
 
     def classify_many(
         self,
@@ -109,6 +115,15 @@ class ClassificationService:
         return [self._classify_row(row) for row in rows]
 
     def _classify_row(self, row: dict[str, Any]) -> ClassificationResult:
+        transaction_id = int(row["id"])
+        cached = self._row_cache.get(transaction_id)
+        if cached is not None:
+            return cached
+        result = self._classify_uncached_row(row)
+        self._row_cache[transaction_id] = result
+        return result
+
+    def _classify_uncached_row(self, row: dict[str, Any]) -> ClassificationResult:
         amount = Decimal(str(row["amount"]))
         source_category = str(row["category"])
         source_movement_type = row.get("movement_type")
@@ -597,6 +612,7 @@ class ClassificationService:
             serialized,
             self._override_reason(override, reason),
         )
+        self._row_cache.clear()
         return self.classify_one(transaction_id)
 
     def apply_override(self, transaction_id: int, **values: Any) -> ClassificationResult:
@@ -628,6 +644,7 @@ class ClassificationService:
         self.repository.append_overrides(
             transaction_id, {field: None for field in names}, reason
         )
+        self._row_cache.clear()
         return self.classify_one(transaction_id)
 
     def clear_transaction_override(
@@ -660,9 +677,9 @@ class ClassificationService:
         rule: ClassificationRule | dict[str, Any] | None = None,
         **values: Any,
     ) -> ClassificationRule:
-        return self.repository.save_rule(
-            self._rule_model(rule if rule is not None else values)
-        )
+        saved = self.repository.save_rule(self._rule_model(rule if rule is not None else values))
+        self._row_cache.clear()
+        return saved
 
     def create_reusable_rule(
         self,
@@ -713,9 +730,11 @@ class ClassificationService:
                 )
                 if existing and not existing["is_current"]:
                     raise ValueError("Only the current rule revision can be disabled")
-        return self.repository.save_rule(
+        saved = self.repository.save_rule(
             parsed.model_copy(update={"active": False, "tombstone": True, "reason": reason})
         )
+        self._row_cache.clear()
+        return saved
 
     def disable_reusable_rule(
         self,
