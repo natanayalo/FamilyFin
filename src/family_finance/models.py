@@ -561,6 +561,308 @@ class PlanningSeedOrigin(StrEnum):
     CSV = "csv"
 
 
+class NetWorthSide(StrEnum):
+    ASSET = "asset"
+    LIABILITY = "liability"
+
+
+class NetWorthCategory(StrEnum):
+    CASH = "cash"
+    SAVINGS = "savings"
+    INVESTMENT = "investment"
+    PENSION = "pension"
+    TRAINING_FUND = "training_fund"
+    PROPERTY = "property"
+    OTHER = "other"
+    OTHER_ASSET = "other"
+    MORTGAGE = "mortgage"
+    LOAN = "loan"
+    CREDIT = "credit"
+    OTHER_LIABILITY = "other"
+
+
+class NetWorthLiquidity(StrEnum):
+    LIQUID = "liquid"
+    RESTRICTED = "restricted"
+    ILLIQUID = "illiquid"
+
+
+class NetWorthOrigin(StrEnum):
+    MANUAL = "manual"
+    CSV = "csv"
+    RESTORED = "restored"
+
+
+_NET_WORTH_ASSET_CATEGORIES = {
+    NetWorthCategory.CASH,
+    NetWorthCategory.SAVINGS,
+    NetWorthCategory.INVESTMENT,
+    NetWorthCategory.PENSION,
+    NetWorthCategory.TRAINING_FUND,
+    NetWorthCategory.PROPERTY,
+    NetWorthCategory.OTHER_ASSET,
+}
+_NET_WORTH_LIABILITY_CATEGORIES = {
+    NetWorthCategory.MORTGAGE,
+    NetWorthCategory.LOAN,
+    NetWorthCategory.CREDIT,
+    NetWorthCategory.OTHER_LIABILITY,
+}
+
+
+def _net_worth_category(value: str | NetWorthCategory) -> NetWorthCategory:
+    if isinstance(value, NetWorthCategory):
+        return value
+    normalized = str(value).strip().lower().replace("-", "_").replace(" ", "_")
+    if normalized == "other_asset":
+        normalized = "other"
+    if normalized == "other_liability":
+        return NetWorthCategory.OTHER_LIABILITY
+    return NetWorthCategory(normalized)
+
+
+class NetWorthAccountInput(BaseModel):
+    """The stable registry metadata used to validate every snapshot row."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    account_key: str = ""
+    display_name: str = Field(validation_alias=AliasChoices("display_name", "account_name", "name"))
+    side: NetWorthSide
+    category: NetWorthCategory
+    liquidity: NetWorthLiquidity | None = None
+    owner_label: str | None = None
+    active_from: date = Field(default_factory=date.today)
+    active_to: date | None = Field(default=None, validation_alias=AliasChoices("active_to", "closed_on"))
+    stale_after_days: int | None = Field(default=None, ge=1)
+
+    @field_validator("account_key")
+    @classmethod
+    def normalize_account_key(cls, value: str) -> str:
+        value = str(value).strip()
+        if len(value) > 200:
+            raise ValueError("Net-worth account labels must be at most 200 characters")
+        return value
+
+    @field_validator("display_name")
+    @classmethod
+    def require_display_name(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value or len(value) > 200:
+            raise ValueError("Net-worth account display_name must be non-empty and at most 200 characters")
+        return value
+
+    @field_validator("category", mode="before")
+    @classmethod
+    def normalize_net_worth_category(cls, value):
+        return _net_worth_category(value)
+
+    @field_validator("owner_label")
+    @classmethod
+    def normalize_owner_label(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    @model_validator(mode="after")
+    def validate_metadata(self) -> NetWorthAccountInput:
+        if not self.account_key:
+            # Services assign a UUID for callers that intentionally leave the
+            # technical key blank; a persisted key is never changed later.
+            self.account_key = ""
+        if self.active_to is not None and self.active_to < self.active_from:
+            raise ValueError("Net-worth account active_to cannot precede active_from")
+        if self.side == NetWorthSide.ASSET:
+            if self.category not in _NET_WORTH_ASSET_CATEGORIES:
+                raise ValueError("Asset accounts require an asset category")
+            if self.liquidity is None:
+                raise ValueError("Asset accounts require liquidity")
+            if self.stale_after_days is None:
+                self.stale_after_days = {
+                    NetWorthLiquidity.LIQUID: 45,
+                    NetWorthLiquidity.RESTRICTED: 120,
+                    NetWorthLiquidity.ILLIQUID: 365,
+                }[self.liquidity]
+        else:
+            if self.category not in _NET_WORTH_LIABILITY_CATEGORIES:
+                raise ValueError("Liability accounts require a liability category")
+            if self.liquidity is not None:
+                raise ValueError("Liability accounts do not have liquidity")
+            if self.stale_after_days is None:
+                self.stale_after_days = 45
+        return self
+
+
+class NetWorthAccount(NetWorthAccountInput):
+    id: str
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class NetWorthBalanceInput(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    account_key: str
+    amount_ils: Decimal = Field(validation_alias=AliasChoices("amount_ils", "amount"))
+    valuation_date: date
+    notes: str = ""
+
+    @field_validator("account_key")
+    @classmethod
+    def require_account_key(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value:
+            raise ValueError("Net-worth balance account_key must be non-empty")
+        return value
+
+    @field_validator("amount_ils")
+    @classmethod
+    def require_balance_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Net-worth balances must be finite and non-negative ILS amounts")
+        return value
+
+
+class NetWorthBalance(NetWorthBalanceInput):
+    account_name: str
+    side: NetWorthSide
+    category: NetWorthCategory
+    liquidity: NetWorthLiquidity | None = None
+    owner_label: str | None = None
+    stale_after_days: int
+    snapshot_date: date
+    stale: bool = False
+
+
+class NetWorthSnapshotRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str
+    revision_id: str
+    revision_number: int
+    snapshot_date: date
+    origin: NetWorthOrigin
+    notes: str = ""
+    quality_issues: list[str] = Field(default_factory=list)
+    quality_acknowledged: bool = False
+    content_hash: str
+    active_account_keys: list[str] = Field(default_factory=list)
+    source_file_id: int | None = None
+    balances: list[NetWorthBalance] = Field(default_factory=list)
+    created_at: datetime | None = None
+
+    @property
+    def stale_account_keys(self) -> list[str]:
+        return [item.account_key for item in self.balances if item.stale]
+
+    @property
+    def complete(self) -> bool:
+        return not any(code == "INCOMPLETE_ACCOUNT_COVERAGE" for code in self.quality_issues)
+
+
+class NetWorthSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_id: str
+    snapshot_id: str
+    snapshot_date: date
+    revision_number: int
+    total_assets: Decimal = Decimal(0)
+    total_liabilities: Decimal = Decimal(0)
+    net_worth: Decimal = Decimal(0)
+    liquid_assets: Decimal = Decimal(0)
+    restricted_assets: Decimal = Decimal(0)
+    illiquid_assets: Decimal = Decimal(0)
+    stale_account_keys: list[str] = Field(default_factory=list)
+    snapshot_freshness_days: int | None = None
+    by_category: dict[str, Decimal] = Field(default_factory=dict)
+    by_liquidity: dict[str, Decimal] = Field(default_factory=dict)
+    by_owner: dict[str, Decimal] = Field(default_factory=dict)
+    by_account: dict[str, Decimal] = Field(default_factory=dict)
+
+    @property
+    def assets(self) -> Decimal:
+        return self.total_assets
+
+    @property
+    def liabilities(self) -> Decimal:
+        return self.total_liabilities
+
+
+class NetWorthTrendPoint(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_date: date
+    revision_id: str
+    total_assets: Decimal
+    total_liabilities: Decimal
+    net_worth: Decimal
+    liquid_assets: Decimal
+    restricted_assets: Decimal
+    illiquid_assets: Decimal
+
+
+class NetWorthSnapshotSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str
+    snapshot_date: date
+    current_revision_number: int
+    archived: bool = False
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def id(self) -> str:
+        return self.snapshot_id
+
+
+class ForecastPoolSeed(BaseModel):
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    name: str
+    pool_type: str
+    opening_balance: Decimal
+    as_of_date: date
+    account_key: str = Field(validation_alias=AliasChoices("account_key", "net_worth_account_key"))
+    snapshot_revision_id: str = Field(
+        validation_alias=AliasChoices("snapshot_revision_id", "net_worth_snapshot_revision_id")
+    )
+    valuation_date: date
+    stale: bool = False
+    source_quality_acknowledged: bool = False
+
+    @property
+    def net_worth_account_key(self) -> str:
+        return self.account_key
+
+    @property
+    def net_worth_snapshot_revision_id(self) -> str:
+        return self.snapshot_revision_id
+
+
+class ForecastActualComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    forecast_id: str
+    forecast_revision_id: str
+    forecast_revision_number: int
+    role: str
+    observed_snapshot_revision_id: str
+    observed_snapshot_date: date
+    projected_month: date
+    account_deltas: dict[str, Decimal] = Field(default_factory=dict)
+    projected_by_account: dict[str, Decimal] = Field(default_factory=dict)
+    observed_by_account: dict[str, Decimal] = Field(default_factory=dict)
+    projected_total: Decimal = Decimal(0)
+    observed_total: Decimal = Decimal(0)
+    aggregate_delta: Decimal = Decimal(0)
+    timing_warning: str | None = None
+    valuation_date_warning: str | None = None
+
+
 def _planning_month(value: date | str | None) -> date | None:
     if value is None:
         return None
@@ -745,13 +1047,25 @@ class ForecastEventType(StrEnum):
 
 
 class ForecastPoolInput(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     name: str
     pool_id: str | None = None
     pool_type: ForecastPoolType
     opening_balance: Decimal
     as_of_date: date
+    net_worth_account_key: str | None = Field(
+        default=None, validation_alias=AliasChoices("net_worth_account_key", "account_key")
+    )
+    net_worth_snapshot_revision_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "net_worth_snapshot_revision_id", "snapshot_revision_id", "source_snapshot_revision_id"
+        ),
+    )
+    source_valuation_date: date | None = None
+    source_stale: bool = False
+    source_quality_acknowledged: bool = False
 
     @field_validator("name")
     @classmethod
@@ -768,6 +1082,14 @@ class ForecastPoolInput(BaseModel):
         if not value.is_finite() or value < 0:
             raise ValueError("Forecast opening balances must be finite and non-negative")
         return value
+
+    @property
+    def account_key(self) -> str | None:
+        return self.net_worth_account_key
+
+    @property
+    def snapshot_revision_id(self) -> str | None:
+        return self.net_worth_snapshot_revision_id
 
 
 class ForecastRoutingInput(BaseModel):
@@ -896,9 +1218,19 @@ class ForecastRevisionSnapshot(BaseModel):
     horizon_months: int = 36
     policy_version: str = "savings-forecast-v1"
     provisional_acknowledged: bool = False
+    net_worth_snapshot_revision_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "net_worth_snapshot_revision_id", "snapshot_revision_id", "source_snapshot_revision_id"
+        ),
+    )
     starting_pools: list[ForecastPoolInput] = Field(default_factory=list)
     cases: list[ForecastCaseInput]
     notes: str = ""
+
+    @property
+    def source_snapshot_revision_id(self) -> str | None:
+        return self.net_worth_snapshot_revision_id
 
     @model_validator(mode="after")
     def require_exact_cases(self) -> ForecastRevisionSnapshot:
@@ -1795,6 +2127,7 @@ __all__ = [
     "EquityRequirement",
     "ExpenseBehavior",
     "ExpenseDashboard",
+    "ForecastActualComparison",
     "ForecastAdjustment",
     "ForecastAdjustmentInput",
     "ForecastAdjustmentOperation",
@@ -1813,6 +2146,7 @@ __all__ = [
     "ForecastOverlayExpense",
     "ForecastPool",
     "ForecastPoolInput",
+    "ForecastPoolSeed",
     "ForecastPoolType",
     "ForecastProjection",
     "ForecastRevision",
@@ -1837,6 +2171,18 @@ __all__ = [
     "MonthlySeriesPoint",
     "MortgageAssumption",
     "MortgageScheduleRow",
+    "NetWorthAccount",
+    "NetWorthAccountInput",
+    "NetWorthBalance",
+    "NetWorthBalanceInput",
+    "NetWorthCategory",
+    "NetWorthLiquidity",
+    "NetWorthOrigin",
+    "NetWorthSide",
+    "NetWorthSnapshotRevision",
+    "NetWorthSnapshotSummary",
+    "NetWorthSummary",
+    "NetWorthTrendPoint",
     "NormalizedTransactionCandidate",
     "OverviewDashboard",
     "ParsedSourceRecord",

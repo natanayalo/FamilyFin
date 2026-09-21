@@ -23,6 +23,7 @@ from family_finance.models import (
     AuditReport,
     ForecastRevisionSnapshot,
 )
+from family_finance.net_worth import NetWorthService, NetWorthValidationError
 from family_finance.persistence.db import Database
 from family_finance.persistence.models import (
     ApartmentAlternativeRow,
@@ -40,6 +41,11 @@ from family_finance.persistence.models import (
     ForecastRoutingRow,
     ForecastRow,
     ImportBatchRow,
+    NetWorthAccountRow,
+    NetWorthBalanceRow,
+    NetWorthSnapshotRevisionRow,
+    NetWorthSnapshotRow,
+    NetWorthSourceFileRow,
     PlanningItemRow,
     PlanningScenarioRevisionRow,
     PlanningScenarioRow,
@@ -83,6 +89,7 @@ class AuditService:
             self._safe_check(self._batch_count_check),
             self._safe_check(self._planning_invariant_check),
             self._safe_check(self._forecast_invariant_check),
+            self._safe_check(self._net_worth_invariant_check),
             self._safe_check(self._apartment_invariant_check),
         ]
         return AuditReport(passed=all(check.passed for check in checks), checks=checks)
@@ -139,6 +146,20 @@ class AuditService:
                 path = self.settings.data_root / path
             if not path.exists():
                 relocated = sorted(self.settings.planning_archive_root.glob(f"{row.sha256}.*"))
+                if relocated:
+                    path = relocated[0]
+            if not path.exists():
+                missing = True
+            elif _sha256(path) != row.sha256:
+                mismatch = True
+        with self.database.session() as session:
+            net_worth_rows = session.execute(select(NetWorthSourceFileRow)).scalars().all()
+        for row in net_worth_rows:
+            path = Path(row.archived_path)
+            if not path.is_absolute():
+                path = self.settings.data_root / path
+            if not path.exists():
+                relocated = sorted(self.settings.net_worth_archive_root.glob(f"{row.sha256}.*"))
                 if relocated:
                     path = relocated[0]
             if not path.exists():
@@ -291,9 +312,15 @@ class AuditService:
                 for revision in revisions:
                     if revision.source_revision_id != forecast.source_revision_id or revision.source_revision_number != forecast.source_revision_number:
                         codes.append("FORECAST_SOURCE_PLAN_REFERENCE_INVALID")
+                    if revision.net_worth_snapshot_revision_id and session.get(
+                        NetWorthSnapshotRevisionRow, revision.net_worth_snapshot_revision_id
+                    ) is None:
+                        codes.append("FORECAST_NET_WORTH_SOURCE_INVALID")
+                    snapshot = None
                     try:
                         payload = json.loads(revision.assumptions_json)
                         snapshot_hash = assumption_hash(ForecastRevisionSnapshot.model_validate(payload))
+                        snapshot = ForecastRevisionSnapshot.model_validate(payload)
                         if snapshot_hash != revision.assumption_hash:
                             codes.append("FORECAST_ASSUMPTION_HASH_INVALID")
                     except (TypeError, ValueError, json.JSONDecodeError):
@@ -317,6 +344,16 @@ class AuditService:
                         pool_ids = {pool.id for pool in pools}
                         if not pools:
                             codes.append("FORECAST_POOL_SET_EMPTY")
+                        if snapshot is not None:
+                            expected_pool_names = [
+                                item.name.casefold() for item in snapshot.starting_pools
+                            ]
+                            actual_pool_names = [pool.name.casefold() for pool in pools]
+                            if (
+                                len(actual_pool_names) != len(expected_pool_names)
+                                or set(actual_pool_names) != set(expected_pool_names)
+                            ):
+                                codes.append("FORECAST_POOL_SET_INVALID")
                         for pool in pools:
                             try:
                                 amount = Decimal(pool.opening_balance)
@@ -326,11 +363,90 @@ class AuditService:
                                 codes.append("FORECAST_OPENING_BALANCE_INVALID")
                             if pool.pool_type not in {"cash", "investment"}:
                                 codes.append("FORECAST_POOL_TYPE_INVALID")
+                            if pool.net_worth_snapshot_revision_id:
+                                source_revision = session.get(
+                                    NetWorthSnapshotRevisionRow, pool.net_worth_snapshot_revision_id
+                                )
+                                if source_revision is None:
+                                    codes.append("FORECAST_NET_WORTH_SOURCE_INVALID")
+                                if revision.net_worth_snapshot_revision_id != pool.net_worth_snapshot_revision_id:
+                                    codes.append("FORECAST_NET_WORTH_SOURCE_INVALID")
+                                if source_revision is not None:
+                                    source_balance = session.execute(
+                                        select(NetWorthBalanceRow).where(
+                                            NetWorthBalanceRow.revision_id == source_revision.id,
+                                            NetWorthBalanceRow.account_key == pool.net_worth_account_key,
+                                        )
+                                    ).scalar_one_or_none()
+                                    if source_balance is None:
+                                        codes.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                    else:
+                                        try:
+                                            if Decimal(pool.opening_balance) != Decimal(source_balance.amount_ils):
+                                                codes.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                        except (InvalidOperation, TypeError, ValueError):
+                                            codes.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                        if pool.as_of_date != source_revision.snapshot_date:
+                                            codes.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                        if pool.source_valuation_date != source_balance.valuation_date:
+                                            codes.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                            elif pool.net_worth_account_key:
+                                codes.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                            if pool.net_worth_account_key and session.execute(
+                                select(NetWorthAccountRow).where(
+                                    NetWorthAccountRow.account_key == pool.net_worth_account_key
+                                )
+                            ).scalar_one_or_none() is None:
+                                codes.append("FORECAST_NET_WORTH_ACCOUNT_INVALID")
+                            if snapshot is not None:
+                                expected_pool = next(
+                                    (
+                                        item for item in snapshot.starting_pools
+                                        if item.name.casefold() == pool.name.casefold()
+                                    ),
+                                    None,
+                                )
+                                if expected_pool is None:
+                                    codes.append("FORECAST_NORMALIZED_ROWS_INVALID")
+                                else:
+                                    try:
+                                        normalized_valid = (
+                                            expected_pool.pool_type.value == pool.pool_type
+                                            and expected_pool.net_worth_account_key == pool.net_worth_account_key
+                                            and expected_pool.net_worth_snapshot_revision_id == pool.net_worth_snapshot_revision_id
+                                            and expected_pool.as_of_date.isoformat() == pool.as_of_date
+                                            and Decimal(expected_pool.opening_balance) == Decimal(pool.opening_balance)
+                                            and (
+                                                expected_pool.source_valuation_date.isoformat()
+                                                if expected_pool.source_valuation_date else None
+                                            ) == pool.source_valuation_date
+                                        )
+                                    except (InvalidOperation, TypeError, ValueError):
+                                        normalized_valid = False
+                                    if not normalized_valid:
+                                        codes.append("FORECAST_NORMALIZED_ROWS_INVALID")
                         if case.sweep_enabled and case.sweep_pool_id not in pool_ids:
                             codes.append("FORECAST_SWEEP_POOL_INVALID")
                         routes = session.execute(
                             select(ForecastRoutingRow).where(ForecastRoutingRow.case_id == case.id)
                         ).scalars().all()
+                        if snapshot is not None:
+                            expected_case = next(
+                                (item for item in snapshot.cases if item.role.value == case.role),
+                                None,
+                            )
+                            if expected_case is None:
+                                codes.append("FORECAST_NORMALIZED_ROWS_INVALID")
+                            else:
+                                expected_route_ids = {
+                                    route.source_item_id for route in expected_case.routes
+                                }
+                                actual_route_ids = {route.source_item_id for route in routes}
+                                if (
+                                    len(routes) != len(expected_case.routes)
+                                    or actual_route_ids != expected_route_ids
+                                ):
+                                    codes.append("FORECAST_NORMALIZED_ROWS_INVALID")
                         for route in routes:
                             if route.pool_id not in pool_ids:
                                 codes.append("FORECAST_ROUTING_POOL_INVALID")
@@ -340,12 +456,72 @@ class AuditService:
                         events = session.execute(
                             select(ForecastEventRow).where(ForecastEventRow.case_id == case.id)
                         ).scalars().all()
+                        if snapshot is not None and expected_case is not None:
+                            pool_name_by_id = {pool.id: pool.name for pool in pools}
+                            try:
+                                expected_events = {
+                                    (
+                                        event.event_type.value,
+                                        event.month,
+                                        Decimal(event.amount),
+                                        event.label,
+                                        event.pool_name,
+                                    )
+                                    for event in expected_case.events
+                                }
+                                actual_events = {
+                                    (
+                                        event.event_type,
+                                        event.month,
+                                        Decimal(event.amount),
+                                        event.label,
+                                        pool_name_by_id.get(event.pool_id),
+                                    )
+                                    for event in events
+                                }
+                            except (InvalidOperation, TypeError, ValueError):
+                                expected_events = set()
+                                actual_events = {None}
+                            if len(events) != len(expected_case.events) or actual_events != expected_events:
+                                codes.append("FORECAST_NORMALIZED_ROWS_INVALID")
                         for event in events:
                             if event.event_type in {"contribution", "withdrawal"} and event.pool_id not in pool_ids:
                                 codes.append("FORECAST_EVENT_POOL_INVALID")
                         adjustments = session.execute(
                             select(ForecastAdjustmentRow).where(ForecastAdjustmentRow.case_id == case.id)
                         ).scalars().all()
+                        if snapshot is not None and expected_case is not None:
+                            try:
+                                expected_adjustments = {
+                                    (
+                                        adjustment.target_type.value,
+                                        adjustment.target,
+                                        adjustment.operation.value,
+                                        Decimal(adjustment.value),
+                                        adjustment.start_month,
+                                        adjustment.end_month,
+                                    )
+                                    for adjustment in expected_case.adjustments
+                                }
+                                actual_adjustments = {
+                                    (
+                                        adjustment.target_type,
+                                        adjustment.target,
+                                        adjustment.operation,
+                                        Decimal(adjustment.value),
+                                        adjustment.start_month,
+                                        adjustment.end_month,
+                                    )
+                                    for adjustment in adjustments
+                                }
+                            except (InvalidOperation, TypeError, ValueError):
+                                expected_adjustments = set()
+                                actual_adjustments = {None}
+                            if (
+                                len(adjustments) != len(expected_case.adjustments)
+                                or actual_adjustments != expected_adjustments
+                            ):
+                                codes.append("FORECAST_NORMALIZED_ROWS_INVALID")
                         occupied: set[tuple[str, int]] = set()
                         for adjustment in adjustments:
                             end = adjustment.end_month or 36
@@ -355,6 +531,48 @@ class AuditService:
                                     codes.append("FORECAST_ADJUSTMENT_OVERLAP")
                                 occupied.add(key)
         return self._check("forecast_invariants", not codes, *sorted(set(codes)))
+
+    def _net_worth_invariant_check(self) -> AuditCheck:
+        codes: list[str] = []
+        service = NetWorthService(self.database, self.settings)
+        with self.database.session() as session:
+            accounts = session.execute(select(NetWorthAccountRow)).scalars().all()
+            identities = session.execute(select(NetWorthSnapshotRow)).scalars().all()
+            revisions = session.execute(
+                select(NetWorthSnapshotRevisionRow).order_by(NetWorthSnapshotRevisionRow.snapshot_date, NetWorthSnapshotRevisionRow.revision_number)
+            ).scalars().all()
+        for account in accounts:
+            if account.side not in {"asset", "liability"}:
+                codes.append("NET_WORTH_ACCOUNT_SIDE_INVALID")
+            if account.side == "asset" and account.liquidity not in {"liquid", "restricted", "illiquid"}:
+                codes.append("NET_WORTH_ASSET_LIQUIDITY_INVALID")
+            if account.side == "liability" and account.liquidity is not None:
+                codes.append("NET_WORTH_LIABILITY_LIQUIDITY_INVALID")
+            if account.active_to and account.active_to < account.active_from:
+                codes.append("NET_WORTH_ACCOUNT_DATES_INVALID")
+        for identity in identities:
+            identity_revisions = [row for row in revisions if row.snapshot_id == identity.id]
+            numbers = [row.revision_number for row in identity_revisions]
+            if numbers != list(range(1, identity.current_revision_number + 1)):
+                codes.append("NET_WORTH_REVISION_SEQUENCE_INVALID")
+            if not identity_revisions or identity_revisions[-1].revision_number != identity.current_revision_number:
+                codes.append("NET_WORTH_CURRENT_REVISION_POINTER_INVALID")
+        for row in revisions:
+            try:
+                snapshot = service._revision_from_row(row)
+                active = set(snapshot.active_account_keys) or {
+                    item.account_key for item in snapshot.balances
+                }
+                actual = {item.account_key for item in snapshot.balances}
+                if actual != active:
+                    codes.append("NET_WORTH_ACCOUNT_COVERAGE_INVALID")
+                if any(item.snapshot_date != snapshot.snapshot_date for item in snapshot.balances):
+                    codes.append("NET_WORTH_BALANCE_SNAPSHOT_DATE_INVALID")
+                if any(item.valuation_date > snapshot.snapshot_date for item in snapshot.balances):
+                    codes.append("NET_WORTH_FUTURE_VALUATION_DATE")
+            except (TypeError, ValueError, InvalidOperation, NetWorthValidationError):
+                codes.append("NET_WORTH_REVISION_INVALID")
+        return self._check("net_worth_invariants", not codes, *sorted(set(codes)))
 
     def _apartment_invariant_check(self) -> AuditCheck:
         """Verify apartment study continuity and pinned forecast integrity."""

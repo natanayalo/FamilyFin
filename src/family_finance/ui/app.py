@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import date
+from datetime import UTC, date, datetime
 from decimal import Decimal
 
 os.environ.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
@@ -36,6 +36,8 @@ def main() -> None:
         ForecastTargetType,
         HousingCostInput,
         MortgageAssumption,
+        NetWorthAccountInput,
+        NetWorthBalanceInput,
         PlanningFrequency,
         PlanningItem,
         PlanningItemInput,
@@ -43,6 +45,11 @@ def main() -> None:
         PoolDrawInput,
         PurchaseAlternativeInput,
         PurchaseCostInput,
+    )
+    from family_finance.net_worth import (
+        ExistingSnapshotRevisionError,
+        NetWorthPreviewStaleError,
+        NetWorthValidationError,
     )
     from family_finance.planning import (
         DuplicateSeedError,
@@ -748,6 +755,69 @@ def main() -> None:
             st.warning("This planning revision is provisional: " + ", ".join(source.issue_codes or ["seed quality gaps"]) + ".")
 
         st.subheader("Shared starting pools")
+        net_worth = service.net_worth_service
+        net_worth_snapshots = net_worth.list_snapshots(include_archived=False)
+        if net_worth_snapshots:
+            with st.expander("Seed from Net Worth"):
+                selected_nw_snapshot = st.selectbox(
+                    "Exact observed snapshot",
+                    [item.id for item in net_worth_snapshots],
+                    format_func=lambda value: next(
+                        f"{item.snapshot_date} · revision {item.current_revision_number}"
+                        for item in net_worth_snapshots if item.id == value
+                    ),
+                    key="forecast-net-worth-snapshot",
+                )
+                nw_revisions = net_worth.list_revisions(selected_nw_snapshot)
+                selected_nw_revision = st.selectbox(
+                    "Exact snapshot revision",
+                    [item.revision_id for item in nw_revisions],
+                    format_func=lambda value: next(
+                        f"revision {item.revision_number} · {item.content_hash[:12]}"
+                        for item in nw_revisions if item.revision_id == value
+                    ),
+                    key="forecast-net-worth-revision",
+                )
+                nw_revision = next(item for item in nw_revisions if item.revision_id == selected_nw_revision)
+                eligible = [item for item in nw_revision.balances if item.side.value == "asset" and item.liquidity and item.liquidity.value == "liquid"]
+                selected_accounts = st.multiselect(
+                    "Liquid asset accounts",
+                    [item.account_key for item in eligible],
+                    format_func=lambda value: next(item.account_name for item in eligible if item.account_key == value),
+                    key="forecast-net-worth-accounts",
+                )
+                seed_rows = st.data_editor(
+                    [{"account_key": key, "pool_type": ForecastPoolType.CASH.value} for key in selected_accounts],
+                    hide_index=True,
+                    use_container_width=True,
+                    key="forecast-net-worth-seed-editor",
+                    column_config={"pool_type": st.column_config.SelectboxColumn("Pool type", options=[value.value for value in ForecastPoolType])},
+                    disabled=["account_key"],
+                )
+                if any(item.stale for item in eligible if item.account_key in selected_accounts):
+                    st.warning("One or more selected source balances are stale. The forecast requires a separate acknowledgement.")
+                if st.button("Use selected accounts as forecast pools", key="forecast-seed-net-worth"):
+                    try:
+                        pool_types = {str(row["account_key"]): str(row["pool_type"]) for row in seed_rows}
+                        seeds = net_worth.create_forecast_pool_seeds(selected_nw_revision, selected_accounts, pool_types)
+                        st.session_state["forecast-pools"] = [
+                            {
+                                "name": seed.name,
+                                "pool_type": seed.pool_type,
+                                "opening_balance": str(seed.opening_balance),
+                                "as_of_date": seed.as_of_date.isoformat(),
+                                "net_worth_account_key": seed.account_key,
+                                "net_worth_snapshot_revision_id": seed.snapshot_revision_id,
+                                "source_valuation_date": seed.valuation_date.isoformat(),
+                                "source_stale": seed.stale,
+                                "source_quality_acknowledged": False,
+                            }
+                            for seed in seeds
+                        ]
+                        st.success("Forecast pools seeded from the exact snapshot revision")
+                        st.rerun()
+                    except (NetWorthValidationError, ValueError) as exc:
+                        st.error(f"Net Worth seed validation: {exc}")
         pool_rows = st.data_editor(
             st.session_state.get("forecast-pools", [{
                 "name": "Cash",
@@ -766,12 +836,25 @@ def main() -> None:
             },
         )
         try:
+            stale_seed_pools = [row for row in pool_rows if row.get("source_stale")]
+            source_quality_ack = st.checkbox(
+                "I acknowledge stale Net Worth source balances for this forecast",
+                key="forecast-net-worth-source-ack",
+            ) if stale_seed_pools else False
             pools = [
                 ForecastPoolInput(
                     name=str(row.get("name") or "").strip(),
                     pool_type=row.get("pool_type"),
                     opening_balance=Decimal(str(row.get("opening_balance") or "0")),
                     as_of_date=date.fromisoformat(str(row.get("as_of_date") or scenario.start_month)),
+                    net_worth_account_key=str(row.get("net_worth_account_key") or "").strip() or None,
+                    net_worth_snapshot_revision_id=str(row.get("net_worth_snapshot_revision_id") or "").strip() or None,
+                    source_valuation_date=(
+                        date.fromisoformat(str(row.get("source_valuation_date")))
+                        if row.get("source_valuation_date") else None
+                    ),
+                    source_stale=bool(row.get("source_stale", False)),
+                    source_quality_acknowledged=bool(row.get("source_quality_acknowledged", False)) or source_quality_ack,
                 )
                 for row in pool_rows
                 if str(row.get("name") or "").strip()
@@ -982,6 +1065,309 @@ def main() -> None:
         if saved:
             st.subheader("Saved forecasts")
             st.dataframe([item.model_dump(mode="json") for item in saved], use_container_width=True, hide_index=True)
+
+    def net_worth_page() -> None:
+        st.title("Net Worth")
+        st.caption(
+            "Observed account snapshots in ILS. Transactions, forecasts, and apartment assumptions never create balances automatically."
+        )
+        net_worth = service.net_worth_service
+        with st.expander("Account registry", expanded=not net_worth.list_accounts()):
+            registry_columns = st.columns(4)
+            account_key = registry_columns[0].text_input("Account key", key="net-worth-account-key")
+            display_name = registry_columns[1].text_input("Display name", key="net-worth-account-name")
+            side = registry_columns[2].selectbox("Side", ["asset", "liability"], key="net-worth-account-side")
+            owner = registry_columns[3].text_input("Owner label (optional)", key="net-worth-account-owner")
+            registry_columns = st.columns(4)
+            asset_categories = ["cash", "savings", "investment", "pension", "training_fund", "property", "other"]
+            liability_categories = ["mortgage", "loan", "credit", "other"]
+            category = registry_columns[0].selectbox(
+                "Category", asset_categories if side == "asset" else liability_categories,
+                key="net-worth-account-category",
+            )
+            liquidity = registry_columns[1].selectbox(
+                "Liquidity", ["liquid", "restricted", "illiquid"] if side == "asset" else ["(not applicable)"],
+                key="net-worth-account-liquidity",
+            )
+            active_from = registry_columns[2].date_input("Active from", value=datetime.now(UTC).date(), key="net-worth-account-active-from")
+            stale_days = registry_columns[3].number_input("Stale after days", min_value=1, value=45, key="net-worth-account-stale-days")
+            if st.button("Create account", key="net-worth-create-account"):
+                try:
+                    net_worth.create_account(NetWorthAccountInput(
+                        account_key=account_key,
+                        display_name=display_name,
+                        side=side,
+                        category=category,
+                        liquidity=None if side == "liability" else liquidity,
+                        owner_label=owner or None,
+                        active_from=active_from,
+                        stale_after_days=int(stale_days),
+                    ))
+                    st.success("Account created")
+                    st.rerun()
+                except (NetWorthValidationError, ValueError) as exc:
+                    st.error(str(exc))
+            accounts = net_worth.list_accounts()
+            if accounts:
+                st.dataframe([
+                    {
+                        "account_key": item.account_key,
+                        "name": item.display_name,
+                        "side": item.side.value,
+                        "category": item.category.value,
+                        "liquidity": item.liquidity.value if item.liquidity else "",
+                        "owner": item.owner_label or "Shared",
+                        "active_from": item.active_from,
+                        "active_to": item.active_to,
+                        "stale_after_days": item.stale_after_days,
+                    }
+                    for item in accounts
+                ], use_container_width=True, hide_index=True)
+                lifecycle_key = st.selectbox("Account lifecycle", [item.account_key for item in accounts], key="net-worth-lifecycle-account")
+                lifecycle_account = next(item for item in accounts if item.account_key == lifecycle_key)
+                if lifecycle_account.active_to is None:
+                    close_date = st.date_input("Close on", value=datetime.now(UTC).date(), key="net-worth-close-date")
+                    if st.button("Close account", key="net-worth-close-account"):
+                        net_worth.close_account(lifecycle_key, close_date)
+                        st.rerun()
+                elif st.button("Reactivate account", key="net-worth-reactivate-account"):
+                    net_worth.reactivate_account(lifecycle_key)
+                    st.rerun()
+
+        snapshots = net_worth.list_snapshots(include_archived=True)
+        snapshot_date = st.date_input("Snapshot date", value=datetime.now(UTC).date(), key="net-worth-snapshot-date")
+        existing = next((item for item in snapshots if item.snapshot_date == snapshot_date), None)
+        selected_revision = net_worth.get_revision(existing.id) if existing else None
+        historical_accounts = net_worth.accounts_for_snapshot_date(snapshot_date)
+        editor_accounts = selected_revision.balances if selected_revision else historical_accounts
+        if editor_accounts:
+            baseline = {
+                item.account_key: item
+                for item in (selected_revision.balances if selected_revision else [])
+            }
+            with st.expander("Manual snapshot", expanded=True):
+                editor_rows = [
+                    {
+                        "account_key": item.account_key,
+                        "account_name": item.account_name if selected_revision else item.display_name,
+                        "amount_ils": str(baseline[item.account_key].amount_ils) if item.account_key in baseline else "0",
+                        "valuation_date": baseline[item.account_key].valuation_date.isoformat() if item.account_key in baseline else snapshot_date.isoformat(),
+                        "notes": baseline[item.account_key].notes if item.account_key in baseline else "",
+                    }
+                    for item in editor_accounts
+                ]
+                edited = st.data_editor(editor_rows, disabled=["account_key", "account_name"], hide_index=True, use_container_width=True, key="net-worth-manual-editor")
+                acknowledge_stale = st.checkbox("I acknowledge stale valuation warnings", key="net-worth-manual-stale-ack")
+                if st.button("Save net-worth snapshot", type="primary", key="net-worth-save-manual"):
+                    try:
+                        balances = [NetWorthBalanceInput(
+                            account_key=str(row["account_key"]), amount_ils=Decimal(str(row["amount_ils"])),
+                            valuation_date=date.fromisoformat(str(row["valuation_date"])), notes=str(row.get("notes") or ""),
+                        ) for row in edited]
+                        if existing:
+                            net_worth.save_revision(existing.id, balances, expected_revision_number=existing.current_revision_number, quality_acknowledged=acknowledge_stale)
+                        else:
+                            net_worth.create_snapshot(snapshot_date, balances, quality_acknowledged=acknowledge_stale)
+                        st.success("Snapshot saved")
+                        st.rerun()
+                    except (NetWorthValidationError, ValueError) as exc:
+                        st.error(str(exc))
+
+            st.download_button("Download CSV template", net_worth.csv_template(snapshot_date), "net-worth-template.csv", "text/csv", key="net-worth-template")
+            with st.expander("Strict CSV import"):
+                upload = st.file_uploader("Net-worth CSV", type=["csv"], key="net-worth-csv-upload")
+                if upload is not None and st.button("Preview net-worth CSV", key="net-worth-csv-preview"):
+                    try:
+                        preview = net_worth.preview_csv(upload.getvalue(), upload.name)
+                        st.session_state["net-worth-csv-preview"] = preview
+                        st.session_state["net-worth-csv-bytes"] = upload.getvalue()
+                    except (NetWorthValidationError, ValueError) as exc:
+                        st.error(str(exc))
+                preview = st.session_state.get("net-worth-csv-preview")
+                if preview:
+                    st.json(preview.model_dump(mode="json"))
+                    csv_ack = st.checkbox("I acknowledge stale CSV valuations", key="net-worth-csv-stale-ack")
+                    new_revision = st.checkbox("Create a new revision if this snapshot date already exists", key="net-worth-csv-new-revision")
+                    if st.button("Commit net-worth CSV", key="net-worth-csv-commit"):
+                        try:
+                            net_worth.commit_csv(
+                                st.session_state["net-worth-csv-bytes"], preview.preview_token, preview.filename,
+                                create_new_revision=new_revision, quality_acknowledged=csv_ack,
+                            )
+                            st.session_state.pop("net-worth-csv-preview", None)
+                            st.success("Net-worth CSV committed")
+                            st.rerun()
+                        except (NetWorthPreviewStaleError, ExistingSnapshotRevisionError, NetWorthValidationError) as exc:
+                            st.error(str(exc))
+
+        if snapshots:
+            st.subheader("Snapshot revision history")
+            history_snapshot_id = st.selectbox(
+                "Snapshot",
+                [item.id for item in snapshots],
+                index=next((index for index, item in enumerate(snapshots) if item.id == (existing.id if existing else snapshots[0].id)), 0),
+                format_func=lambda value: next(
+                    f"{item.snapshot_date.isoformat()} · {item.id[:8]}{' · archived' if item.archived else ''}"
+                    for item in snapshots if item.id == value
+                ),
+                key="net-worth-history-snapshot",
+            )
+            history_snapshot = next(item for item in snapshots if item.id == history_snapshot_id)
+            history_revisions = net_worth.list_revisions(history_snapshot_id)
+            history_revision_number = st.selectbox(
+                "Revision",
+                [item.revision_number for item in history_revisions],
+                index=len(history_revisions) - 1,
+                key="net-worth-history-revision",
+            )
+            selected_history_revision = next(
+                item for item in history_revisions if item.revision_number == history_revision_number
+            )
+            st.caption(
+                f"Selected revision {selected_history_revision.revision_number} · "
+                f"{len(selected_history_revision.balances)} captured accounts"
+            )
+            st.dataframe([
+                {
+                    "revision": item.revision_number,
+                    "origin": item.origin.value,
+                    "content_hash": item.content_hash,
+                    "quality_issues": ", ".join(item.quality_issues),
+                    "created_at": item.created_at,
+                }
+                for item in history_revisions
+            ], use_container_width=True, hide_index=True)
+            history_actions = st.columns(3)
+            if history_actions[0].button(
+                "Restore selected revision",
+                disabled=history_snapshot.archived,
+                key="net-worth-restore-revision",
+            ):
+                try:
+                    net_worth.restore_revision(
+                        history_snapshot_id,
+                        history_revision_number,
+                        expected_revision_number=history_snapshot.current_revision_number,
+                    )
+                    st.success("Revision restored as a new immutable revision")
+                    st.rerun()
+                except NetWorthValidationError as exc:
+                    st.error(str(exc))
+            if history_actions[1].button(
+                "Archive snapshot" if not history_snapshot.archived else "Unarchive snapshot",
+                key="net-worth-toggle-archive",
+            ):
+                net_worth.archive_snapshot(history_snapshot_id, not history_snapshot.archived)
+                st.rerun()
+            history_actions[2].caption(
+                f"Current revision {history_snapshot.current_revision_number}"
+            )
+
+        all_accounts = net_worth.list_accounts()
+        if all_accounts:
+            st.subheader("Account history")
+            history_account_key = st.selectbox(
+                "Account",
+                [item.account_key for item in all_accounts],
+                format_func=lambda value: next(
+                    f"{item.display_name} ({item.account_key})" for item in all_accounts if item.account_key == value
+                ),
+                key="net-worth-account-history",
+            )
+            st.dataframe(
+                net_worth.account_history(history_account_key),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        saved_forecasts = service.savings_forecast_service.list_forecasts(include_archived=False)
+        if saved_forecasts and snapshots:
+            with st.expander("Forecast vs actual", expanded=False):
+                forecast_id = st.selectbox(
+                    "Forecast",
+                    [item.forecast_id for item in saved_forecasts],
+                    format_func=lambda value: next(
+                        item.name for item in saved_forecasts if item.forecast_id == value
+                    ),
+                    key="net-worth-comparison-forecast",
+                )
+                forecast_revision_summaries = service.savings_forecast_service.list_revisions(forecast_id)
+                forecast_revision_number = st.selectbox(
+                    "Forecast revision",
+                    [item.revision_number for item in forecast_revision_summaries],
+                    index=len(forecast_revision_summaries) - 1,
+                    key="net-worth-comparison-forecast-revision",
+                )
+                observed_snapshot_id = st.selectbox(
+                    "Observed snapshot",
+                    [item.id for item in snapshots],
+                    format_func=lambda value: next(
+                        item.snapshot_date.isoformat() for item in snapshots if item.id == value
+                    ),
+                    key="net-worth-comparison-snapshot",
+                )
+                observed_revisions = net_worth.list_revisions(observed_snapshot_id)
+                observed_revision_number = st.selectbox(
+                    "Observed revision",
+                    [item.revision_number for item in observed_revisions],
+                    index=len(observed_revisions) - 1,
+                    key="net-worth-comparison-snapshot-revision",
+                )
+                comparison_role = st.selectbox(
+                    "Case",
+                    ["conservative", "baseline", "optimistic"],
+                    index=1,
+                    key="net-worth-comparison-role",
+                )
+                if st.button("Compare forecast to actual", key="net-worth-compare-forecast"):
+                    try:
+                        comparison = net_worth.compare_forecast_actual(
+                            forecast_id,
+                            observed_revisions[observed_revision_number - 1].revision_id,
+                            forecast_revision_number,
+                            role=comparison_role,
+                        )
+                        st.metric("Aggregate delta", f"{comparison.aggregate_delta:,.2f} ILS")
+                        st.dataframe([
+                            {
+                                "account_key": key,
+                                "projected_ils": comparison.projected_by_account[key],
+                                "observed_ils": comparison.observed_by_account[key],
+                                "delta_ils": comparison.account_deltas[key],
+                            }
+                            for key in comparison.projected_by_account
+                        ], use_container_width=True, hide_index=True)
+                        if comparison.timing_warning:
+                            st.warning(comparison.timing_warning)
+                        if comparison.valuation_date_warning:
+                            st.warning(comparison.valuation_date_warning)
+                    except (NetWorthValidationError, ValueError) as exc:
+                        st.error(str(exc))
+
+        try:
+            summary = net_worth.current_summary()
+        except NetWorthValidationError:
+            st.info("Create at least one complete snapshot to see household net worth.")
+        else:
+            cols = st.columns(6)
+            cols[0].metric("Assets", f"{summary.total_assets:,.2f} ILS")
+            cols[1].metric("Liabilities", f"{summary.total_liabilities:,.2f} ILS")
+            cols[2].metric("Net worth", f"{summary.net_worth:,.2f} ILS")
+            cols[3].metric("Liquid", f"{summary.liquid_assets:,.2f} ILS")
+            cols[4].metric("Restricted", f"{summary.restricted_assets:,.2f} ILS")
+            cols[5].metric("Illiquid", f"{summary.illiquid_assets:,.2f} ILS")
+            st.caption(f"Snapshot {summary.snapshot_date} · freshness {summary.snapshot_freshness_days} days")
+            if summary.stale_account_keys:
+                st.warning("Stale valuations: " + ", ".join(summary.stale_account_keys))
+            st.subheader("Breakdowns")
+            st.dataframe([
+                {"category": key, "amount_ils": value} for key, value in summary.by_category.items()
+            ], use_container_width=True, hide_index=True)
+            st.dataframe([
+                {"owner": key, "amount_ils": value} for key, value in summary.by_owner.items()
+            ], use_container_width=True, hide_index=True)
+            st.subheader("Trend")
+            st.dataframe([item.model_dump(mode="json") for item in net_worth.trend()], use_container_width=True, hide_index=True)
 
     def apartment_plan_page() -> None:
         st.title("Apartment Plan")
@@ -1375,6 +1761,7 @@ def main() -> None:
         st.Page(data_quality_page, title="Data Quality", icon="✅"),
         st.Page(classification_page, title="Classification", icon="🏷️"),
         st.Page(planning_page, title="Planning", icon="📅"),
+        st.Page(net_worth_page, title="Net Worth", icon="💎"),
         st.Page(savings_forecast_page, title="Savings Forecast", icon="📈"),
         st.Page(apartment_plan_page, title="Apartment Plan", icon="🏠"),
     ]

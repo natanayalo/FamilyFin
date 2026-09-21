@@ -25,8 +25,12 @@ from family_finance.models import (
     BackupVerification,
     ForecastRevisionSnapshot,
 )
-from family_finance.persistence.db import Database
-from family_finance.persistence.models import PlanningSourceFileRow, SourceFileRow
+from family_finance.persistence.db import Database, json_dumps
+from family_finance.persistence.models import (
+    NetWorthSourceFileRow,
+    PlanningSourceFileRow,
+    SourceFileRow,
+)
 
 
 def _hash_file(path: Path) -> str:
@@ -145,7 +149,7 @@ class BackupService:
         copied_hashes = {
             str(item["sha256"])
             for item in manifest.files
-            if str(item["relative_path"]).startswith(("imports/", "planning-imports/"))
+            if str(item["relative_path"]).startswith(("imports/", "planning-imports/", "net-worth-imports/"))
         }
         archive_ok = source_hashes.issubset(copied_hashes)
         checks.append(AuditCheck(
@@ -189,6 +193,7 @@ class BackupService:
                 checks.append(BackupService._verify_provenance(connection))
                 checks.append(BackupService._verify_planning(connection))
                 checks.append(BackupService._verify_forecasting(connection))
+                checks.append(BackupService._verify_net_worth(connection))
                 checks.append(BackupService._verify_apartment_planning(connection))
                 source_hashes = {
                     str(row[0])
@@ -197,6 +202,10 @@ class BackupService:
                 source_hashes.update(
                     str(row[0])
                     for row in connection.execute("SELECT sha256 FROM planning_source_files").fetchall()
+                )
+                source_hashes.update(
+                    str(row[0])
+                    for row in connection.execute("SELECT sha256 FROM net_worth_source_files").fetchall()
                 )
                 return checks, source_hashes
         except (sqlite3.DatabaseError, OSError):
@@ -217,10 +226,13 @@ class BackupService:
         archive_target.mkdir()
         planning_archive_target = root / "planning-imports"
         planning_archive_target.mkdir()
+        net_worth_archive_target = root / "net-worth-imports"
+        net_worth_archive_target.mkdir()
         database_path = root / database.path.name
         with database.session() as session:
             source_files = session.query(SourceFileRow).all()
             planning_source_files = session.query(PlanningSourceFileRow).all()
+            net_worth_source_files = session.query(NetWorthSourceFileRow).all()
         with sqlite3.connect(str(database_path)) as connection:
             for source_file in source_files:
                 source = Path(source_file.archived_path)
@@ -255,6 +267,23 @@ class BackupService:
                 connection.execute(
                     "UPDATE planning_source_files SET archived_path = ? WHERE sha256 = ?",
                     (f"planning-imports/{target.name}", source_file.sha256),
+                )
+            for source_file in net_worth_source_files:
+                source = Path(source_file.archived_path)
+                if not source.is_absolute():
+                    source = self.settings.data_root / source
+                if not source.is_file():
+                    relocated = sorted(self.settings.net_worth_archive_root.glob(f"{source_file.sha256}.*"))
+                    if relocated:
+                        source = relocated[0]
+                if not source.is_file():
+                    raise FileNotFoundError("A net-worth source archive is missing")
+                target = net_worth_archive_target / f"{source_file.sha256}{source.suffix.lower() or '.csv'}"
+                if not target.exists():
+                    shutil.copy2(source, target)
+                connection.execute(
+                    "UPDATE net_worth_source_files SET archived_path = ? WHERE sha256 = ?",
+                    (f"net-worth-imports/{target.name}", source_file.sha256),
                 )
             connection.commit()
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -355,8 +384,9 @@ class BackupService:
             ]
             if numbers != list(range(1, int(current_revision) + 1)):
                 invalid.append("FORECAST_REVISION_SEQUENCE_INVALID")
-            for revision_id, revision_source_id, revision_source_number, stored_hash, assumptions in connection.execute(
-                "SELECT id, source_revision_id, source_revision_number, assumption_hash, assumptions_json "
+            for revision_id, revision_source_id, revision_source_number, stored_hash, assumptions, net_worth_source_id in connection.execute(
+                "SELECT id, source_revision_id, source_revision_number, assumption_hash, assumptions_json, "
+                "net_worth_snapshot_revision_id "
                 "FROM savings_forecast_revisions WHERE forecast_id = ?",
                 (forecast_id,),
             ).fetchall():
@@ -367,6 +397,7 @@ class BackupService:
                     if assumption_hash(snapshot) != stored_hash:
                         invalid.append("FORECAST_ASSUMPTION_HASH_INVALID")
                 except (TypeError, ValueError, json.JSONDecodeError):
+                    snapshot = None
                     invalid.append("FORECAST_ASSUMPTIONS_INVALID")
                 roles = [
                     str(row[0])
@@ -378,11 +409,11 @@ class BackupService:
                 if roles != ["baseline", "conservative", "optimistic"]:
                     invalid.append("FORECAST_CASE_SET_INVALID")
                 case_rows = connection.execute(
-                    "SELECT id, annual_return_rate, sweep_enabled, sweep_pool_id "
+                    "SELECT id, role, annual_return_rate, sweep_enabled, sweep_pool_id "
                     "FROM savings_forecast_cases WHERE revision_id = ?",
                     (revision_id,),
                 ).fetchall()
-                for case_id, annual_return_rate, sweep_enabled, sweep_pool_id in case_rows:
+                for case_id, case_role, annual_return_rate, sweep_enabled, sweep_pool_id in case_rows:
                     try:
                         rate = Decimal(str(annual_return_rate))
                         if not rate.is_finite() or rate <= Decimal(-1):
@@ -398,6 +429,122 @@ class BackupService:
                     }
                     if not pool_ids:
                         invalid.append("FORECAST_POOL_SET_EMPTY")
+                    if snapshot is not None:
+                        expected_pool_names = [
+                            item.name.casefold() for item in snapshot.starting_pools
+                        ]
+                        actual_pool_names = [
+                            str(row[0]).casefold()
+                            for row in connection.execute(
+                                "SELECT name FROM savings_forecast_pools WHERE case_id = ?",
+                                (case_id,),
+                            ).fetchall()
+                        ]
+                        if (
+                            len(actual_pool_names) != len(expected_pool_names)
+                            or set(actual_pool_names) != set(expected_pool_names)
+                        ):
+                            invalid.append("FORECAST_POOL_SET_INVALID")
+                    expected_case = (
+                        next(
+                            (item for item in snapshot.cases if item.role.value == case_role),
+                            None,
+                        )
+                        if snapshot is not None
+                        else None
+                    )
+                    if snapshot is not None and expected_case is None:
+                        invalid.append("FORECAST_NORMALIZED_ROWS_INVALID")
+                    if expected_case is not None:
+                        expected_route_ids = {
+                            route.source_item_id for route in expected_case.routes
+                        }
+                        actual_route_ids = {
+                            str(row[0])
+                            for row in connection.execute(
+                                "SELECT source_item_id FROM savings_forecast_routings WHERE case_id = ?",
+                                (case_id,),
+                            ).fetchall()
+                        }
+                        if (
+                            len(actual_route_ids) != len(expected_route_ids)
+                            or actual_route_ids != expected_route_ids
+                        ):
+                            invalid.append("FORECAST_NORMALIZED_ROWS_INVALID")
+                    for (
+                        pool_id,
+                        pool_name,
+                        pool_type,
+                        opening_balance,
+                        as_of_date,
+                        source_account_key,
+                        source_snapshot_revision_id,
+                        source_valuation_date,
+                    ) in connection.execute(
+                        "SELECT id, name, pool_type, opening_balance, as_of_date, "
+                        "net_worth_account_key, net_worth_snapshot_revision_id, source_valuation_date "
+                        "FROM savings_forecast_pools WHERE case_id = ?",
+                        (case_id,),
+                    ).fetchall():
+                        if source_account_key:
+                            account = connection.execute(
+                                "SELECT 1 FROM net_worth_accounts WHERE account_key = ?",
+                                (source_account_key,),
+                            ).fetchone()
+                            if account is None:
+                                invalid.append("FORECAST_NET_WORTH_ACCOUNT_INVALID")
+                        if source_snapshot_revision_id:
+                            if net_worth_source_id != source_snapshot_revision_id:
+                                invalid.append("FORECAST_NET_WORTH_SOURCE_INVALID")
+                            source_revision = connection.execute(
+                                "SELECT snapshot_date FROM net_worth_snapshot_revisions WHERE id = ?",
+                                (source_snapshot_revision_id,),
+                            ).fetchone()
+                            if source_revision is None:
+                                invalid.append("FORECAST_NET_WORTH_SOURCE_INVALID")
+                            else:
+                                source_balance = connection.execute(
+                                    "SELECT amount_ils, valuation_date FROM net_worth_balances "
+                                    "WHERE revision_id = ? AND account_key = ?",
+                                    (source_snapshot_revision_id, source_account_key),
+                                ).fetchone()
+                                if source_balance is None:
+                                    invalid.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                else:
+                                    try:
+                                        if Decimal(str(opening_balance)) != Decimal(str(source_balance[0])):
+                                            invalid.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                    except (InvalidOperation, TypeError, ValueError):
+                                        invalid.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                                    if as_of_date != source_revision[0] or source_valuation_date != source_balance[1]:
+                                        invalid.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                        else:
+                            if source_account_key or source_snapshot_revision_id:
+                                invalid.append("FORECAST_NET_WORTH_PROVENANCE_INVALID")
+                        if snapshot is not None:
+                            expected_pool = next(
+                                (item for item in snapshot.starting_pools if item.name.casefold() == str(pool_name).casefold()),
+                                None,
+                            )
+                            if expected_pool is None:
+                                invalid.append("FORECAST_NORMALIZED_ROWS_INVALID")
+                            else:
+                                try:
+                                    normalized_valid = (
+                                        expected_pool.pool_type.value == pool_type
+                                        and expected_pool.net_worth_account_key == source_account_key
+                                        and expected_pool.net_worth_snapshot_revision_id == source_snapshot_revision_id
+                                        and expected_pool.as_of_date.isoformat() == as_of_date
+                                        and Decimal(expected_pool.opening_balance) == Decimal(str(opening_balance))
+                                        and (
+                                            expected_pool.source_valuation_date.isoformat()
+                                            if expected_pool.source_valuation_date else None
+                                        ) == source_valuation_date
+                                    )
+                                except (InvalidOperation, TypeError, ValueError):
+                                    normalized_valid = False
+                                if not normalized_valid:
+                                    invalid.append("FORECAST_NORMALIZED_ROWS_INVALID")
                     if bool(sweep_enabled) and str(sweep_pool_id) not in pool_ids:
                         invalid.append("FORECAST_SWEEP_POOL_INVALID")
                     for pool_id, source_item_id in connection.execute(
@@ -420,6 +567,87 @@ class BackupService:
                             invalid.append("FORECAST_EVENT_POOL_INVALID")
         return AuditCheck(
             name="forecast_invariants",
+            passed=not invalid,
+            issue_codes=sorted(set(invalid)),
+        )
+
+    @staticmethod
+    def _verify_net_worth(connection: sqlite3.Connection) -> AuditCheck:
+        invalid: list[str] = []
+        accounts = connection.execute(
+            "SELECT account_key, side, liquidity, active_from, active_to FROM net_worth_accounts"
+        ).fetchall()
+        account_keys = {row[0] for row in accounts}
+        for _key, side, liquidity, active_from, active_to in accounts:
+            if side == "asset" and liquidity not in {"liquid", "restricted", "illiquid"}:
+                invalid.append("NET_WORTH_ASSET_LIQUIDITY_INVALID")
+            if side == "liability" and liquidity is not None:
+                invalid.append("NET_WORTH_LIABILITY_LIQUIDITY_INVALID")
+            if active_to and active_to < active_from:
+                invalid.append("NET_WORTH_ACCOUNT_DATES_INVALID")
+        identities = connection.execute(
+            "SELECT id, snapshot_date, current_revision_number FROM net_worth_snapshots"
+        ).fetchall()
+        for snapshot_id, snapshot_date, current_revision in identities:
+            revisions = connection.execute(
+                "SELECT id, revision_number, content_hash, active_account_keys_json "
+                "FROM net_worth_snapshot_revisions WHERE snapshot_id = ? ORDER BY revision_number",
+                (snapshot_id,),
+            ).fetchall()
+            if [int(row[1]) for row in revisions] != list(range(1, int(current_revision) + 1)):
+                invalid.append("NET_WORTH_REVISION_SEQUENCE_INVALID")
+            for revision_id, _revision_number, content_hash, active_account_keys_json in revisions:
+                balances = connection.execute(
+                    "SELECT account_key, account_name, side, category, liquidity, owner_label, "
+                    "stale_after_days, snapshot_date, amount_ils, valuation_date, notes "
+                    "FROM net_worth_balances WHERE revision_id = ? ORDER BY account_key",
+                    (revision_id,),
+                ).fetchall()
+                try:
+                    active = set(json.loads(active_account_keys_json or "[]"))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    active = set()
+                    invalid.append("NET_WORTH_ACCOUNT_COVERAGE_INVALID")
+                if not active:
+                    active = {row[0] for row in balances}
+                actual = {row[0] for row in balances}
+                if active != actual:
+                    invalid.append("NET_WORTH_ACCOUNT_COVERAGE_INVALID")
+                payload = [
+                    {
+                        "account_key": row[0],
+                        "account_name": row[1],
+                        "side": row[2],
+                        "category": row[3],
+                        "liquidity": row[4],
+                        "owner_label": row[5],
+                        "stale_after_days": row[6],
+                        "snapshot_date": row[7],
+                        "amount_ils": str(row[8]),
+                        "valuation_date": row[9],
+                        "notes": row[10],
+                    }
+                    for row in balances
+                ]
+                calculated_hash = hashlib.sha256(json_dumps(payload).encode()).hexdigest()
+                if calculated_hash != content_hash:
+                    invalid.append("NET_WORTH_CONTENT_HASH_INVALID")
+                for row in balances:
+                    account_key, amount, balance_snapshot_date, valuation_date = row[0], row[8], row[7], row[9]
+                    try:
+                        value = Decimal(amount)
+                        if not value.is_finite() or value < 0:
+                            invalid.append("NET_WORTH_AMOUNT_INVALID")
+                    except (InvalidOperation, TypeError, ValueError):
+                        invalid.append("NET_WORTH_AMOUNT_INVALID")
+                    if valuation_date > snapshot_date:
+                        invalid.append("NET_WORTH_FUTURE_VALUATION_DATE")
+                    if balance_snapshot_date != snapshot_date:
+                        invalid.append("NET_WORTH_BALANCE_SNAPSHOT_DATE_INVALID")
+                    if account_key not in account_keys:
+                        invalid.append("NET_WORTH_ACCOUNT_REFERENCE_INVALID")
+        return AuditCheck(
+            name="net_worth_invariants",
             passed=not invalid,
             issue_codes=sorted(set(invalid)),
         )

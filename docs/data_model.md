@@ -17,6 +17,12 @@
 - planning_items: revision-scoped positive-magnitude income, expense, savings-contribution, and savings-withdrawal schedules, including seed provenance and contributor transaction IDs.
 - planning_source_files: SHA-256-addressed planning CSV archives.
 - planning_seed_imports: links from a CSV archive to its created scenario and revision, including parser provenance.
+- net_worth_accounts: stable account keys, asset/liability metadata, ownership labels, lifecycle dates, and editable stale thresholds.
+- net_worth_snapshots: one identity per snapshot date with a current revision pointer and archive state.
+- net_worth_snapshot_revisions: immutable complete observations with quality acknowledgement, content hash, origin, and optional CSV source.
+- net_worth_balances: normalized ILS amounts with captured account metadata, valuation date, and notes.
+- net_worth_source_files and net_worth_imports: content-addressed strict CSV archives and revision provenance.
+- savings_forecast_revisions/savings_forecast_pools: nullable exact Net Worth snapshot and account provenance for explicit seeded forecasts.
 
 ## Constraints and lifecycle
 
@@ -50,3 +56,9 @@ structurally, and blank amounts are not inferred from notes. Migration
 `0004_budget_planning` adds the planning lifecycle and provenance tables;
 `0005_planning_quality` persists provisional status, issue codes, historical
 completeness snapshots, CSV notes, and item-level notes across revisions.
+Migration `0008_household_net_worth` adds the account registry, complete
+snapshot revisions, normalized balances, CSV provenance, and nullable forecast
+source links. Asset liquidity is required; liability liquidity is omitted.
+Balances are stored as canonical Decimal text. A complete snapshot contains
+every account active on its snapshot date exactly once, with valuation dates no
+later than the snapshot date.

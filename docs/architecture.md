@@ -2,13 +2,14 @@
 
 ## Boundaries
 
-The application has five layers:
+The application has six layers:
 
 1. importers validate the XLSX container, detect repeated sections, normalize source rows, and emit typed records and quality issues.
 2. services.py owns inspection, preview, commit, reconciliation, freshness, and import statistics. It has no Streamlit dependency.
 3. persistence owns SQLite schema access, transaction boundaries, archive references, and provenance links.
 4. planning.py owns local-only twelve-month scenarios, strict planning CSV/history seeds, immutable revisions, projections, comparisons, and planning provenance.
 5. ui is a thin Streamlit presentation layer. It renders sanitized preview samples and calls application services.
+6. net_worth.py owns the observed account registry, complete snapshot revisions, strict CSV ingestion, exact-decimal aggregates, and the explicit bridge to forecast pools.
 
 Financial calculations must remain outside Streamlit. Phase 2 classification and reporting can consume accepted normalized transactions while excluding unresolved and dismissed source records.
 
@@ -26,6 +27,11 @@ history, reversible archive state, backup/audit invariants, and explicit
 provenance for manual, historical, and CSV assumptions. Planning never writes
 transactions, source records, classifications, FamilyBiz categories, or
 historical metrics.
+
+Phase 7 completion status: delivered. Net Worth is a separate observed-balance
+ledger. It never derives balances from transactions, planning, forecasts, or
+apartment studies. Forecasts may pin an exact snapshot revision and account
+provenance, but later observations do not mutate a saved forecast.
 
 ## Database access decision
 

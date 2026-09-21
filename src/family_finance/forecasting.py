@@ -85,6 +85,28 @@ def _month_add(value: date, months: int) -> date:
     return date(index // 12, index % 12 + 1, 1)
 
 
+def forecast_start_month_for_snapshot(snapshot_date: date) -> date:
+    """Map an observed snapshot boundary to the first uncounted forecast month.
+
+    The monthly engine applies the selected planning month's complete cash
+    flows.  A snapshot can therefore open on the first day of that month, or
+    close on its last day and start forecasting in the following month.  A
+    mid-month opening has no lossless monthly representation and is rejected
+    instead of silently counting part of the month twice.
+    """
+
+    month_start = snapshot_date.replace(day=1)
+    if snapshot_date == month_start:
+        return month_start
+    next_month = _month_add(month_start, 1)
+    month_end = date.fromordinal(next_month.toordinal() - 1)
+    if snapshot_date == month_end:
+        return next_month
+    raise ForecastValidationError(
+        "Net-worth forecast seeds must use a first-of-month or month-end snapshot"
+    )
+
+
 def _decimal_text(value: Decimal | str | float) -> str:
     number = Decimal(str(value))
     if not number.is_finite():
@@ -737,6 +759,60 @@ class SavingsForecastService:
 
     create = create_forecast
 
+    def create_forecast_from_net_worth(
+        self,
+        name: str,
+        scenario_id: str,
+        snapshot_revision_id: str,
+        account_keys: Sequence[str] | dict[str, str],
+        cases: Sequence[ForecastCaseInput | dict[str, Any]] | dict[Any, ForecastCaseInput | dict[str, Any]],
+        *,
+        pool_types: dict[str, str] | None = None,
+        source_revision_number: int | None = None,
+        notes: str = "",
+        provisional_acknowledged: bool = False,
+        source_quality_acknowledged: bool = False,
+    ):
+        from family_finance.net_worth import NetWorthService
+
+        net_worth = NetWorthService(self.database)
+        source_revision = net_worth._get_revision_by_id(snapshot_revision_id)
+        scenario = self.planning.get_scenario(scenario_id)
+        forecast_start_month = forecast_start_month_for_snapshot(source_revision.snapshot_date)
+        if scenario.start_month != forecast_start_month:
+            raise ForecastValidationError(
+                "Forecast start month must match the selected net-worth snapshot month "
+                f"({forecast_start_month.isoformat()})"
+            )
+        seeds = net_worth.create_forecast_pool_seeds(
+            snapshot_revision_id, account_keys, pool_types
+        )
+        pools = [
+            ForecastPoolInput(
+                name=seed.name,
+                pool_type=seed.pool_type,
+                opening_balance=seed.opening_balance,
+                as_of_date=source_revision.snapshot_date,
+                net_worth_account_key=seed.account_key,
+                net_worth_snapshot_revision_id=seed.snapshot_revision_id,
+                source_valuation_date=seed.valuation_date,
+                source_stale=seed.stale,
+                source_quality_acknowledged=source_quality_acknowledged,
+            )
+            for seed in seeds
+        ]
+        return self.create_forecast(
+            name,
+            scenario_id,
+            pools,
+            cases,
+            source_revision_number=source_revision_number,
+            notes=notes,
+            provisional_acknowledged=provisional_acknowledged,
+        )
+
+    seed_from_net_worth = create_forecast_from_net_worth
+
     def project_draft(
         self,
         scenario_id: str,
@@ -932,6 +1008,9 @@ class SavingsForecastService:
             currency=scenario.currency,
             policy_version=FORECAST_POLICY_VERSION,
             provisional_acknowledged=provisional_acknowledged,
+            net_worth_snapshot_revision_id=(
+                next(iter({pool.net_worth_snapshot_revision_id for pool in starting_pools if isinstance(pool, ForecastPoolInput) and pool.net_worth_snapshot_revision_id}), None)
+            ),
             starting_pools=[
                 value if isinstance(value, ForecastPoolInput) else ForecastPoolInput.model_validate(value)
                 for value in starting_pools
@@ -956,6 +1035,11 @@ class SavingsForecastService:
                     pool_type=pool.pool_type,
                     opening_balance=pool.opening_balance,
                     as_of_date=pool.as_of_date,
+                    net_worth_account_key=pool.net_worth_account_key,
+                    net_worth_snapshot_revision_id=pool.net_worth_snapshot_revision_id,
+                    source_valuation_date=pool.source_valuation_date,
+                    source_stale=pool.source_stale,
+                    source_quality_acknowledged=pool.source_quality_acknowledged,
                 )
             )
         normalized_cases: list[ForecastCaseInput] = []
@@ -996,7 +1080,23 @@ class SavingsForecastService:
                     confirmed=case.confirmed,
                 )
             )
-        return snapshot.model_copy(update={"starting_pools": normalized_pools, "cases": normalized_cases})
+        linked_snapshot_ids = {
+            pool.net_worth_snapshot_revision_id
+            for pool in normalized_pools
+            if pool.net_worth_snapshot_revision_id
+        }
+        if len(linked_snapshot_ids) > 1:
+            raise ForecastValidationError("Forecast pools must use one exact net-worth snapshot revision")
+        return snapshot.model_copy(
+            update={
+                "starting_pools": normalized_pools,
+                "cases": normalized_cases,
+                "net_worth_snapshot_revision_id": (
+                    snapshot.net_worth_snapshot_revision_id
+                    or next(iter(linked_snapshot_ids), None)
+                ),
+            }
+        )
 
     def _validate_save_acknowledgements(self, snapshot: ForecastRevisionSnapshot) -> None:
         missing = [case.role.value for case in snapshot.cases if not case.confirmed]
@@ -1005,12 +1105,61 @@ class SavingsForecastService:
         source = self.planning.get_revision(snapshot.scenario_id, snapshot.source_revision_number)
         if source.provisional and not snapshot.provisional_acknowledged:
             raise ForecastValidationError("The provisional source planning revision requires an additional acknowledgement")
+        stale_sources = [
+            pool.name
+            for pool in snapshot.starting_pools
+            if pool.source_stale and not pool.source_quality_acknowledged
+        ]
+        if stale_sources:
+            raise ForecastValidationError(
+                "Acknowledge stale net-worth source balances before saving: " + ", ".join(stale_sources)
+            )
 
     def _validate_snapshot(self, snapshot: ForecastRevisionSnapshot) -> None:
         revision = self.planning.get_revision(snapshot.scenario_id, snapshot.source_revision_number)
         if revision.revision_id != snapshot.source_revision_id:
             raise ForecastValidationError("Forecast source revision is not the exact selected planning revision")
         scenario = self.planning.get_scenario(snapshot.scenario_id)
+        linked_snapshot_id = snapshot.net_worth_snapshot_revision_id
+        linked_pools = [
+            pool for pool in snapshot.starting_pools
+            if pool.net_worth_account_key or pool.net_worth_snapshot_revision_id
+        ]
+        if linked_pools:
+            if not linked_snapshot_id or any(
+                pool.net_worth_snapshot_revision_id != linked_snapshot_id for pool in linked_pools
+            ):
+                raise ForecastValidationError(
+                    "Forecast pools must reference one exact net-worth snapshot revision"
+                )
+            from family_finance.net_worth import NetWorthService
+
+            source = NetWorthService(self.database)._get_revision_by_id(linked_snapshot_id)
+            forecast_start_month = forecast_start_month_for_snapshot(source.snapshot_date)
+            if scenario.start_month != forecast_start_month:
+                raise ForecastValidationError(
+                    "Forecast start month must match the linked net-worth snapshot month "
+                    f"({forecast_start_month.isoformat()})"
+                )
+            by_key = {item.account_key: item for item in source.balances}
+            for pool in linked_pools:
+                balance = by_key.get(pool.net_worth_account_key or "")
+                if balance is None:
+                    raise ForecastValidationError(
+                        f"Forecast pool {pool.name!r} is not present in the linked net-worth revision"
+                    )
+                if pool.as_of_date != source.snapshot_date:
+                    raise ForecastValidationError(
+                        f"Forecast pool {pool.name!r} must start on the selected net-worth snapshot date"
+                    )
+                if pool.opening_balance != balance.amount_ils:
+                    raise ForecastValidationError(
+                        f"Forecast pool {pool.name!r} opening balance does not match the linked net-worth revision"
+                    )
+                if pool.source_valuation_date != balance.valuation_date:
+                    raise ForecastValidationError(
+                        f"Forecast pool {pool.name!r} valuation provenance does not match the linked revision"
+                    )
         for case in snapshot.cases:
             self.engine.project(
                 revision,
@@ -1088,6 +1237,7 @@ class SavingsForecastService:
                     )
                 ),
                 notes=snapshot.notes,
+                net_worth_snapshot_revision_id=snapshot.net_worth_snapshot_revision_id,
                 created_at=now,
             )
         )
@@ -1118,6 +1268,14 @@ class SavingsForecastService:
                         pool_type=pool.pool_type.value,
                         opening_balance=_decimal_text(pool.opening_balance),
                         as_of_date=pool.as_of_date.isoformat(),
+                        net_worth_account_key=pool.net_worth_account_key,
+                        net_worth_snapshot_revision_id=pool.net_worth_snapshot_revision_id,
+                        source_valuation_date=(
+                            pool.source_valuation_date.isoformat()
+                            if pool.source_valuation_date
+                            else None
+                        ),
+                        source_quality_acknowledged=pool.source_quality_acknowledged,
                     )
                 )
             session.flush()
@@ -1178,4 +1336,5 @@ __all__ = [
     "canonical_assumption_payload",
     "compare_projections",
     "effective_monthly_rate",
+    "forecast_start_month_for_snapshot",
 ]

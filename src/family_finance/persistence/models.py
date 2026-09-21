@@ -309,6 +309,9 @@ class ForecastRevisionRow(Base):
     assumption_hash: Mapped[str] = mapped_column(Text)
     assumptions_json: Mapped[str] = mapped_column(Text)
     notes: Mapped[str] = mapped_column(Text, default="")
+    net_worth_snapshot_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("net_worth_snapshot_revisions.id"), nullable=True
+    )
     created_at: Mapped[str] = mapped_column(Text)
 
     __table_args__ = (
@@ -349,6 +352,12 @@ class ForecastPoolRow(Base):
     pool_type: Mapped[str] = mapped_column(Text)
     opening_balance: Mapped[str] = mapped_column(Text)
     as_of_date: Mapped[str] = mapped_column(Text)
+    net_worth_account_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    net_worth_snapshot_revision_id: Mapped[str | None] = mapped_column(
+        ForeignKey("net_worth_snapshot_revisions.id"), nullable=True
+    )
+    source_valuation_date: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_quality_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
 
     __table_args__ = (
         Index("idx_savings_forecast_pools_unique", "case_id", "name", unique=True),
@@ -513,6 +522,111 @@ class ApartmentHousingCostRow(Base):
     amount: Mapped[str] = mapped_column(Text)
 
 
+class NetWorthAccountRow(Base):
+    __tablename__ = "net_worth_accounts"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    account_key: Mapped[str] = mapped_column(Text, unique=True)
+    display_name: Mapped[str] = mapped_column(Text)
+    side: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    liquidity: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    active_from: Mapped[str] = mapped_column(Text)
+    active_to: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stale_after_days: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class NetWorthSnapshotRow(Base):
+    __tablename__ = "net_worth_snapshots"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    snapshot_date: Mapped[str] = mapped_column(Text, unique=True)
+    current_revision_number: Mapped[int] = mapped_column(Integer, default=1)
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class NetWorthSnapshotRevisionRow(Base):
+    __tablename__ = "net_worth_snapshot_revisions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    snapshot_id: Mapped[str] = mapped_column(
+        ForeignKey("net_worth_snapshots.id", ondelete="CASCADE")
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    snapshot_date: Mapped[str] = mapped_column(Text)
+    origin: Mapped[str] = mapped_column(Text)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    quality_issues_json: Mapped[str] = mapped_column(Text, default="[]")
+    quality_acknowledged: Mapped[bool] = mapped_column(Boolean, default=False)
+    content_hash: Mapped[str] = mapped_column(Text)
+    active_account_keys_json: Mapped[str] = mapped_column(Text, default="[]")
+    source_file_id: Mapped[int | None] = mapped_column(
+        ForeignKey("net_worth_source_files.id"), nullable=True
+    )
+    created_at: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("idx_net_worth_snapshot_revisions_unique", "snapshot_id", "revision_number", unique=True),
+        Index("idx_net_worth_snapshot_revisions_date", "snapshot_date", "revision_number"),
+    )
+
+
+class NetWorthBalanceRow(Base):
+    __tablename__ = "net_worth_balances"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("net_worth_snapshot_revisions.id", ondelete="CASCADE")
+    )
+    account_key: Mapped[str] = mapped_column(
+        ForeignKey("net_worth_accounts.account_key")
+    )
+    account_name: Mapped[str] = mapped_column(Text)
+    side: Mapped[str] = mapped_column(Text)
+    category: Mapped[str] = mapped_column(Text)
+    liquidity: Mapped[str | None] = mapped_column(Text, nullable=True)
+    owner_label: Mapped[str | None] = mapped_column(Text, nullable=True)
+    stale_after_days: Mapped[int] = mapped_column(Integer)
+    snapshot_date: Mapped[str] = mapped_column(Text)
+    amount_ils: Mapped[str] = mapped_column(Text)
+    valuation_date: Mapped[str] = mapped_column(Text)
+    notes: Mapped[str] = mapped_column(Text, default="")
+
+    __table_args__ = (
+        Index("idx_net_worth_balances_revision_account", "revision_id", "account_key", unique=True),
+        Index("idx_net_worth_balances_account_date", "account_key", "valuation_date"),
+    )
+
+
+class NetWorthSourceFileRow(Base):
+    __tablename__ = "net_worth_source_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(Text, unique=True)
+    original_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archived_path: Mapped[str] = mapped_column(Text)
+    compressed_bytes: Mapped[int] = mapped_column(Integer)
+    uncompressed_bytes: Mapped[int] = mapped_column(Integer)
+    parser_version: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+
+
+class NetWorthImportRow(Base):
+    __tablename__ = "net_worth_imports"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("net_worth_source_files.id"))
+    snapshot_id: Mapped[str] = mapped_column(ForeignKey("net_worth_snapshots.id"))
+    revision_id: Mapped[str] = mapped_column(ForeignKey("net_worth_snapshot_revisions.id"))
+    origin: Mapped[str] = mapped_column(Text)
+    imported_at: Mapped[str] = mapped_column(Text)
+
+
 # Readable aliases for repository consumers that prefer domain-style names.
 Account = AccountRow
 Transaction = TransactionRow
@@ -551,6 +665,12 @@ __all__ = [
     "ForecastRoutingRow",
     "ForecastRow",
     "ImportBatchRow",
+    "NetWorthAccountRow",
+    "NetWorthBalanceRow",
+    "NetWorthImportRow",
+    "NetWorthSnapshotRevisionRow",
+    "NetWorthSnapshotRow",
+    "NetWorthSourceFileRow",
     "PlanningItemRow",
     "PlanningScenarioRevisionRow",
     "PlanningScenarioRow",

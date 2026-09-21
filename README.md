@@ -37,10 +37,12 @@ The database and archived uploads live under data/local/, which is intentionally
 
 ## Scope
 
-The importer preserves source values and provenance, normalizes dates, text, and numbers for matching, keeps non-ILS rows visible but outside ILS totals, and never deletes a transaction because it disappears from a later export. Phase 3 adds a four-page Streamlit dashboard, deterministic non-persisted insights, database auditing, verified online backups, privacy-safe operational logging, and migration validation. Phase 4 adds a fifth Planning page with local-only twelve-month scenarios, immutable revisions, historical/CSV seed previews, exact-decimal projections, and actual-versus-plan comparisons. Balances, installments, FX conversion, investment returns, and net-worth calculations remain out of scope.
+The importer preserves source values and provenance, normalizes dates, text, and numbers for matching, keeps non-ILS rows visible but outside ILS totals, and never deletes a transaction because it disappears from a later export. Phase 3 adds a four-page Streamlit dashboard, deterministic non-persisted insights, database auditing, verified online backups, privacy-safe operational logging, and migration validation. Phase 4 adds a fifth Planning page with local-only twelve-month scenarios, immutable revisions, historical/CSV seed previews, exact-decimal projections, and actual-versus-plan comparisons. Phase 7 adds the account-level, ILS-only Net Worth ledger: user-maintained balance snapshots, immutable revisions, strict CSV provenance, liquidity/ownership/category breakdowns, and an explicit forecast seeding bridge. No balance is inferred from transactions, forecasts, or apartment assumptions.
 
 See [`docs/financial_metrics.md`](docs/financial_metrics.md) for signs, formulas, completeness rules, exclusions, and source limitations.
 
 See docs/ for the evidence-based data analysis, architecture, data model, and roadmap.
 
 See [`docs/operations.md`](docs/operations.md) for audit, backup, and manual restore procedures.
+
+See [`docs/net_worth_methodology.md`](docs/net_worth_methodology.md) for the observation, staleness, liquidity, and forecast-comparison rules.

@@ -22,4 +22,4 @@
 
 ## Later phases
 
-Phase 3 adds polished household dashboards and trends using booking date and explicit currency scope. Phase 4 adds a local-only twelve-month Planning page, immutable scenario revisions, historical and strict multi-block CSV seeds, projections, scenario comparisons, actual-versus-plan comparisons, and planning backup/audit coverage. Balances, pending activity, installments, loans, FX conversion, investment returns, long-term forecasts, and net worth remain Phase 5+ work.
+Phase 3 adds polished household dashboards and trends using booking date and explicit currency scope. Phase 4 adds a local-only twelve-month Planning page, immutable scenario revisions, historical and strict multi-block CSV seeds, projections, scenario comparisons, actual-versus-plan comparisons, and planning backup/audit coverage. Phase 7 adds the ILS-only household Net Worth ledger with account lifecycle, complete immutable snapshots, strict CSV provenance, trends, liquidity/ownership breakdowns, and exact forecast seeding/comparison links. Automation, scheduled imports, advanced alerts, and AI-generated analysis remain Phase 8 work.

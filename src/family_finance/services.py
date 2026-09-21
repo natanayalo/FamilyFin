@@ -63,6 +63,10 @@ class ImportService:
             self.database,
             planning_service=self.planning_service,
         )
+        from family_finance.net_worth import NetWorthService
+
+        self.net_worth_service = NetWorthService(self.database, self.settings)
+        self.household_net_worth_service = self.net_worth_service
         # Short aliases keep the application surface convenient while the
         # explicit name documents that this is a savings-only forecast.
         self.forecasting_service = self.savings_forecast_service
@@ -630,6 +634,7 @@ from family_finance.classification import (
 from family_finance.dashboard import DashboardService
 from family_finance.insights import InsightsService
 from family_finance.metrics import FinancialMetricsService, MetricsEngine, MetricsService
+from family_finance.net_worth import NetWorthService
 from family_finance.planning import (
     DuplicateSeedError,
     PlanningPreviewStaleError,
@@ -652,6 +657,7 @@ __all__ = [
     "InsightsService",
     "MetricsEngine",
     "MetricsService",
+    "NetWorthService",
     "PlanningPreviewStaleError",
     "PlanningService",
     "PlanningStaleRevisionError",

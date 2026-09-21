@@ -22,6 +22,11 @@ class Settings:
     planning_csv_max_columns: int = 100
     planning_csv_max_field_length: int = 10_000
     planning_parser_version: str = "planning-csv-v1"
+    net_worth_csv_max_bytes: int = 10 * 1024 * 1024
+    net_worth_csv_max_rows: int = 10_000
+    net_worth_csv_max_columns: int = 20
+    net_worth_csv_max_field_length: int = 10_000
+    net_worth_parser_version: str = "net-worth-csv-v1"
 
     @property
     def database_path(self) -> Path:
@@ -34,6 +39,10 @@ class Settings:
     @property
     def planning_archive_root(self) -> Path:
         return self.data_root / "planning-imports"
+
+    @property
+    def net_worth_archive_root(self) -> Path:
+        return self.data_root / "net-worth-imports"
 
     @property
     def log_root(self) -> Path:
@@ -52,4 +61,5 @@ class Settings:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
         self.planning_archive_root.mkdir(parents=True, exist_ok=True)
+        self.net_worth_archive_root.mkdir(parents=True, exist_ok=True)
         self.log_root.mkdir(parents=True, exist_ok=True)

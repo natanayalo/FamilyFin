@@ -26,8 +26,9 @@ There is intentionally no destructive automatic restore command.
    result.
 3. Preserve the current data directory by renaming it to a timestamped
    recovery directory outside the active path. Do not delete it.
-4. Restore the backup's `family_finance.sqlite3`, `imports/`, and
-   `planning-imports/` directories as a matched set into a new `data/local/`
+4. Restore the backup's `family_finance.sqlite3`, `imports/`,
+   `planning-imports/`, and `net-worth-imports/` directories as a matched set
+   into a new `data/local/`
    directory. Keep the backup manifest alongside the restored files for evidence.
 5. Set `FAMILY_FINANCE_DATA_ROOT` to the restored directory, run
    `family-finance audit`, and start Streamlit again on localhost.
