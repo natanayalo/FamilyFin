@@ -180,6 +180,100 @@ class AnalysisOverrideRow(Base):
     )
 
 
+class PlanningScenarioRow(Base):
+    __tablename__ = "planning_scenarios"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    name: Mapped[str] = mapped_column(Text)
+    currency: Mapped[str] = mapped_column(Text)
+    start_month: Mapped[str] = mapped_column(Text)
+    end_month: Mapped[str] = mapped_column(Text)
+    current_revision_number: Mapped[int] = mapped_column(Integer, default=1)
+    clone_of_scenario_id: Mapped[str | None] = mapped_column(
+        ForeignKey("planning_scenarios.id"), nullable=True
+    )
+    archived: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class PlanningScenarioRevisionRow(Base):
+    __tablename__ = "planning_scenario_revisions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    scenario_id: Mapped[str] = mapped_column(
+        ForeignKey("planning_scenarios.id", ondelete="CASCADE")
+    )
+    revision_number: Mapped[int] = mapped_column(Integer)
+    notes: Mapped[str] = mapped_column(Text, default="")
+    provisional: Mapped[bool] = mapped_column(Boolean, default=False)
+    issue_codes_json: Mapped[str] = mapped_column(Text, default="[]")
+    completeness_snapshot_json: Mapped[str] = mapped_column(Text, default="[]")
+    expense_notes_json: Mapped[str] = mapped_column(Text, default="[]")
+    created_at: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("idx_planning_revisions_unique", "scenario_id", "revision_number", unique=True),
+        Index("idx_planning_revisions_scenario", "scenario_id", "revision_number"),
+    )
+
+
+class PlanningItemRow(Base):
+    __tablename__ = "planning_items"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    revision_id: Mapped[str] = mapped_column(
+        ForeignKey("planning_scenario_revisions.id", ondelete="CASCADE")
+    )
+    kind: Mapped[str] = mapped_column(Text)
+    category: Mapped[str | None] = mapped_column(Text, nullable=True)
+    label: Mapped[str] = mapped_column(Text)
+    amount: Mapped[str] = mapped_column(Text)
+    frequency: Mapped[str] = mapped_column(Text)
+    start_month: Mapped[str | None] = mapped_column(Text, nullable=True)
+    end_month: Mapped[str | None] = mapped_column(Text, nullable=True)
+    occurrence_month: Mapped[str | None] = mapped_column(Text, nullable=True)
+    origin: Mapped[str] = mapped_column(Text, default="manual")
+    source_range: Mapped[str | None] = mapped_column(Text, nullable=True)
+    source_row: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    policy_version: Mapped[str] = mapped_column(Text, default="planning-v1")
+    completeness_codes_json: Mapped[str] = mapped_column(Text, default="[]")
+    contributor_transaction_ids_json: Mapped[str] = mapped_column(Text, default="[]")
+    provenance_json: Mapped[str] = mapped_column(Text, default="{}")
+    notes_json: Mapped[str] = mapped_column(Text, default="[]")
+
+    __table_args__ = (Index("idx_planning_items_revision", "revision_id"),)
+
+
+class PlanningSourceFileRow(Base):
+    __tablename__ = "planning_source_files"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    sha256: Mapped[str] = mapped_column(Text, unique=True)
+    original_filename: Mapped[str | None] = mapped_column(Text, nullable=True)
+    archived_path: Mapped[str] = mapped_column(Text)
+    compressed_bytes: Mapped[int] = mapped_column(Integer)
+    uncompressed_bytes: Mapped[int] = mapped_column(Integer)
+    parser_version: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+
+
+class PlanningSeedImportRow(Base):
+    __tablename__ = "planning_seed_imports"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    source_file_id: Mapped[int] = mapped_column(ForeignKey("planning_source_files.id"))
+    scenario_id: Mapped[str] = mapped_column(ForeignKey("planning_scenarios.id"))
+    revision_id: Mapped[str] = mapped_column(ForeignKey("planning_scenario_revisions.id"))
+    origin: Mapped[str] = mapped_column(Text)
+    parser_version: Mapped[str] = mapped_column(Text)
+    imported_at: Mapped[str] = mapped_column(Text)
+
+    __table_args__ = (
+        Index("idx_planning_seed_source_scenario", "source_file_id", "scenario_id", unique=True),
+    )
+
+
 # Readable aliases for repository consumers that prefer domain-style names.
 Account = AccountRow
 Transaction = TransactionRow
@@ -204,6 +298,11 @@ __all__ = [
     "ClassificationRuleModel",
     "ClassificationRuleRow",
     "ImportBatchRow",
+    "PlanningItemRow",
+    "PlanningScenarioRevisionRow",
+    "PlanningScenarioRow",
+    "PlanningSeedImportRow",
+    "PlanningSourceFileRow",
     "ReconciliationCaseRow",
     "SourceFileRow",
     "SourceRecordRow",

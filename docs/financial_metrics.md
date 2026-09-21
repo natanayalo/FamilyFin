@@ -76,6 +76,22 @@ available only when both months are complete. Each aggregate retains the
 transaction IDs that contributed to it, so a displayed value can be reconciled
 exactly.
 
+## Planning formulas
+
+Planning uses positive magnitudes and one currency per scenario. For every
+month in a twelve-month horizon:
+
+- operating surplus = planned income − gross planned expenses;
+- net planned savings = savings contributions − savings withdrawals;
+- cash remaining after savings = operating surplus − contributions + withdrawals.
+
+Category budgets are gross consumption targets. Refund observations remain
+separate and do not reduce a historical or CSV-seeded expense target. Historical
+averages include every selected calendar month, including zero-spend months.
+CSV category matches are exact normalized suggestions only; an unmapped row can
+still contribute to cash totals, while its category variance remains unavailable
+until the user maps it explicitly.
+
 ## Known source limitations
 
 The FamilyBiz export has no stable transaction identifier, pending state,

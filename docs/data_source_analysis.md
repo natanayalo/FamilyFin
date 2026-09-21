@@ -36,7 +36,9 @@ These are warnings unless a value is required for safe parsing. The raw row payl
 
 ## Planning CSV
 
-The supplied CSV has 41 rows and 33 columns. It is a manually maintained planning sheet with five side-by-side budget versions, income, savings, notes, and monthly spending assumptions. It is not transaction-level data. It is documented as a potential Phase 4 planning seed and is intentionally excluded from the FamilyBiz importer.
+The supplied CSV has 41 rows and 33 columns. It is a manually maintained planning sheet with five side-by-side budget versions, income, savings, notes, and monthly spending assumptions. It is not transaction-level data and is intentionally excluded from the FamilyBiz importer. Phase 4 parses the rightmost structurally recognized target block: the supplied file yields 24 explicit expense targets, two recurring income rows, one monthly savings summary, and nine notes attached to explicit targets. Observed-month columns, differences, historical savings balances, and unexpected-income history are excluded.
+
+The CSV policy is strict UTF-8 with bounded file, row, column, and field sizes. Numeric fields must be standalone currency/number cells. Narrative text is never converted into an amount. The supplied expense block total is retained separately from the household monthly-expense control; the preview surfaces their unreconciled gap instead of deriving the blank rent target from its note. Every seeded item retains the parser version, source row/range, file SHA-256, and any explicit category mapping decision.
 
 ## Explicitly unavailable fields
 

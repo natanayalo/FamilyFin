@@ -20,7 +20,7 @@ The database and archived uploads live under data/local/, which is intentionally
 
 ## Scope
 
-The importer preserves source values and provenance, normalizes dates, text, and numbers for matching, keeps non-ILS rows visible but outside ILS totals, and never deletes a transaction because it disappears from a later export. Phase 3 adds a four-page Streamlit dashboard, deterministic non-persisted insights, database auditing, verified online backups, privacy-safe operational logging, and migration validation. Balances, installments, FX conversion, and net-worth calculations remain out of scope.
+The importer preserves source values and provenance, normalizes dates, text, and numbers for matching, keeps non-ILS rows visible but outside ILS totals, and never deletes a transaction because it disappears from a later export. Phase 3 adds a four-page Streamlit dashboard, deterministic non-persisted insights, database auditing, verified online backups, privacy-safe operational logging, and migration validation. Phase 4 adds a fifth Planning page with local-only twelve-month scenarios, immutable revisions, historical/CSV seed previews, exact-decimal projections, and actual-versus-plan comparisons. Balances, installments, FX conversion, investment returns, and net-worth calculations remain out of scope.
 
 See [`docs/financial_metrics.md`](docs/financial_metrics.md) for signs, formulas, completeness rules, exclusions, and source limitations.
 

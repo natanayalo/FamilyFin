@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from family_finance.config import Settings
 from family_finance.services import ImportService
@@ -224,4 +228,6 @@ def test_runtime_database_setup_records_alembic_revision(tmp_path):
     app = service(tmp_path)
     with app.database.connect() as connection:
         revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
-    assert revision["version_num"] == "0003_financial_classification"
+    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    current_head = ScriptDirectory.from_config(config).get_current_head()
+    assert revision["version_num"] == current_head

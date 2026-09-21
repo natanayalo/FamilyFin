@@ -12,6 +12,11 @@
 - reconciliation_cases: open candidate links and later user decisions.
 - analysis_overrides: append-only user classifications. They never overwrite source rows or normalized import history; a null value is a field tombstone used to clear the latest decision.
 - classification_rules: append-only exact source-key rule revisions. A later revision supersedes the prior revision; a tombstone disables the key without deleting history.
+- planning_scenarios: stable twelve-month, single-currency scenario identities with clone lineage and reversible archive state.
+- planning_scenario_revisions: immutable, numbered full snapshots. Saving, restoring, and cloning never mutate an earlier revision.
+- planning_items: revision-scoped positive-magnitude income, expense, savings-contribution, and savings-withdrawal schedules, including seed provenance and contributor transaction IDs.
+- planning_source_files: SHA-256-addressed planning CSV archives.
+- planning_seed_imports: links from a CSV archive to its created scenario and revision, including parser provenance.
 
 ## Constraints and lifecycle
 
@@ -36,3 +41,12 @@ constraints and indexes must be introduced through new revisions. The current
 `0002_source_link_invariants` revision enforces one transaction link and one
 reconciliation case per source row. `0003_financial_classification` adds the
 classification rule log and deterministic latest-override index.
+
+Planning is intentionally isolated from transaction and classification tables.
+Money is stored as canonical decimal text. A planning scenario covers exactly
+12 inclusive calendar months; monthly items use inclusive start/end months and
+one-time items use one occurrence month. The latest CSV target block is parsed
+structurally, and blank amounts are not inferred from notes. Migration
+`0004_budget_planning` adds the planning lifecycle and provenance tables;
+`0005_planning_quality` persists provisional status, issue codes, historical
+completeness snapshots, CSV notes, and item-level notes across revisions.

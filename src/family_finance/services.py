@@ -49,6 +49,14 @@ class ImportService:
         self.metrics_service = MetricsService(
             self.database, classifier=self.classification_service
         )
+        from family_finance.planning import PlanningService
+
+        self.planning_service = PlanningService(
+            self.database,
+            settings=self.settings,
+            metrics=self.metrics_service,
+            classifier=self.classification_service,
+        )
 
     def inspect_familybiz(self, file_bytes: bytes):
         return self.parser.inspect(file_bytes)
@@ -604,6 +612,14 @@ from family_finance.classification import (
 from family_finance.dashboard import DashboardService
 from family_finance.insights import InsightsService
 from family_finance.metrics import FinancialMetricsService, MetricsEngine, MetricsService
+from family_finance.planning import (
+    DuplicateSeedError,
+    PlanningPreviewStaleError,
+    PlanningService,
+    PlanningStaleRevisionError,
+    PlanningValidationError,
+    StaleRevisionError,
+)
 
 __all__ = [
     "AuditService",
@@ -611,11 +627,17 @@ __all__ = [
     "ClassificationEngine",
     "ClassificationService",
     "DashboardService",
+    "DuplicateSeedError",
     "FinancialClassificationService",
     "FinancialMetricsService",
     "ImportService",
     "InsightsService",
     "MetricsEngine",
     "MetricsService",
+    "PlanningPreviewStaleError",
+    "PlanningService",
+    "PlanningStaleRevisionError",
+    "PlanningValidationError",
     "PreviewStaleError",
+    "StaleRevisionError",
 ]

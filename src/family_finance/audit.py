@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from typing import Any
 
@@ -18,6 +19,10 @@ from family_finance.models import AuditCheck, AuditReport
 from family_finance.persistence.db import Database
 from family_finance.persistence.models import (
     ImportBatchRow,
+    PlanningItemRow,
+    PlanningScenarioRevisionRow,
+    PlanningScenarioRow,
+    PlanningSourceFileRow,
     ReconciliationCaseRow,
     SourceFileRow,
     SourceRecordRow,
@@ -55,6 +60,7 @@ class AuditService:
             self._safe_check(self._source_lifecycle_check),
             self._safe_check(self._transaction_provenance_check),
             self._safe_check(self._batch_count_check),
+            self._safe_check(self._planning_invariant_check),
         ]
         return AuditReport(passed=all(check.passed for check in checks), checks=checks)
 
@@ -96,6 +102,20 @@ class AuditService:
                 path = self.settings.data_root / path
             if not path.exists():
                 relocated = sorted(self.settings.archive_root.glob(f"{row.sha256}.*"))
+                if relocated:
+                    path = relocated[0]
+            if not path.exists():
+                missing = True
+            elif _sha256(path) != row.sha256:
+                mismatch = True
+        with self.database.session() as session:
+            planning_rows = session.execute(select(PlanningSourceFileRow)).scalars().all()
+        for row in planning_rows:
+            path = Path(row.archived_path)
+            if not path.is_absolute():
+                path = self.settings.data_root / path
+            if not path.exists():
+                relocated = sorted(self.settings.planning_archive_root.glob(f"{row.sha256}.*"))
                 if relocated:
                     path = relocated[0]
             if not path.exists():
@@ -192,6 +212,36 @@ class AuditService:
                 if expected is not None and expected != actual:
                     codes.append("BATCH_SOURCE_COUNT_MISMATCH")
         return self._check("batch_count_reconciliation", not codes, *sorted(set(codes)))
+
+    def _planning_invariant_check(self) -> AuditCheck:
+        codes: list[str] = []
+        with self.database.session() as session:
+            scenarios = session.execute(select(PlanningScenarioRow)).scalars().all()
+            for scenario in scenarios:
+                revisions = session.execute(
+                    select(PlanningScenarioRevisionRow)
+                    .where(PlanningScenarioRevisionRow.scenario_id == scenario.id)
+                    .order_by(PlanningScenarioRevisionRow.revision_number)
+                ).scalars().all()
+                numbers = [row.revision_number for row in revisions]
+                if numbers != list(range(1, scenario.current_revision_number + 1)):
+                    codes.append("PLANNING_REVISION_SEQUENCE_INVALID")
+                for revision in revisions:
+                    items = session.execute(
+                        select(PlanningItemRow).where(PlanningItemRow.revision_id == revision.id)
+                    ).scalars().all()
+                    for item in items:
+                        try:
+                            amount = Decimal(item.amount)
+                            if amount < 0 or not amount.is_finite():
+                                codes.append("PLANNING_AMOUNT_INVALID")
+                        except (InvalidOperation, ValueError):
+                            codes.append("PLANNING_AMOUNT_INVALID")
+                        if item.frequency == "monthly" and not (item.start_month and item.end_month and not item.occurrence_month):
+                            codes.append("PLANNING_SCHEDULE_INVALID")
+                        if item.frequency == "one_time" and not (item.occurrence_month and not item.start_month and not item.end_month):
+                            codes.append("PLANNING_SCHEDULE_INVALID")
+        return self._check("planning_invariants", not codes, *sorted(set(codes)))
 
 
 def _statistics_total(value: str) -> int | None:

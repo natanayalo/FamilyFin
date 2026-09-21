@@ -16,7 +16,7 @@ from alembic.script import ScriptDirectory
 from family_finance.config import Settings
 from family_finance.models import AuditCheck, BackupManifest, BackupVerification
 from family_finance.persistence.db import Database
-from family_finance.persistence.models import SourceFileRow
+from family_finance.persistence.models import PlanningSourceFileRow, SourceFileRow
 
 
 def _hash_file(path: Path) -> str:
@@ -135,7 +135,7 @@ class BackupService:
         copied_hashes = {
             str(item["sha256"])
             for item in manifest.files
-            if str(item["relative_path"]).startswith("imports/")
+            if str(item["relative_path"]).startswith(("imports/", "planning-imports/"))
         }
         archive_ok = source_hashes.issubset(copied_hashes)
         checks.append(AuditCheck(
@@ -177,10 +177,15 @@ class BackupService:
                     )
                 )
                 checks.append(BackupService._verify_provenance(connection))
+                checks.append(BackupService._verify_planning(connection))
                 source_hashes = {
                     str(row[0])
                     for row in connection.execute("SELECT sha256 FROM source_files").fetchall()
                 }
+                source_hashes.update(
+                    str(row[0])
+                    for row in connection.execute("SELECT sha256 FROM planning_source_files").fetchall()
+                )
                 return checks, source_hashes
         except (sqlite3.DatabaseError, OSError):
             return [
@@ -198,9 +203,12 @@ class BackupService:
     def _copy_archives(self, root: Path, database: Database) -> None:
         archive_target = root / "imports"
         archive_target.mkdir()
+        planning_archive_target = root / "planning-imports"
+        planning_archive_target.mkdir()
         database_path = root / database.path.name
         with database.session() as session:
             source_files = session.query(SourceFileRow).all()
+            planning_source_files = session.query(PlanningSourceFileRow).all()
         with sqlite3.connect(str(database_path)) as connection:
             for source_file in source_files:
                 source = Path(source_file.archived_path)
@@ -218,6 +226,23 @@ class BackupService:
                 connection.execute(
                     "UPDATE source_files SET archived_path = ? WHERE sha256 = ?",
                     (f"imports/{target.name}", source_file.sha256),
+                )
+            for source_file in planning_source_files:
+                source = Path(source_file.archived_path)
+                if not source.is_absolute():
+                    source = self.settings.data_root / source
+                if not source.is_file():
+                    relocated = sorted(self.settings.planning_archive_root.glob(f"{source_file.sha256}.*"))
+                    if relocated:
+                        source = relocated[0]
+                if not source.is_file():
+                    raise FileNotFoundError("A planning source archive is missing")
+                target = planning_archive_target / f"{source_file.sha256}{source.suffix.lower() or '.csv'}"
+                if not target.exists():
+                    shutil.copy2(source, target)
+                connection.execute(
+                    "UPDATE planning_source_files SET archived_path = ? WHERE sha256 = ?",
+                    (f"planning-imports/{target.name}", source_file.sha256),
                 )
             connection.commit()
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
@@ -262,6 +287,35 @@ class BackupService:
             name="transaction_provenance",
             passed=not missing,
             issue_codes=[] if not missing else ["TRANSACTION_PROVENANCE_MISSING"],
+        )
+
+    @staticmethod
+    def _verify_planning(connection: sqlite3.Connection) -> AuditCheck:
+        invalid = []
+        scenarios = connection.execute(
+            "SELECT id, current_revision_number FROM planning_scenarios"
+        ).fetchall()
+        for scenario_id, current_revision in scenarios:
+            numbers = [
+                int(row[0])
+                for row in connection.execute(
+                    "SELECT revision_number FROM planning_scenario_revisions "
+                    "WHERE scenario_id = ? ORDER BY revision_number",
+                    (scenario_id,),
+                ).fetchall()
+            ]
+            if numbers != list(range(1, int(current_revision) + 1)):
+                invalid.append("PLANNING_REVISION_SEQUENCE_INVALID")
+        bad_amounts = connection.execute(
+            "SELECT id FROM planning_items WHERE CAST(amount AS NUMERIC) < 0 "
+            "OR amount IS NULL OR amount = ''"
+        ).fetchall()
+        if bad_amounts:
+            invalid.append("PLANNING_AMOUNT_INVALID")
+        return AuditCheck(
+            name="planning_invariants",
+            passed=not invalid,
+            issue_codes=sorted(set(invalid)),
         )
 
 

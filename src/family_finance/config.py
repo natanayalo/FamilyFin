@@ -17,6 +17,11 @@ class Settings:
     max_uncompressed_bytes: int = 100 * 1024 * 1024
     max_rows: int = 200_000
     parser_version: str = "familybiz-v1"
+    planning_csv_max_bytes: int = 10 * 1024 * 1024
+    planning_csv_max_rows: int = 5_000
+    planning_csv_max_columns: int = 100
+    planning_csv_max_field_length: int = 10_000
+    planning_parser_version: str = "planning-csv-v1"
 
     @property
     def database_path(self) -> Path:
@@ -25,6 +30,10 @@ class Settings:
     @property
     def archive_root(self) -> Path:
         return self.data_root / "imports"
+
+    @property
+    def planning_archive_root(self) -> Path:
+        return self.data_root / "planning-imports"
 
     @property
     def log_root(self) -> Path:
@@ -42,4 +51,5 @@ class Settings:
     def ensure_directories(self) -> None:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
+        self.planning_archive_root.mkdir(parents=True, exist_ok=True)
         self.log_root.mkdir(parents=True, exist_ok=True)

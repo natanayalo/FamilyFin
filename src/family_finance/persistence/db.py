@@ -227,12 +227,22 @@ class Database:
             "import_batches",
             "classification_rules",
             "analysis_overrides",
+            "planning_scenarios",
+            "planning_scenario_revisions",
+            "planning_items",
+            "planning_source_files",
+            "planning_seed_imports",
         }:
             raise ValueError(table)
         from family_finance.persistence.models import (
             AnalysisOverrideRow,
             ClassificationRuleRow,
             ImportBatchRow,
+            PlanningItemRow,
+            PlanningScenarioRevisionRow,
+            PlanningScenarioRow,
+            PlanningSeedImportRow,
+            PlanningSourceFileRow,
             ReconciliationCaseRow,
             SourceRecordRow,
             TransactionRow,
@@ -245,6 +255,11 @@ class Database:
             "import_batches": ImportBatchRow,
             "classification_rules": ClassificationRuleRow,
             "analysis_overrides": AnalysisOverrideRow,
+            "planning_scenarios": PlanningScenarioRow,
+            "planning_scenario_revisions": PlanningScenarioRevisionRow,
+            "planning_items": PlanningItemRow,
+            "planning_source_files": PlanningSourceFileRow,
+            "planning_seed_imports": PlanningSeedImportRow,
         }
         with self.session() as session:
             return int(session.execute(select(func.count()).select_from(models[table])).scalar_one())

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from datetime import date
+from decimal import Decimal
 
 os.environ.setdefault("STREAMLIT_BROWSER_GATHER_USAGE_STATS", "false")
 
@@ -14,7 +15,21 @@ def main() -> None:
 
     from family_finance.dashboard import DashboardService
     from family_finance.formatting import format_amount, format_month, format_rate
-    from family_finance.models import DashboardFilters, EconomicClass, ExpenseBehavior
+    from family_finance.models import (
+        DashboardFilters,
+        EconomicClass,
+        ExpenseBehavior,
+        PlanningFrequency,
+        PlanningItem,
+        PlanningItemInput,
+        PlanningItemKind,
+    )
+    from family_finance.planning import (
+        DuplicateSeedError,
+        PlanningPreviewStaleError,
+        PlanningValidationError,
+        StaleRevisionError,
+    )
     from family_finance.services import ImportService, PreviewStaleError
 
     st.set_page_config(page_title="Family Finance", page_icon="💰", layout="wide")
@@ -367,11 +382,325 @@ def main() -> None:
                 classifier.disable_rule(int(rule["id"]))
                 st.rerun()
 
+    def planning_page() -> None:
+        st.title("Planning")
+        st.caption("Local-only 12-month scenarios. Planning assumptions never alter imported transactions.")
+        planning = service.planning_service
+        scenarios = planning.list_scenarios(include_archived=True)
+        st.subheader("Scenarios")
+        if scenarios:
+            st.dataframe(
+                [item.model_dump(mode="json") for item in scenarios],
+                use_container_width=True,
+                hide_index=True,
+            )
+        else:
+            st.info("No planning scenarios yet.")
+
+        with st.expander("Create a manual scenario", expanded=not scenarios):
+            cols = st.columns(4)
+            manual_name = cols[0].text_input("Scenario name", value="Household baseline", key="planning-manual-name")
+            manual_currency = cols[2].text_input("Currency", value="ILS", key="planning-manual-currency")
+            manual_start = cols[1].date_input(
+                "Start month",
+                value=planning.suggested_start_month(manual_currency),
+                key="planning-manual-start",
+            )
+            manual_kind = cols[3].selectbox("Item kind", [item.value for item in PlanningItemKind], key="planning-manual-kind")
+            cols = st.columns(4)
+            manual_label = cols[0].text_input("Item label", value="Monthly assumption", key="planning-manual-label")
+            manual_category = cols[1].text_input("Category", key="planning-manual-category")
+            manual_amount = cols[2].text_input("Amount", value="0", key="planning-manual-amount")
+            manual_frequency = cols[3].selectbox("Frequency", [item.value for item in PlanningFrequency], key="planning-manual-frequency")
+            if st.button("Create scenario", key="planning-create-manual"):
+                try:
+                    amount = Decimal(manual_amount)
+                    if manual_frequency == PlanningFrequency.MONTHLY.value:
+                        manual_end = manual_start.replace(day=1)
+                        for _ in range(11):
+                            manual_end = (
+                                date(manual_end.year + 1, 1, 1)
+                                if manual_end.month == 12
+                                else date(manual_end.year, manual_end.month + 1, 1)
+                            )
+                        item = PlanningItemInput(
+                            kind=manual_kind,
+                            label=manual_label,
+                            category=manual_category or None,
+                            amount=amount,
+                            frequency=manual_frequency,
+                            start_month=manual_start.replace(day=1),
+                            end_month=manual_end,
+                        )
+                    else:
+                        item = PlanningItemInput(
+                            kind=manual_kind,
+                            label=manual_label,
+                            category=manual_category or None,
+                            amount=amount,
+                            frequency=manual_frequency,
+                            occurrence_month=manual_start.replace(day=1),
+                        )
+                    planning.create_manual_scenario(manual_name, manual_start, [item], currency=manual_currency)
+                    st.success("Scenario created")
+                    st.rerun()
+                except (ValueError, PlanningValidationError) as exc:
+                    st.error(str(exc))
+
+        with st.expander("Seed from imported history"):
+            history_cols = st.columns(4)
+            history_name = history_cols[0].text_input("Scenario name", value="Historical baseline", key="planning-history-name")
+            history_currency = history_cols[1].text_input("Currency", value="ILS", key="planning-history-currency")
+            history_start = history_cols[2].date_input(
+                "Scenario start month",
+                value=planning.suggested_start_month(history_currency),
+                key="planning-history-start",
+            )
+            history_months = history_cols[3].number_input("History months", min_value=1, max_value=120, value=6, step=1, key="planning-history-months")
+            if st.button("Preview historical seed", key="planning-history-preview"):
+                try:
+                    preview = planning.preview_history_seed(
+                        name=history_name,
+                        currency=history_currency,
+                        start_month=history_start,
+                        history_months=int(history_months),
+                    )
+                    st.session_state["planning_history_preview"] = preview.model_dump(mode="json")
+                except (ValueError, PlanningValidationError) as exc:
+                    st.error(str(exc))
+            history_preview = st.session_state.get("planning_history_preview")
+            if history_preview:
+                st.json({
+                    "provisional": history_preview["provisional"],
+                    "issue_codes": history_preview["issue_codes"],
+                    "completeness_snapshot": history_preview["completeness_snapshot"],
+                    "items": history_preview["items"],
+                })
+                if st.button("Commit historical seed", key="planning-history-commit"):
+                    try:
+                        planning.commit_history_seed(history_preview["preview_token"])
+                        st.session_state.pop("planning_history_preview", None)
+                        st.success("Historical scenario created")
+                        st.rerun()
+                    except (PlanningPreviewStaleError, PlanningValidationError) as exc:
+                        st.error(str(exc))
+
+        with st.expander("Seed from the supplied planning CSV"):
+            upload = st.file_uploader("Planning CSV", type=["csv"], key="planning-csv-upload")
+            csv_start = st.date_input(
+                "Scenario start month",
+                value=planning.suggested_start_month("ILS"),
+                key="planning-csv-start",
+            )
+            if upload is not None and st.button("Preview CSV seed", key="planning-csv-preview"):
+                try:
+                    preview = planning.preview_csv_seed(upload.getvalue(), upload.name, start_month=csv_start)
+                    st.session_state["planning_csv_preview"] = preview.model_dump(mode="json")
+                    st.session_state["planning_csv_bytes"] = upload.getvalue()
+                except (ValueError, OSError) as exc:
+                    st.error(str(exc))
+            preview_data = st.session_state.get("planning_csv_preview")
+            if preview_data:
+                st.json({
+                    "control_checks": preview_data["control_checks"],
+                    "ignored_sections": preview_data["ignored_sections"],
+                    "warnings": preview_data["warnings"],
+                    "expense_notes": preview_data.get("expense_notes", []),
+                })
+                st.caption("Confirm each CSV category mapping before committing. Unmapped categories remain excluded from category variance.")
+                mapping_values: dict[str, str] = {}
+                preview_key = preview_data.get("file_sha256") or preview_data["preview_token"][-16:]
+                mapping_options = ["(unmapped)"] + planning.analysis_categories(preview_data["currency"])
+                for index, mapping in enumerate(preview_data.get("mappings", [])):
+                    suggestions = mapping.get("suggested_analysis_categories", [])
+                    suggested = suggestions[0] if len(suggestions) == 1 else "(unmapped)"
+                    default_index = mapping_options.index(suggested) if suggested in mapping_options else 0
+                    selected_mapping = st.selectbox(
+                        f"{mapping['csv_category']} → analysis category",
+                        mapping_options,
+                        index=default_index,
+                        key=f"planning-csv-mapping-{preview_key}-{index}-{mapping['csv_category']}",
+                    )
+                    if selected_mapping != "(unmapped)":
+                        mapping_values[mapping["csv_category"]] = selected_mapping
+                control_gap = any(not check.get("passed", False) for check in preview_data.get("control_checks", {}).values())
+                acknowledged = True
+                if control_gap:
+                    acknowledged = st.checkbox(
+                        "I acknowledge unresolved CSV control gaps and will review the seeded assumptions.",
+                        key=f"planning-csv-control-gap-ack-{preview_key}",
+                    )
+                if preview_data.get("duplicate_scenario_id"):
+                    st.info("This file is already linked to a scenario. Duplicate that scenario explicitly to create a new plan.")
+                elif st.button("Commit CSV seed", key="planning-csv-commit"):
+                    try:
+                        if control_gap and not acknowledged:
+                            st.warning("Acknowledge the unresolved control gap before committing this seed.")
+                        else:
+                            planning.commit_csv_seed(
+                                st.session_state["planning_csv_bytes"],
+                                preview_data["preview_token"],
+                                mappings=mapping_values,
+                            )
+                            st.session_state.pop("planning_csv_preview", None)
+                            st.success("CSV scenario created")
+                            st.rerun()
+                    except (DuplicateSeedError, PlanningPreviewStaleError, PlanningValidationError) as exc:
+                        st.error(str(exc))
+
+        if not scenarios:
+            return
+        selected_id = st.selectbox(
+            "Open scenario",
+            [item.scenario_id for item in scenarios],
+            format_func=lambda value: next(item.name for item in scenarios if item.scenario_id == value),
+            key="planning-selected-scenario",
+        )
+        selected = planning.get_scenario(selected_id)
+        revision = planning.get_revision(selected_id)
+        action_cols = st.columns(4)
+        if action_cols[0].button("Duplicate", key="planning-duplicate"):
+            planning.clone_scenario(selected_id)
+            st.rerun()
+        if action_cols[1].button("Archive" if not selected.archived else "Unarchive", key="planning-archive"):
+            planning.archive_scenario(selected_id, not selected.archived)
+            st.rerun()
+        action_cols[2].caption(f"Revision {revision.revision_number}")
+        action_cols[3].caption(f"{selected.currency} · {selected.start_month} to {selected.end_month}")
+        st.subheader("Revision editor")
+        st.caption("Edit rows, add rows, remove rows, or change their schedule. Saving creates an immutable full revision.")
+        editor_rows = [
+            {
+                "id": item.id,
+                "kind": item.kind.value,
+                "label": item.label,
+                "category": item.category or "",
+                "amount": str(item.amount),
+                "frequency": item.frequency.value,
+                "start_month": item.start_month.isoformat() if item.start_month else "",
+                "end_month": item.end_month.isoformat() if item.end_month else "",
+                "occurrence_month": item.occurrence_month.isoformat() if item.occurrence_month else "",
+            }
+            for item in revision.items
+        ]
+        edited_rows = st.data_editor(
+            editor_rows,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key=f"planning-editor-{selected_id}-{revision.revision_number}",
+            column_config={
+                "kind": st.column_config.SelectboxColumn("Kind", options=[item.value for item in PlanningItemKind], required=True),
+                "frequency": st.column_config.SelectboxColumn("Frequency", options=[item.value for item in PlanningFrequency], required=True),
+                "amount": st.column_config.TextColumn("Amount", required=True),
+                "start_month": st.column_config.TextColumn("Start month (YYYY-MM-01)"),
+                "end_month": st.column_config.TextColumn("End month (YYYY-MM-01)"),
+                "occurrence_month": st.column_config.TextColumn("Occurrence month (YYYY-MM-01)"),
+            },
+            disabled=["id"],
+        )
+        revision_notes = st.text_area("Revision notes", value=revision.notes, key=f"planning-revision-notes-{selected_id}-{revision.revision_number}")
+
+        def editor_items(rows):
+            original = {item.id: item for item in revision.items}
+            parsed_items = []
+            for row in rows:
+                values = {key: row.get(key) for key in ("id", "kind", "label", "category", "amount", "frequency", "start_month", "end_month", "occurrence_month")}
+                if all(value in (None, "") for key, value in values.items() if key != "id"):
+                    continue
+                item_id = str(values.get("id") or "")
+                kind = str(values.get("kind") or "").strip()
+                frequency = str(values.get("frequency") or "").strip()
+                label = str(values.get("label") or "").strip()
+                amount = Decimal(str(values.get("amount") or "0"))
+                schedule = {
+                    "start_month": str(values.get("start_month") or "").strip() or None,
+                    "end_month": str(values.get("end_month") or "").strip() or None,
+                    "occurrence_month": str(values.get("occurrence_month") or "").strip() or None,
+                }
+                if frequency == PlanningFrequency.MONTHLY.value:
+                    schedule["occurrence_month"] = None
+                else:
+                    schedule["start_month"] = None
+                    schedule["end_month"] = None
+                base = original.get(item_id)
+                if base is not None:
+                    payload = base.model_dump(mode="json")
+                    payload.update({
+                        "kind": kind,
+                        "label": label,
+                        "category": str(values.get("category") or "").strip() or None,
+                        "amount": str(amount),
+                        "frequency": frequency,
+                        **schedule,
+                    })
+                    parsed_items.append(PlanningItem.model_validate(payload))
+                else:
+                    parsed_items.append(
+                        PlanningItemInput(
+                            kind=kind,
+                            label=label,
+                            category=str(values.get("category") or "").strip() or None,
+                            amount=amount,
+                            frequency=frequency,
+                            **schedule,
+                        )
+                    )
+            return parsed_items
+
+        draft_items = None
+        try:
+            draft_items = editor_items(edited_rows)
+            draft_projection = planning.project_draft(selected_id, draft_items, revision_number=revision.revision_number)
+            if st.button("Save revision", key=f"planning-save-revision-{selected_id}-{revision.revision_number}"):
+                planning.save_revision(selected_id, revision.revision_number, draft_items, notes=revision_notes)
+                st.success("Revision saved")
+                st.rerun()
+        except (ValueError, PlanningValidationError) as exc:
+            draft_projection = None
+            st.error(f"Draft is invalid: {exc}")
+        if draft_projection is not None:
+            st.caption("Draft projection updates as you edit the table; save when the schedule is ready.")
+            st.dataframe([month.model_dump(mode="json") for month in draft_projection.months], use_container_width=True, hide_index=True)
+        st.subheader("Projection")
+        projection = planning.project_draft(selected_id)
+        if projection.provisional:
+            st.warning("This projection is provisional: " + ", ".join(projection.issue_codes or ["seed quality gaps"]) + ".")
+        st.dataframe([month.model_dump(mode="json") for month in projection.months], use_container_width=True, hide_index=True)
+        st.subheader("Revision history")
+        st.dataframe([item.model_dump(mode="json") for item in planning.list_revisions(selected_id)], use_container_width=True, hide_index=True)
+        if revision.revision_number > 1 and st.button("Restore revision 1", key="planning-restore-first"):
+            try:
+                planning.restore_revision(selected_id, 1)
+                st.rerun()
+            except StaleRevisionError as exc:
+                st.error(str(exc))
+        st.subheader("Comparisons")
+        compare_ids = st.multiselect(
+            "Scenarios to compare (2–4)",
+            [item.scenario_id for item in scenarios if item.currency == selected.currency],
+            default=[selected_id] if len(scenarios) == 1 else [],
+            max_selections=4,
+            format_func=lambda value: next(item.name for item in scenarios if item.scenario_id == value),
+            key="planning-compare-scenarios",
+        )
+        if len(compare_ids) >= 2:
+            comparison = planning.compare_scenarios(compare_ids)
+            rows = []
+            for series in comparison.scenarios:
+                for month, plan in zip(comparison.months, series.months):
+                    rows.append({"scenario": series.name, "month": month, **(plan.model_dump(mode="json") if plan else {})})
+            st.dataframe(rows, use_container_width=True, hide_index=True)
+        actual = planning.compare_actual(selected_id)
+        st.subheader("Actual versus plan")
+        st.dataframe([item.model_dump(mode="json") for item in actual.months], use_container_width=True, hide_index=True)
+
     pages = [
         st.Page(overview_page, title="Overview", icon="📊"),
         st.Page(expenses_page, title="Expenses", icon="🧾"),
         st.Page(data_quality_page, title="Data Quality", icon="✅"),
         st.Page(classification_page, title="Classification", icon="🏷️"),
+        st.Page(planning_page, title="Planning", icon="📅"),
     ]
     navigation = st.navigation(pages)
     navigation.run()

@@ -543,6 +543,269 @@ class BackupVerification(BaseModel):
     checks: list[AuditCheck] = Field(default_factory=list)
 
 
+class PlanningItemKind(StrEnum):
+    INCOME = "income"
+    EXPENSE = "expense"
+    SAVINGS_CONTRIBUTION = "savings_contribution"
+    SAVINGS_WITHDRAWAL = "savings_withdrawal"
+
+
+class PlanningFrequency(StrEnum):
+    MONTHLY = "monthly"
+    ONE_TIME = "one_time"
+
+
+class PlanningSeedOrigin(StrEnum):
+    MANUAL = "manual"
+    HISTORICAL = "historical"
+    CSV = "csv"
+
+
+def _planning_month(value: date | str | None) -> date | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and len(value) == 7:
+        value = f"{value}-01"
+    result = date.fromisoformat(value) if isinstance(value, str) else value
+    if result.day != 1:
+        raise ValueError("Planning dates must be the first day of a calendar month")
+    return result
+
+
+class PlanningItemInput(BaseModel):
+    """A positive-magnitude scheduled planning assumption."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: PlanningItemKind
+    label: str = Field(validation_alias=AliasChoices("label", "name", "description"))
+    category: str | None = None
+    amount: Decimal
+    frequency: PlanningFrequency
+    start_month: date | None = None
+    end_month: date | None = None
+    occurrence_month: date | None = Field(
+        default=None, validation_alias=AliasChoices("occurrence_month", "month")
+    )
+
+    @field_validator("start_month", "end_month", "occurrence_month", mode="before")
+    @classmethod
+    def parse_planning_month(cls, value):
+        return _planning_month(value)
+
+    @field_validator("label")
+    @classmethod
+    def require_label(cls, value: str) -> str:
+        value = str(value).strip()
+        if not value or len(value) > 500:
+            raise ValueError("Planning item label must be non-empty and at most 500 characters")
+        return value
+
+    @field_validator("category")
+    @classmethod
+    def normalize_category(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = str(value).strip()
+        return value or None
+
+    @field_validator("amount")
+    @classmethod
+    def require_non_negative_amount(cls, value: Decimal) -> Decimal:
+        value = Decimal(value)
+        if not value.is_finite() or value < 0:
+            raise ValueError("Planning item amount must be a finite positive magnitude")
+        return value
+
+    @model_validator(mode="after")
+    def require_schedule(self) -> PlanningItemInput:
+        if self.frequency == PlanningFrequency.MONTHLY:
+            if self.start_month is None or self.end_month is None:
+                raise ValueError("Monthly planning items require start_month and end_month")
+            if self.start_month > self.end_month:
+                raise ValueError("Planning item start_month cannot be after end_month")
+            if self.occurrence_month is not None:
+                raise ValueError("Monthly planning items cannot have occurrence_month")
+        elif self.occurrence_month is None:
+            raise ValueError("One-time planning items require occurrence_month")
+        elif self.start_month is not None or self.end_month is not None:
+            raise ValueError("One-time planning items cannot have start_month or end_month")
+        return self
+
+
+class PlanningItem(PlanningItemInput):
+    id: str = ""
+    origin: str = PlanningSeedOrigin.MANUAL.value
+    source_range: str | None = None
+    source_row: int | None = None
+    policy_version: str = "planning-v1"
+    completeness_codes: list[str] = Field(default_factory=list)
+    contributor_transaction_ids: list[int] = Field(default_factory=list)
+    provenance: dict[str, Any] = Field(default_factory=dict)
+    notes: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class PlanningScenarioSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    name: str
+    currency: str
+    start_month: date
+    end_month: date
+    current_revision_number: int
+    archived: bool = False
+    clone_of_scenario_id: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def id(self) -> str:
+        return self.scenario_id
+
+
+class PlanningRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    revision_id: str
+    scenario_id: str
+    revision_number: int
+    items: list[PlanningItem] = Field(default_factory=list)
+    notes: str = ""
+    created_at: datetime | None = None
+    provisional: bool = False
+    issue_codes: list[str] = Field(default_factory=list)
+    completeness_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    expense_notes: list[dict[str, Any]] = Field(default_factory=list)
+
+    @property
+    def id(self) -> str:
+        return self.revision_id
+
+    @property
+    def revision(self) -> int:
+        return self.revision_number
+
+
+class PlanningSeedPreview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    preview_token: str
+    origin: PlanningSeedOrigin
+    scenario_name: str
+    currency: str
+    start_month: date
+    end_month: date
+    items: list[PlanningItemInput] = Field(default_factory=list)
+    control_checks: dict[str, Any] = Field(default_factory=dict)
+    ignored_sections: list[str] = Field(default_factory=list)
+    mappings: list[dict[str, Any]] = Field(default_factory=list)
+    warnings: list[str] = Field(default_factory=list)
+    issue_codes: list[str] = Field(default_factory=list)
+    provisional: bool = False
+    completeness_snapshot: list[dict[str, Any]] = Field(default_factory=list)
+    file_sha256: str | None = None
+    filename: str | None = None
+    duplicate_scenario_id: str | None = None
+    expense_notes: list[dict[str, Any]] = Field(default_factory=list)
+    expense_target_count: int = 0
+    recurring_income_count: int = 0
+    savings_summary_count: int = 0
+
+
+class MonthlyPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month: date
+    currency: str
+    income: Decimal = Decimal(0)
+    expenses: Decimal = Decimal(0)
+    savings_contributions: Decimal = Decimal(0)
+    savings_withdrawals: Decimal = Decimal(0)
+    operating_surplus: Decimal = Decimal(0)
+    net_planned_savings: Decimal = Decimal(0)
+    cash_remaining_after_savings: Decimal = Decimal(0)
+    expenses_by_category: dict[str, Decimal] = Field(default_factory=dict)
+    income_by_category: dict[str, Decimal] = Field(default_factory=dict)
+    contributor_item_ids: dict[str, list[str]] = Field(default_factory=dict)
+    unmapped_expense_categories: list[str] = Field(default_factory=list)
+
+    @property
+    def operating_surplus_or_deficit(self) -> Decimal:
+        return self.operating_surplus
+
+
+class PlanningProjection(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    revision_number: int
+    currency: str
+    months: list[MonthlyPlan] = Field(default_factory=list)
+    provisional: bool = False
+    issue_codes: list[str] = Field(default_factory=list)
+
+    @property
+    def monthly_plans(self) -> list[MonthlyPlan]:
+        return self.months
+
+
+class ScenarioComparisonSeries(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    name: str
+    months: list[MonthlyPlan | None] = Field(default_factory=list)
+
+
+class ScenarioComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    currency: str
+    months: list[date] = Field(default_factory=list)
+    scenarios: list[ScenarioComparisonSeries] = Field(default_factory=list)
+
+    @property
+    def results(self) -> list[ScenarioComparisonSeries]:
+        return self.scenarios
+
+
+class ActualPlanMonth(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    month: date
+    complete: bool
+    issue_codes: list[str] = Field(default_factory=list)
+    planned: MonthlyPlan
+    actual_income: Decimal | None = None
+    actual_expenses: Decimal | None = None
+    actual_surplus: Decimal | None = None
+    actual_net_savings: Decimal | None = None
+    expense_variances: dict[str, Decimal] | None = None
+    category_variance_unavailable: list[str] = Field(default_factory=list)
+    income_variance: Decimal | None = None
+    surplus_variance: Decimal | None = None
+    savings_variance: Decimal | None = None
+    transaction_ids_by_category: dict[str, list[int]] = Field(default_factory=dict)
+
+    @property
+    def formal_variance_available(self) -> bool:
+        return self.complete
+
+
+class ActualPlanComparison(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scenario_id: str
+    revision_number: int
+    currency: str
+    months: list[ActualPlanMonth] = Field(default_factory=list)
+
+    @property
+    def results(self) -> list[ActualPlanMonth]:
+        return self.months
+
+
 # Insight result types are declared after the dashboard container for readability.
 ExpenseDashboard.model_rebuild()
 
@@ -565,6 +828,8 @@ class ClassificationReviewItem(BaseModel):
 
 __all__ = [
     "AccountDescriptor",
+    "ActualPlanComparison",
+    "ActualPlanMonth",
     "AuditCheck",
     "AuditReport",
     "BackupManifest",
@@ -591,12 +856,24 @@ __all__ = [
     "MatchMethod",
     "MetricBreakdown",
     "MonthlyMetrics",
+    "MonthlyPlan",
     "MonthlySeriesPoint",
     "NormalizedTransactionCandidate",
     "OverviewDashboard",
     "ParsedSourceRecord",
+    "PlanningFrequency",
+    "PlanningItem",
+    "PlanningItemInput",
+    "PlanningItemKind",
+    "PlanningProjection",
+    "PlanningRevision",
+    "PlanningScenarioSummary",
+    "PlanningSeedOrigin",
+    "PlanningSeedPreview",
     "PotentialRecurringSpending",
     "ReconciliationDecision",
+    "ScenarioComparison",
+    "ScenarioComparisonSeries",
     "TransactionContribution",
     "UnusualCategorySpending",
 ]

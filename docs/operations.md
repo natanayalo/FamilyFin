@@ -14,7 +14,7 @@ Run the read-only audit before making a backup:
     family-finance verify-backup /safe/location/family-finance-backup-2026-09-21
 
 `backup` uses SQLite's online backup API, copies the content-addressed import
-archives, writes a manifest, verifies the temporary sibling, and renames it
+and planning archives, writes a manifest, verifies the temporary sibling, and renames it
 into place only after verification. It never overwrites an existing backup.
 
 ## Manual restore
@@ -26,9 +26,9 @@ There is intentionally no destructive automatic restore command.
    result.
 3. Preserve the current data directory by renaming it to a timestamped
    recovery directory outside the active path. Do not delete it.
-4. Restore the backup's `family_finance.sqlite3` and `imports/` directory as a
-   matched pair into a new `data/local/` directory. Keep the backup manifest
-   alongside the restored files for evidence.
+4. Restore the backup's `family_finance.sqlite3`, `imports/`, and
+   `planning-imports/` directories as a matched set into a new `data/local/`
+   directory. Keep the backup manifest alongside the restored files for evidence.
 5. Set `FAMILY_FINANCE_DATA_ROOT` to the restored directory, run
    `family-finance audit`, and start Streamlit again on localhost.
 
