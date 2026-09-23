@@ -30,6 +30,7 @@ class JsonEventLogger:
         self,
         name: str,
         *,
+        status: str | None = None,
         duration_ms: float | None = None,
         counts: dict[str, int] | None = None,
         issue_codes: list[str] | tuple[str, ...] | None = None,
@@ -41,6 +42,8 @@ class JsonEventLogger:
         }
         if duration_ms is not None:
             payload["duration_ms"] = round(float(duration_ms), 3)
+        if status is not None:
+            payload["status"] = str(status)
         if counts:
             payload["counts"] = {str(key): int(value) for key, value in counts.items()}
         if issue_codes:

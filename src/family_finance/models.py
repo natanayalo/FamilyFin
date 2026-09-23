@@ -114,6 +114,20 @@ class ImportInspection(BaseModel):
     preview_rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ImportStatistics(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    total_records: int = 0
+    inserted: int = 0
+    unchanged: int = 0
+    updated: int = 0
+    rejected: int = 0
+    ambiguous: int = 0
+    unresolved: int = 0
+    duplicate_file: bool = False
+    non_ils_records: int = 0
+
+
 class ImportPreview(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -129,6 +143,40 @@ class ImportPreview(BaseModel):
     preview_rows: list[dict[str, Any]] = Field(default_factory=list)
 
 
+class ImportPreflight(ImportPreview):
+    """Occurrence-aware, read-only prediction used by local automation."""
+
+    predicted_statistics: ImportStatistics | None = None
+    duplicate_file: bool = False
+    ambiguous_count: int = 0
+    reconciliation_count: int = 0
+    action: str = "commit"
+
+    @property
+    def predicted_inserts(self) -> int:
+        return self.predicted_statistics.inserted if self.predicted_statistics else 0
+
+    @property
+    def predicted_updates(self) -> int:
+        return self.predicted_statistics.updated if self.predicted_statistics else 0
+
+    @property
+    def predicted_duplicates(self) -> int:
+        return 1 if self.duplicate_file else 0
+
+    @property
+    def predicted_reconciliation_cases(self) -> int:
+        return self.reconciliation_count
+
+    @property
+    def predicted_ambiguous(self) -> int:
+        return self.ambiguous_count
+
+    @property
+    def predicted_unchanged(self) -> int:
+        return self.predicted_statistics.unchanged if self.predicted_statistics else 0
+
+
 class ReconciliationDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -136,20 +184,6 @@ class ReconciliationDecision(BaseModel):
     resolution: str
     transaction_id: int | None = None
     note: str | None = None
-
-
-class ImportStatistics(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-
-    total_records: int = 0
-    inserted: int = 0
-    unchanged: int = 0
-    updated: int = 0
-    rejected: int = 0
-    ambiguous: int = 0
-    unresolved: int = 0
-    duplicate_file: bool = False
-    non_ils_records: int = 0
 
 
 class ImportResult(BaseModel):
@@ -541,6 +575,88 @@ class BackupVerification(BaseModel):
 
     passed: bool
     checks: list[AuditCheck] = Field(default_factory=list)
+
+
+class AutomationPreferences(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    planning_scenario_id: str | None = None
+    planning_revision_id: str | None = None
+    forecast_id: str | None = None
+    forecast_revision_id: str | None = None
+    forecast_role: str | None = None
+    apartment_study_id: str | None = None
+    apartment_revision_id: str | None = None
+    apartment_alternative_name: str | None = None
+    updated_at: datetime | None = None
+
+    @property
+    def normalized_apartment_alternative_name(self) -> str | None:
+        return self.apartment_alternative_name.casefold().strip() if self.apartment_alternative_name else None
+
+
+class AutomationFileResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source_path: str
+    sha256: str | None = None
+    status: str
+    reason_code: str | None = None
+    batch_id: str | None = None
+    managed_path: str | None = None
+    size_bytes: int | None = None
+    preflight: ImportPreflight | None = None
+
+
+class AutomationRunResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: str
+    status: str
+    dry_run: bool = False
+    audit_passed: bool = False
+    backup_path: str | None = None
+    files: list[AutomationFileResult] = Field(default_factory=list)
+    counts: dict[str, int] = Field(default_factory=dict)
+    issue_codes: list[str] = Field(default_factory=list)
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class InsightAlert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    fingerprint: str
+    algorithm_version: str
+    condition_type: str
+    subject_identity: str
+    currency: str | None = None
+    evidence_period: str
+    state: Literal["open", "acknowledged", "resolved"]
+    first_seen: datetime
+    last_seen: datetime
+    occurrence_count: int = 1
+    evidence: dict[str, Any] = Field(default_factory=dict)
+    acknowledged_at: datetime | None = None
+    resolved_at: datetime | None = None
+    manual_resolution_fingerprint: str | None = None
+
+
+class MonthlySummaryRevision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    identity_id: str
+    revision_number: int
+    month: date
+    currency: str
+    input_fingerprint: str
+    content_hash: str
+    content: dict[str, Any]
+    markdown: str
+    contributor_provenance: dict[str, Any] = Field(default_factory=dict)
+    created_at: datetime
 
 
 class PlanningItemKind(StrEnum):
@@ -2110,6 +2226,9 @@ __all__ = [
     "ApartmentStudySummary",
     "AuditCheck",
     "AuditReport",
+    "AutomationFileResult",
+    "AutomationPreferences",
+    "AutomationRunResult",
     "BackupManifest",
     "BackupVerification",
     "CategorySummary",
@@ -2159,16 +2278,19 @@ __all__ = [
     "ForecastTargetType",
     "HousingCostInput",
     "ImportInspection",
+    "ImportPreflight",
     "ImportPreview",
     "ImportResult",
     "ImportStatistics",
     "ImportStatus",
+    "InsightAlert",
     "MatchMethod",
     "MetricBreakdown",
     "MonthlyMetrics",
     "MonthlyPlan",
     "MonthlyPoolResult",
     "MonthlySeriesPoint",
+    "MonthlySummaryRevision",
     "MortgageAssumption",
     "MortgageScheduleRow",
     "NetWorthAccount",

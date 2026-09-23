@@ -27,6 +27,7 @@ from family_finance.models import (
 )
 from family_finance.persistence.db import Database, json_dumps
 from family_finance.persistence.models import (
+    AutomationFileOutcomeRow,
     NetWorthSourceFileRow,
     PlanningSourceFileRow,
     SourceFileRow,
@@ -39,6 +40,10 @@ def _hash_file(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def _hash_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def _schema_head() -> str:
@@ -149,7 +154,9 @@ class BackupService:
         copied_hashes = {
             str(item["sha256"])
             for item in manifest.files
-            if str(item["relative_path"]).startswith(("imports/", "planning-imports/", "net-worth-imports/"))
+            if str(item["relative_path"]).startswith((
+                "imports/", "planning-imports/", "net-worth-imports/", "automation/"
+            ))
         }
         archive_ok = source_hashes.issubset(copied_hashes)
         checks.append(AuditCheck(
@@ -195,6 +202,7 @@ class BackupService:
                 checks.append(BackupService._verify_forecasting(connection))
                 checks.append(BackupService._verify_net_worth(connection))
                 checks.append(BackupService._verify_apartment_planning(connection))
+                checks.append(BackupService._verify_phase8(connection, database_path.parent))
                 source_hashes = {
                     str(row[0])
                     for row in connection.execute("SELECT sha256 FROM source_files").fetchall()
@@ -206,6 +214,13 @@ class BackupService:
                 source_hashes.update(
                     str(row[0])
                     for row in connection.execute("SELECT sha256 FROM net_worth_source_files").fetchall()
+                )
+                source_hashes.update(
+                    str(row[0])
+                    for row in connection.execute(
+                        "SELECT sha256 FROM automation_file_outcomes "
+                        "WHERE sha256 IS NOT NULL AND managed_path IS NOT NULL"
+                    ).fetchall()
                 )
                 return checks, source_hashes
         except (sqlite3.DatabaseError, OSError):
@@ -228,11 +243,16 @@ class BackupService:
         planning_archive_target.mkdir()
         net_worth_archive_target = root / "net-worth-imports"
         net_worth_archive_target.mkdir()
+        automation_processed_target = root / "automation" / "processed"
+        automation_needs_review_target = root / "automation" / "needs-review"
+        automation_processed_target.mkdir(parents=True)
+        automation_needs_review_target.mkdir(parents=True)
         database_path = root / database.path.name
         with database.session() as session:
             source_files = session.query(SourceFileRow).all()
             planning_source_files = session.query(PlanningSourceFileRow).all()
             net_worth_source_files = session.query(NetWorthSourceFileRow).all()
+            automation_outcomes = session.query(AutomationFileOutcomeRow).all()
         with sqlite3.connect(str(database_path)) as connection:
             for source_file in source_files:
                 source = Path(source_file.archived_path)
@@ -285,6 +305,33 @@ class BackupService:
                     "UPDATE net_worth_source_files SET archived_path = ? WHERE sha256 = ?",
                     (f"net-worth-imports/{target.name}", source_file.sha256),
                 )
+            for outcome in automation_outcomes:
+                # Stability failures may intentionally have no content hash,
+                # but their managed copy is still part of the audit trail and
+                # must be relocated into the backup database.
+                if not outcome.managed_path:
+                    continue
+                source = Path(outcome.managed_path)
+                if not source.is_absolute():
+                    source = self.settings.data_root / source
+                if not source.is_file():
+                    raise FileNotFoundError("A managed automation file is missing")
+                try:
+                    relative = source.relative_to(self.settings.automation_processed_root)
+                    target_root = automation_processed_target
+                except ValueError:
+                    try:
+                        relative = source.relative_to(self.settings.automation_needs_review_root)
+                        target_root = automation_needs_review_target
+                    except ValueError as exc:
+                        raise FileNotFoundError("A managed automation path is outside its tree") from exc
+                target = target_root / relative
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, target)
+                connection.execute(
+                    "UPDATE automation_file_outcomes SET managed_path = ? WHERE id = ?",
+                    (f"automation/{target.relative_to(root / 'automation').as_posix()}", outcome.id),
+                )
             connection.commit()
             connection.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             connection.execute("PRAGMA journal_mode=DELETE")
@@ -305,6 +352,56 @@ class BackupService:
             schema_revision=_schema_head(),
             files=files,
         )
+
+    @staticmethod
+    def _verify_phase8(connection: sqlite3.Connection, backup_root: Path) -> AuditCheck:
+        invalid: list[str] = []
+        try:
+            outcomes = connection.execute(
+                "SELECT sha256, managed_path FROM automation_file_outcomes WHERE managed_path IS NOT NULL"
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            return AuditCheck(name="phase8_invariants", passed=False, issue_codes=["PHASE8_TABLES_MISSING"])
+        for digest, path_value in outcomes:
+            path = Path(str(path_value))
+            if not path.is_absolute():
+                path = backup_root / path
+            try:
+                relative = path.resolve().relative_to(backup_root.resolve())
+            except ValueError:
+                invalid.append("AUTOMATION_MANAGED_PATH_INVALID")
+                continue
+            if not relative.as_posix().startswith(("automation/processed/", "automation/needs-review/")):
+                invalid.append("AUTOMATION_MANAGED_PATH_INVALID")
+                continue
+            if not path.is_file() or path.is_symlink():
+                invalid.append("AUTOMATION_MANAGED_PATH_INVALID")
+            elif digest and _hash_file(path) != str(digest):
+                invalid.append("AUTOMATION_FILE_HASH_MISMATCH")
+            if digest and len(str(digest)) != 64:
+                invalid.append("AUTOMATION_FILE_HASH_INVALID")
+        try:
+            summary_rows = connection.execute(
+                "SELECT content_json, content_hash, contributor_provenance_json FROM monthly_summary_revisions"
+            ).fetchall()
+        except sqlite3.DatabaseError:
+            invalid.append("PHASE8_TABLES_MISSING")
+            summary_rows = []
+        for content_json, content_hash, provenance_json in summary_rows:
+            if _hash_text(str(content_json)) != str(content_hash):
+                invalid.append("SUMMARY_CONTENT_HASH_INVALID")
+            try:
+                content = json.loads(content_json)
+                expected = {
+                    "algorithm_version": content.get("algorithm_version"),
+                    "contributors": content.get("contributor_provenance", {}),
+                    "anomalies": "category_anomalies",
+                }
+                if json.loads(provenance_json or "{}") != expected:
+                    invalid.append("SUMMARY_CONTRIBUTOR_PROVENANCE_INVALID")
+            except (TypeError, ValueError, json.JSONDecodeError):
+                invalid.append("SUMMARY_CONTENT_INVALID")
+        return AuditCheck(name="phase8_invariants", passed=not invalid, issue_codes=sorted(set(invalid)))
 
     @staticmethod
     def _verify_provenance(connection: sqlite3.Connection) -> AuditCheck:

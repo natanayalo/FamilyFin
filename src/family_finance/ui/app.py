@@ -15,6 +15,8 @@ def main() -> None:
     from sqlalchemy.exc import SQLAlchemyError
 
     from family_finance.apartment import ApartmentValidationError
+    from family_finance.audit import AuditService
+    from family_finance.automation import AutomationService
     from family_finance.dashboard import DashboardService
     from family_finance.forecasting import ForecastValidationError
     from family_finance.formatting import format_amount, format_month, format_rate
@@ -1755,6 +1757,100 @@ def main() -> None:
             st.subheader("Saved apartment studies")
             st.dataframe([item.model_dump(mode="json") for item in saved_studies], use_container_width=True, hide_index=True)
 
+    def automation_insights_page() -> None:
+        """Compact, Streamlit-native Phase 8 workflow using service contracts."""
+        st.title("Automation & Insights")
+        automation = AutomationService(
+            settings=service.settings, database=service.database, import_service=service
+        )
+        audit = AuditService(service.database, service.settings).run()
+        with service.database.session() as session:
+            from family_finance.persistence.models import AutomationRunRow
+            latest_run = session.query(AutomationRunRow).order_by(AutomationRunRow.started_at.desc()).first()
+        cols = st.columns(3)
+        cols[0].metric("Audit", "Passing" if audit.passed else "Blocked")
+        cols[1].metric("Last run", latest_run.status if latest_run else "Never")
+        cols[2].metric("Inbox", len(automation._inbox_files()))
+        st.caption(
+            "Backup: configured"
+            if service.settings.automation_backup_root is not None
+            else "Backup: not configured (commits remain local-only)"
+        )
+        if st.button("Run now", type="primary", disabled=not audit.passed):
+            result = automation.run()
+            st.session_state["automation_last_result"] = result.model_dump(mode="json")
+            st.rerun()
+        if not audit.passed:
+            st.warning("Automation is blocked until the database and archive audit passes.")
+
+        insights = service.insights_service
+        with st.expander("Primary selections"):
+            preferences = insights.get_preferences()
+            scenarios = service.planning_service.list_scenarios()
+            forecasts = service.savings_forecast_service.list_forecasts()
+            studies = service.apartment_planning_service.list_studies()
+            scenario_ids = ["(none)"] + [item.scenario_id for item in scenarios]
+            forecast_ids = ["(none)"] + [item.forecast_id for item in forecasts]
+            study_ids = ["(none)"] + [item.study_id for item in studies]
+            selected_scenario = st.selectbox("Primary planning scenario", scenario_ids, index=scenario_ids.index(preferences.planning_scenario_id) if preferences.planning_scenario_id in scenario_ids else 0)
+            selected_forecast = st.selectbox("Primary forecast", forecast_ids, index=forecast_ids.index(preferences.forecast_id) if preferences.forecast_id in forecast_ids else 0)
+            selected_study = st.selectbox("Primary apartment study", study_ids, index=study_ids.index(preferences.apartment_study_id) if preferences.apartment_study_id in study_ids else 0)
+            selected_role = st.selectbox("Forecast role", ["baseline", "conservative", "optimistic"])
+            selected_alternative = st.text_input("Apartment alternative name", value=preferences.apartment_alternative_name or "")
+            if st.button("Save primary selections"):
+                insights.save_preferences({
+                    "planning_scenario_id": None if selected_scenario == "(none)" else selected_scenario,
+                    "forecast_id": None if selected_forecast == "(none)" else selected_forecast,
+                    "forecast_role": selected_role,
+                    "apartment_study_id": None if selected_study == "(none)" else selected_study,
+                    "apartment_alternative_name": selected_alternative or None,
+                })
+                st.rerun()
+
+        with st.expander("Attention files"):
+            attention = automation.list_attention_files()
+            if not attention:
+                st.info("No files need review.")
+            for path in attention:
+                st.caption(path.name)
+                review_cols = st.columns(2)
+                if review_cols[0].button("Preflight", key=f"preflight-{path}"):
+                    try:
+                        st.json(automation.preflight_attention(path).model_dump(mode="json"))
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(str(exc))
+                if review_cols[1].button("Commit for reconciliation", key=f"force-{path}"):
+                    try:
+                        automation.commit_attention(path)
+                        st.rerun()
+                    except Exception as exc:  # noqa: BLE001
+                        st.error(str(exc))
+
+        st.subheader("Alerts")
+        alert_state = st.selectbox("Alert state", ["(all)", "open", "acknowledged", "resolved"])
+        alerts = insights.list_alerts(state=None if alert_state == "(all)" else alert_state)
+        if not alerts:
+            st.info("No alerts for this scope.")
+        for alert in alerts:
+            with st.expander(f"{alert.state} · {alert.condition_type} · {alert.evidence_period}"):
+                st.json(alert.evidence)
+                action_cols = st.columns(2)
+                if alert.state == "open" and action_cols[0].button("Acknowledge", key=f"ack-{alert.id}"):
+                    insights.acknowledge_alert(alert.id)
+                    st.rerun()
+                if alert.state != "resolved" and action_cols[1].button("Resolve", key=f"resolve-{alert.id}"):
+                    insights.resolve_alert(alert.id)
+                    st.rerun()
+
+        st.subheader("Monthly summaries")
+        summaries = insights.list_summary_revisions()
+        if not summaries:
+            st.info("No complete previous-month summaries yet.")
+        for summary in summaries:
+            with st.expander(f"{summary.month} · revision {summary.revision_number}"):
+                st.download_button("Download Markdown", summary.markdown, file_name=f"summary-{summary.month}.md", mime="text/markdown", key=f"md-{summary.id}")
+                st.download_button("Download JSON", json.dumps(summary.content, ensure_ascii=False, indent=2), file_name=f"summary-{summary.month}.json", mime="application/json", key=f"json-{summary.id}")
+
     pages = [
         st.Page(overview_page, title="Overview", icon="📊"),
         st.Page(expenses_page, title="Expenses", icon="🧾"),
@@ -1764,6 +1860,7 @@ def main() -> None:
         st.Page(net_worth_page, title="Net Worth", icon="💎"),
         st.Page(savings_forecast_page, title="Savings Forecast", icon="📈"),
         st.Page(apartment_plan_page, title="Apartment Plan", icon="🏠"),
+        st.Page(automation_insights_page, title="Automation & Insights", icon="⚙️"),
     ]
     navigation = st.navigation(pages)
     navigation.run()

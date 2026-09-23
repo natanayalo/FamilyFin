@@ -5,6 +5,19 @@ rotating JSON-lines event log under `data/local/` (or the directory selected by
 `FAMILY_FINANCE_DATA_ROOT`). Event logs contain only event names, timestamps,
 durations, aggregate counts, and issue/error codes.
 
+## Local automation
+
+Place manually exported FamilyBiz `.xlsx` files in
+`data/local/automation/inbox/` and review a pass with:
+
+    family-finance automate --dry-run
+    family-finance automate
+
+Set `FAMILY_FINANCE_AUTOMATION_BACKUP_ROOT` to require a verified backup before
+the first commit in a run. Safe files move to `automation/processed/YYYY-MM/`;
+invalid, unstable, or ambiguous files move to `automation/needs-review/YYYY-MM/`.
+The runner never resolves reconciliation or classification questions.
+
 ## Audit and backup
 
 Run the read-only audit before making a backup:

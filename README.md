@@ -46,3 +46,9 @@ See docs/ for the evidence-based data analysis, architecture, data model, and ro
 See [`docs/operations.md`](docs/operations.md) for audit, backup, and manual restore procedures.
 
 See [`docs/net_worth_methodology.md`](docs/net_worth_methodology.md) for the observation, staleness, liquidity, and forecast-comparison rules.
+
+Phase 8 adds local-only recurring automation, deterministic persisted alerts,
+immutable previous-month summaries, and the **Automation & Insights** page.
+Automation can be run manually with `family-finance automate [--dry-run]`.
+The documented macOS `launchd` setup remains a manual user action; see
+[`docs/automation_launchd.md`](docs/automation_launchd.md).

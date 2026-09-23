@@ -11,6 +11,8 @@ from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
+from sqlalchemy import select
+
 from family_finance.config import Settings
 from family_finance.importers.familybiz import (
     FamilyBizParser,
@@ -19,6 +21,7 @@ from family_finance.importers.familybiz import (
 from family_finance.logging import JsonEventLogger
 from family_finance.models import (
     DataQualityIssue,
+    ImportPreflight,
     ImportPreview,
     ImportResult,
     ImportStatistics,
@@ -26,11 +29,16 @@ from family_finance.models import (
     ReconciliationDecision,
 )
 from family_finance.persistence.db import Database, json_dumps, utc_now
+from family_finance.persistence.models import AccountRow, ImportBatchRow
 from family_finance.persistence.repositories import ImportRepository
 
 
 class PreviewStaleError(ValueError):
     """The uploaded file or database baseline changed after preview."""
+
+
+class ImportAmbiguityError(ValueError):
+    """Automation refused to commit a file requiring reconciliation."""
 
 
 class ImportService:
@@ -79,6 +87,13 @@ class ImportService:
             planning_service=self.planning_service,
         )
         self.apartment_service = self.apartment_planning_service
+        self.insights_service = InsightsService(
+            self.database,
+            classifier=self.classification_service,
+            metrics=self.metrics_service,
+            settings=self.settings,
+        )
+        self.insights = self.insights_service
 
     def inspect_familybiz(self, file_bytes: bytes):
         return self.parser.inspect(file_bytes)
@@ -116,11 +131,67 @@ class ImportService:
         )
         return preview
 
+    def preflight_import(
+        self,
+        file_bytes: bytes,
+        filename: str | None = None,
+    ) -> ImportPreflight:
+        """Predict a commit using the same occurrence-aware matcher as commit.
+
+        This method intentionally performs no writes: it creates no account,
+        category, source-file, batch, transaction, or archive rows.
+        """
+        parsed = self.parser.parse(file_bytes, filename=filename)
+        with self.database.session() as session:
+            baseline = self._latest_committed_batch_in_session(session)
+            from family_finance.persistence.models import SourceFileRow
+
+            duplicate = session.execute(
+                select(SourceFileRow).where(SourceFileRow.sha256 == parsed.inspection.file_sha256)
+            ).scalar_one_or_none() is not None
+            statistics, issues = self._predict_matches(
+                session, parsed.records, parsed.issues, duplicate=duplicate
+            )
+        token_payload = {
+            "file_sha256": parsed.inspection.file_sha256,
+            "parser_version": parsed.inspection.parser_version,
+            "baseline_batch_id": baseline,
+        }
+        preview = ImportPreflight(
+            preview_token=self._encode_token(token_payload),
+            inspection=parsed.inspection,
+            parser_version=parsed.inspection.parser_version,
+            file_sha256=parsed.inspection.file_sha256,
+            baseline_batch_id=baseline,
+            candidate_count=len(parsed.records),
+            warning_count=len(issues),
+            rejected_count=0,
+            issue_counts=dict(Counter(issue.code for issue in issues)),
+            preview_rows=parsed.inspection.preview_rows,
+            predicted_statistics=statistics,
+            duplicate_file=duplicate,
+            ambiguous_count=statistics.ambiguous,
+            reconciliation_count=statistics.unresolved,
+            action="duplicate" if duplicate else ("needs_review" if statistics.ambiguous else "commit"),
+        )
+        self.logger.event(
+            "import_preflight",
+            counts={
+                "candidates": statistics.total_records,
+                "inserted": statistics.inserted,
+                "updated": statistics.updated,
+                "ambiguous": statistics.ambiguous,
+            },
+            issue_codes=list(preview.issue_counts),
+        )
+        return preview
+
     def commit_import(
         self,
         file_bytes: bytes,
         preview_token: str,
         filename: str | None = None,
+        require_unambiguous: bool = False,
     ) -> ImportResult:
         token = self._decode_token(preview_token)
         self.classification_service.invalidate_cache()
@@ -160,38 +231,23 @@ class ImportService:
         if token.get("baseline_batch_id") != current_baseline:
             raise PreviewStaleError("The database changed after preview; preview again")
 
-        archive_path = self._archive(parsed.inspection.file_sha256, file_bytes)
+        if require_unambiguous:
+            with self.database.session() as session:
+                prediction, _issues = self._predict_matches(
+                    session, parsed.records, parsed.issues,
+                    duplicate=session.execute(
+                        select(self._source_file_model()).where(
+                            self._source_file_model().sha256 == parsed.inspection.file_sha256
+                        )
+                    ).scalar_one_or_none() is not None,
+                )
+            if prediction.ambiguous or prediction.unresolved:
+                raise ImportAmbiguityError(
+                    "Commit requires an unambiguous occurrence-aware match"
+                )
+
         batch_id = str(uuid.uuid4())
         created_at = utc_now()
-        existing_file = self.database.source_file_by_hash(parsed.inspection.file_sha256)
-        if existing_file:
-            stats = ImportStatistics(
-                total_records=parsed.inspection.transaction_count,
-                duplicate_file=True,
-                non_ils_records=parsed.inspection.currencies.get("USD", 0),
-            )
-            with self.database.write_session() as session:
-                self.import_repository.insert_batch(
-                    session,
-                    id=batch_id,
-                    source_file_id=existing_file["id"],
-                    parser_version=parsed.inspection.parser_version,
-                    baseline_batch_id=current_baseline,
-                    report_start=_iso(parsed.inspection.report_start),
-                    report_end=_iso(parsed.inspection.report_end),
-                    max_transaction_date=_iso(parsed.inspection.max_booking_date),
-                    freshness_days=_freshness_days(parsed.inspection.max_booking_date),
-                    status=ImportStatus.DUPLICATE.value,
-                    statistics_json=stats.model_dump_json(),
-                    created_at=created_at,
-                )
-            return ImportResult(
-                batch_id=batch_id,
-                status=ImportStatus.DUPLICATE,
-                statistics=stats,
-                issues=parsed.issues,
-            )
-
         statistics = ImportStatistics(
             total_records=len(parsed.records),
             non_ils_records=sum(record.non_ils for record in parsed.records),
@@ -203,6 +259,45 @@ class ImportService:
         reserved_reconciliation_transaction_ids: set[int] = set()
 
         with self.database.write_session() as session:
+            locked_baseline = self._latest_committed_batch_in_session(session)
+            if token.get("baseline_batch_id") != locked_baseline:
+                raise PreviewStaleError("The database changed after preview; preview again")
+            # Re-check after acquiring SQLite's write lock.  This closes the
+            # baseline race between the read-only validation above and the
+            # transaction that records the source file.
+            current_baseline = locked_baseline
+            existing_after_lock = session.execute(
+                select(self._source_file_model()).where(
+                    self._source_file_model().sha256 == parsed.inspection.file_sha256
+                )
+            ).scalar_one_or_none()
+            if existing_after_lock is not None:
+                stats = ImportStatistics(
+                    total_records=parsed.inspection.transaction_count,
+                    duplicate_file=True,
+                    non_ils_records=sum(record.non_ils for record in parsed.records),
+                )
+                self.import_repository.insert_batch(
+                    session,
+                    id=batch_id,
+                    source_file_id=existing_after_lock.id,
+                    parser_version=parsed.inspection.parser_version,
+                    baseline_batch_id=current_baseline,
+                    report_start=_iso(parsed.inspection.report_start),
+                    report_end=_iso(parsed.inspection.report_end),
+                    max_transaction_date=_iso(parsed.inspection.max_booking_date),
+                    freshness_days=_freshness_days(parsed.inspection.max_booking_date),
+                    status=ImportStatus.DUPLICATE.value,
+                    statistics_json=stats.model_dump_json(),
+                    created_at=created_at,
+                )
+                return ImportResult(
+                    batch_id=batch_id,
+                    status=ImportStatus.DUPLICATE,
+                    statistics=stats,
+                    issues=parsed.issues,
+                )
+            archive_path = self._archive(parsed.inspection.file_sha256, file_bytes)
             source_file = self.import_repository.insert_source_file(
                 session,
                 sha256=parsed.inspection.file_sha256,
@@ -498,6 +593,121 @@ class ImportService:
         return target
 
     @staticmethod
+    def _source_file_model():
+        from family_finance.persistence.models import SourceFileRow
+
+        return SourceFileRow
+
+    @staticmethod
+    def _latest_committed_batch_in_session(session) -> str | None:
+        row = session.execute(
+            select(ImportBatchRow.id)
+            .where(ImportBatchRow.status.in_(("committed", "needs_review")))
+            .order_by(ImportBatchRow.created_at.desc())
+            .limit(1)
+        ).scalar_one_or_none()
+        return str(row) if row else None
+
+    def _predict_matches(self, session, records, parsed_issues, *, duplicate: bool):
+        statistics = ImportStatistics(
+            total_records=len(records),
+            non_ils_records=sum(record.non_ils for record in records),
+            duplicate_file=duplicate,
+        )
+        issues = list(parsed_issues)
+        if duplicate:
+            statistics.total_records = len(records)
+            return statistics, issues
+
+        account_ids: dict[str, int] = {}
+        for record in records:
+            account_id = session.execute(
+                select(AccountRow.id).where(
+                    AccountRow.source_reference_fingerprint
+                    == record.account.source_reference_fingerprint
+                )
+            ).scalar_one_or_none()
+            if account_id is not None:
+                account_ids[record.account.source_reference_fingerprint] = int(account_id)
+
+        existing_records = [
+            record for record in records
+            if record.account.source_reference_fingerprint in account_ids
+        ]
+        planned, claimed = self._plan_existing_matches(session, existing_records, account_ids)
+        exact_seen: Counter[tuple[Any, ...]] = Counter()
+        core_seen: Counter[tuple[Any, ...]] = Counter()
+        reserved: set[int] = set()
+        for record in records:
+            account_id = account_ids.get(record.account.source_reference_fingerprint)
+            exact_key = _exact_key(record)
+            core_key = _core_key(record)
+            if account_id is None:
+                statistics.inserted += 1
+                continue
+            planned_match = planned.get(_source_key(record))
+            if planned_match and planned_match[0] != "ambiguous":
+                if planned_match[0] == "exact_unchanged":
+                    statistics.unchanged += 1
+                else:
+                    statistics.updated += 1
+                continue
+            if planned_match:
+                statistics.ambiguous += 1
+                statistics.unresolved += 1
+                issues.append(DataQualityIssue(
+                    code="RECONCILIATION_REQUIRED",
+                    message="The source row has multiple or conflicting candidates",
+                    source_row=record.source_row_number,
+                    section_index=record.section_index,
+                ))
+                continue
+            exact_rows = [
+                row for row in self.import_repository.find_exact(session, record, account_id)
+                if int(row["id"]) not in claimed
+            ]
+            if exact_rows and exact_seen[exact_key] < len(exact_rows):
+                exact_seen[exact_key] += 1
+                statistics.unchanged += 1
+                continue
+            core_rows = [
+                row for row in self.import_repository.find_core(session, record, account_id)
+                if int(row["id"]) not in claimed
+            ]
+            if len(core_rows) == 1 and core_seen[core_key] == 0:
+                core_seen[core_key] += 1
+                statistics.updated += 1
+                continue
+            if not core_rows:
+                fuzzy_rows = [
+                    row for row in self.import_repository.find_fuzzy(session, record, account_id)
+                    if int(row["id"]) not in claimed and int(row["id"]) not in reserved
+                ]
+                if _is_likely_fuzzy_revision(fuzzy_rows):
+                    statistics.ambiguous += 1
+                    statistics.unresolved += 1
+                    issues.append(DataQualityIssue(
+                        code="RECONCILIATION_REQUIRED",
+                        message="A likely transaction has a monetary or booking-date change",
+                        source_row=record.source_row_number,
+                        section_index=record.section_index,
+                    ))
+                    if len(fuzzy_rows) == 1:
+                        reserved.add(int(fuzzy_rows[0]["id"]))
+                else:
+                    statistics.inserted += 1
+                continue
+            statistics.ambiguous += 1
+            statistics.unresolved += 1
+            issues.append(DataQualityIssue(
+                code="RECONCILIATION_REQUIRED",
+                message="The source row has multiple or changed monetary candidates",
+                source_row=record.source_row_number,
+                section_index=record.section_index,
+            ))
+        return statistics, issues
+
+    @staticmethod
     def _encode_token(payload: dict[str, Any]) -> str:
         body = json_dumps(payload).encode("utf-8")
         signature = hashlib.sha256(body).hexdigest()
@@ -653,6 +863,7 @@ __all__ = [
     "DuplicateSeedError",
     "FinancialClassificationService",
     "FinancialMetricsService",
+    "ImportAmbiguityError",
     "ImportService",
     "InsightsService",
     "MetricsEngine",
@@ -665,3 +876,12 @@ __all__ = [
     "PreviewStaleError",
     "StaleRevisionError",
 ]
+
+
+def __getattr__(name: str):
+    """Lazily expose Phase 8 automation without introducing an import cycle."""
+    if name in {"AutomationService", "AutomationBusyError"}:
+        from family_finance.automation import AutomationBusyError, AutomationService
+
+        return {"AutomationService": AutomationService, "AutomationBusyError": AutomationBusyError}[name]
+    raise AttributeError(name)

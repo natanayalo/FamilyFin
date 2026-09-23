@@ -627,6 +627,107 @@ class NetWorthImportRow(Base):
     imported_at: Mapped[str] = mapped_column(Text)
 
 
+class AutomationPreferencesRow(Base):
+    __tablename__ = "automation_preferences"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    planning_scenario_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    planning_revision_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    forecast_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    forecast_revision_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    forecast_role: Mapped[str | None] = mapped_column(Text, nullable=True)
+    apartment_study_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    apartment_revision_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    apartment_alternative_name: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class AutomationRunRow(Base):
+    __tablename__ = "automation_runs"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    started_at: Mapped[str] = mapped_column(Text)
+    finished_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text)
+    dry_run: Mapped[bool] = mapped_column(Boolean, default=False)
+    audit_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    backup_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    counts_json: Mapped[str] = mapped_column(Text, default="{}")
+    issue_codes_json: Mapped[str] = mapped_column(Text, default="[]")
+
+
+class AutomationFileOutcomeRow(Base):
+    __tablename__ = "automation_file_outcomes"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey("automation_runs.id", ondelete="CASCADE"))
+    source_path: Mapped[str] = mapped_column(Text)
+    sha256: Mapped[str | None] = mapped_column(Text, nullable=True)
+    status: Mapped[str] = mapped_column(Text)
+    reason_code: Mapped[str | None] = mapped_column(Text, nullable=True)
+    import_batch_id: Mapped[str | None] = mapped_column(Text, nullable=True)
+    managed_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[str] = mapped_column(Text)
+
+
+class InsightAlertRow(Base):
+    __tablename__ = "insight_alerts"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    fingerprint: Mapped[str] = mapped_column(Text, unique=True)
+    algorithm_version: Mapped[str] = mapped_column(Text)
+    condition_type: Mapped[str] = mapped_column(Text)
+    subject_identity: Mapped[str] = mapped_column(Text)
+    currency: Mapped[str | None] = mapped_column(Text, nullable=True)
+    evidence_period: Mapped[str] = mapped_column(Text)
+    state: Mapped[str] = mapped_column(Text)
+    first_seen: Mapped[str] = mapped_column(Text)
+    last_seen: Mapped[str] = mapped_column(Text)
+    occurrence_count: Mapped[int] = mapped_column(Integer, default=1)
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    acknowledged_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    resolved_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+    manual_resolution_fingerprint: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class InsightAlertEventRow(Base):
+    __tablename__ = "insight_alert_events"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    alert_id: Mapped[str] = mapped_column(ForeignKey("insight_alerts.id", ondelete="CASCADE"))
+    event_type: Mapped[str] = mapped_column(Text)
+    from_state: Mapped[str | None] = mapped_column(Text, nullable=True)
+    to_state: Mapped[str] = mapped_column(Text)
+    evidence_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(Text)
+
+
+class MonthlySummaryIdentityRow(Base):
+    __tablename__ = "monthly_summary_identities"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    month: Mapped[str] = mapped_column(Text)
+    currency: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+
+
+class MonthlySummaryRevisionRow(Base):
+    __tablename__ = "monthly_summary_revisions"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    identity_id: Mapped[str] = mapped_column(ForeignKey("monthly_summary_identities.id", ondelete="CASCADE"))
+    revision_number: Mapped[int] = mapped_column(Integer)
+    month: Mapped[str] = mapped_column(Text)
+    currency: Mapped[str] = mapped_column(Text)
+    input_fingerprint: Mapped[str] = mapped_column(Text)
+    content_hash: Mapped[str] = mapped_column(Text)
+    content_json: Mapped[str] = mapped_column(Text)
+    markdown: Mapped[str] = mapped_column(Text)
+    contributor_provenance_json: Mapped[str] = mapped_column(Text, default="{}")
+    created_at: Mapped[str] = mapped_column(Text)
+
+
 # Readable aliases for repository consumers that prefer domain-style names.
 Account = AccountRow
 Transaction = TransactionRow
@@ -652,6 +753,9 @@ __all__ = [
     "ApartmentRevisionRow",
     "ApartmentStoppedHousingLineRow",
     "ApartmentStudyRow",
+    "AutomationFileOutcomeRow",
+    "AutomationPreferencesRow",
+    "AutomationRunRow",
     "Base",
     "CategoryRow",
     "ClassificationRule",
@@ -665,6 +769,10 @@ __all__ = [
     "ForecastRoutingRow",
     "ForecastRow",
     "ImportBatchRow",
+    "InsightAlertEventRow",
+    "InsightAlertRow",
+    "MonthlySummaryIdentityRow",
+    "MonthlySummaryRevisionRow",
     "NetWorthAccountRow",
     "NetWorthBalanceRow",
     "NetWorthImportRow",

@@ -91,6 +91,7 @@ class AuditService:
             self._safe_check(self._forecast_invariant_check),
             self._safe_check(self._net_worth_invariant_check),
             self._safe_check(self._apartment_invariant_check),
+            self._safe_check(self._phase8_invariant_check),
         ]
         return AuditReport(passed=all(check.passed for check in checks), checks=checks)
 
@@ -626,6 +627,104 @@ class AuditService:
                     except (TypeError, ValueError, json.JSONDecodeError):
                         codes.append("APARTMENT_ASSUMPTIONS_INVALID")
         return self._check("apartment_invariants", not codes, *sorted(set(codes)))
+
+    def _phase8_invariant_check(self) -> AuditCheck:
+        """Check automation continuity, alert history, and summary hashes."""
+        codes: list[str] = []
+        with self.database.engine.connect() as connection:
+            runs = connection.execute(text(
+                "SELECT id, status, finished_at FROM automation_runs"
+            )).fetchall()
+            run_ids = {str(row[0]) for row in runs}
+            outcomes = connection.execute(text(
+                "SELECT run_id, status, sha256, managed_path FROM automation_file_outcomes"
+            )).fetchall()
+            if any(str(row[0]) not in run_ids for row in outcomes):
+                codes.append("AUTOMATION_OUTCOME_RUN_REFERENCE_INVALID")
+            for _run_id, status, digest, managed_path in outcomes:
+                if status not in {"committed", "duplicate", "needs_review", "ready", "invalid", "unstable"}:
+                    codes.append("AUTOMATION_OUTCOME_STATUS_INVALID")
+                if digest and len(str(digest)) != 64:
+                    codes.append("AUTOMATION_FILE_HASH_INVALID")
+                if managed_path:
+                    path = Path(str(managed_path))
+                    if not path.is_absolute():
+                        path = self.settings.data_root / path
+                    if not path.is_file() or path.is_symlink():
+                        codes.append("AUTOMATION_MANAGED_PATH_INVALID")
+                    elif digest and _sha256(path) != str(digest):
+                        codes.append("AUTOMATION_FILE_HASH_MISMATCH")
+
+            preferences = connection.execute(text(
+                "SELECT planning_scenario_id, planning_revision_id, forecast_id, "
+                "forecast_revision_id, apartment_study_id, apartment_revision_id "
+                "FROM automation_preferences WHERE id = 1"
+            )).fetchone()
+            if preferences:
+                plan_id, plan_revision, forecast_id, forecast_revision, study_id, study_revision = preferences
+                if plan_id and connection.execute(text("SELECT 1 FROM planning_scenarios WHERE id = :id"), {"id": plan_id}).fetchone() is None:
+                    codes.append("PREFERENCE_SCENARIO_REFERENCE_INVALID")
+                if plan_revision and connection.execute(text("SELECT 1 FROM planning_scenario_revisions WHERE id = :id"), {"id": plan_revision}).fetchone() is None:
+                    codes.append("PREFERENCE_SCENARIO_REVISION_REFERENCE_INVALID")
+                if forecast_id and connection.execute(text("SELECT 1 FROM savings_forecasts WHERE id = :id"), {"id": forecast_id}).fetchone() is None:
+                    codes.append("PREFERENCE_FORECAST_REFERENCE_INVALID")
+                if forecast_revision and connection.execute(text("SELECT 1 FROM savings_forecast_revisions WHERE id = :id"), {"id": forecast_revision}).fetchone() is None:
+                    codes.append("PREFERENCE_FORECAST_REVISION_REFERENCE_INVALID")
+                if study_id and connection.execute(text("SELECT 1 FROM apartment_studies WHERE id = :id"), {"id": study_id}).fetchone() is None:
+                    codes.append("PREFERENCE_APARTMENT_REFERENCE_INVALID")
+                if study_revision and connection.execute(text("SELECT 1 FROM apartment_study_revisions WHERE id = :id"), {"id": study_revision}).fetchone() is None:
+                    codes.append("PREFERENCE_APARTMENT_REVISION_REFERENCE_INVALID")
+
+            alerts = connection.execute(text(
+                "SELECT fingerprint, algorithm_version, condition_type, subject_identity, currency, evidence_period "
+                "FROM insight_alerts"
+            )).fetchall()
+            for fingerprint, algorithm, condition, subject, currency, period in alerts:
+                calculated = hashlib.sha256(json.dumps({
+                    "algorithm_version": algorithm,
+                    "condition_type": condition,
+                    "subject_identity": subject,
+                    "currency": currency,
+                    "evidence_period": period,
+                }, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+                if calculated != fingerprint:
+                    codes.append("ALERT_FINGERPRINT_INVALID")
+            alert_ids = {str(row[0]) for row in connection.execute(text("SELECT id FROM insight_alerts")).fetchall()}
+            event_alert_ids = {str(row[0]) for row in connection.execute(text("SELECT DISTINCT alert_id FROM insight_alert_events")).fetchall()}
+            if not event_alert_ids.issubset(alert_ids):
+                codes.append("ALERT_EVENT_REFERENCE_INVALID")
+
+            summaries = connection.execute(text(
+                "SELECT id, identity_id, revision_number, content_json, content_hash, contributor_provenance_json "
+                "FROM monthly_summary_revisions"
+            )).fetchall()
+            summary_identity_ids = {str(row[0]) for row in connection.execute(text("SELECT id FROM monthly_summary_identities")).fetchall()}
+            numbers: dict[str, list[int]] = {}
+            for summary_id, identity_id, revision_number, content_json, content_hash, provenance_json in summaries:
+                if str(identity_id) not in summary_identity_ids:
+                    codes.append("SUMMARY_IDENTITY_REFERENCE_INVALID")
+                numbers.setdefault(str(identity_id), []).append(int(revision_number))
+                if hashlib.sha256(str(content_json).encode()).hexdigest() != str(content_hash):
+                    codes.append("SUMMARY_CONTENT_HASH_INVALID")
+                try:
+                    content = json.loads(content_json)
+                    expected_provenance = {
+                        "algorithm_version": content.get("algorithm_version"),
+                        "contributors": content.get("contributor_provenance", {}),
+                        "anomalies": "category_anomalies",
+                    }
+                    if json.loads(provenance_json or "{}") != expected_provenance:
+                        codes.append("SUMMARY_CONTRIBUTOR_PROVENANCE_INVALID")
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    codes.append("SUMMARY_CONTENT_INVALID")
+            for revision_numbers in numbers.values():
+                if sorted(revision_numbers) != list(range(1, len(revision_numbers) + 1)):
+                    codes.append("SUMMARY_REVISION_SEQUENCE_INVALID")
+
+        for root in (self.settings.automation_processed_root, self.settings.automation_needs_review_root):
+            if any(path.is_symlink() for path in root.rglob("*") if path.exists()):
+                codes.append("AUTOMATION_MANAGED_SYMLINK")
+        return self._check("phase8_invariants", not codes, *sorted(set(codes)))
 
     @staticmethod
     def _apartment_normalized_row_codes(session, revision_id: str, snapshot: ApartmentRevisionSnapshot) -> list[str]:

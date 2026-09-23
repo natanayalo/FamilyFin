@@ -239,10 +239,20 @@ class Database:
             "savings_forecast_routings",
             "savings_forecast_adjustments",
             "savings_forecast_events",
+            "automation_preferences",
+            "automation_runs",
+            "automation_file_outcomes",
+            "insight_alerts",
+            "insight_alert_events",
+            "monthly_summary_identities",
+            "monthly_summary_revisions",
         }:
             raise ValueError(table)
         from family_finance.persistence.models import (
             AnalysisOverrideRow,
+            AutomationFileOutcomeRow,
+            AutomationPreferencesRow,
+            AutomationRunRow,
             ClassificationRuleRow,
             ForecastAdjustmentRow,
             ForecastCaseRow,
@@ -252,6 +262,10 @@ class Database:
             ForecastRoutingRow,
             ForecastRow,
             ImportBatchRow,
+            InsightAlertEventRow,
+            InsightAlertRow,
+            MonthlySummaryIdentityRow,
+            MonthlySummaryRevisionRow,
             PlanningItemRow,
             PlanningScenarioRevisionRow,
             PlanningScenarioRow,
@@ -281,6 +295,13 @@ class Database:
             "savings_forecast_routings": ForecastRoutingRow,
             "savings_forecast_adjustments": ForecastAdjustmentRow,
             "savings_forecast_events": ForecastEventRow,
+            "automation_preferences": AutomationPreferencesRow,
+            "automation_runs": AutomationRunRow,
+            "automation_file_outcomes": AutomationFileOutcomeRow,
+            "insight_alerts": InsightAlertRow,
+            "insight_alert_events": InsightAlertEventRow,
+            "monthly_summary_identities": MonthlySummaryIdentityRow,
+            "monthly_summary_revisions": MonthlySummaryRevisionRow,
         }
         with self.session() as session:
             return int(session.execute(select(func.count()).select_from(models[table])).scalar_one())

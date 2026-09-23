@@ -27,6 +27,9 @@ class Settings:
     net_worth_csv_max_columns: int = 20
     net_worth_csv_max_field_length: int = 10_000
     net_worth_parser_version: str = "net-worth-csv-v1"
+    automation_stability_delay_seconds: float = 0.05
+    automation_algorithm_version: str = "phase8-insights-v1"
+    automation_backup_root: Path | None = None
 
     @property
     def database_path(self) -> Path:
@@ -45,6 +48,26 @@ class Settings:
         return self.data_root / "net-worth-imports"
 
     @property
+    def automation_root(self) -> Path:
+        return self.data_root / "automation"
+
+    @property
+    def automation_inbox_root(self) -> Path:
+        return self.automation_root / "inbox"
+
+    @property
+    def automation_processed_root(self) -> Path:
+        return self.automation_root / "processed"
+
+    @property
+    def automation_needs_review_root(self) -> Path:
+        return self.automation_root / "needs-review"
+
+    @property
+    def automation_lock_path(self) -> Path:
+        return self.automation_root / "automation.lock"
+
+    @property
     def log_root(self) -> Path:
         return self.data_root / "logs"
 
@@ -55,11 +78,18 @@ class Settings:
     @classmethod
     def from_environment(cls) -> Settings:
         root = Path(os.environ.get("FAMILY_FINANCE_DATA_ROOT", cls.data_root))
-        return cls(data_root=root)
+        backup_value = os.environ.get("FAMILY_FINANCE_AUTOMATION_BACKUP_ROOT", "").strip()
+        return cls(
+            data_root=root,
+            automation_backup_root=Path(backup_value).expanduser() if backup_value else None,
+        )
 
     def ensure_directories(self) -> None:
         self.data_root.mkdir(parents=True, exist_ok=True)
         self.archive_root.mkdir(parents=True, exist_ok=True)
         self.planning_archive_root.mkdir(parents=True, exist_ok=True)
         self.net_worth_archive_root.mkdir(parents=True, exist_ok=True)
+        self.automation_inbox_root.mkdir(parents=True, exist_ok=True)
+        self.automation_processed_root.mkdir(parents=True, exist_ok=True)
+        self.automation_needs_review_root.mkdir(parents=True, exist_ok=True)
         self.log_root.mkdir(parents=True, exist_ok=True)
