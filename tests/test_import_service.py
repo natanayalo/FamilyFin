@@ -3,11 +3,13 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
 from alembic.config import Config
 from alembic.script import ScriptDirectory
+from sqlalchemy import text
 
 from family_finance.config import Settings
-from family_finance.services import ImportService
+from family_finance.services import ImportService, ImportValidationError, PreviewStaleError
 
 from .conftest import make_workbook
 
@@ -34,7 +36,7 @@ def test_exact_duplicate_multiplicity_and_file_idempotency(tmp_path, familybiz_r
     assert app.database.count("import_batches") == 2
 
 
-def test_unique_core_match_updates_non_monetary_fields(tmp_path, familybiz_row):
+def test_unique_non_exact_candidate_requires_reconciliation(tmp_path, familybiz_row):
     app = service(tmp_path)
     original = make_workbook([familybiz_row])
     preview = app.preview_import(original, "one.xlsx")
@@ -47,8 +49,10 @@ def test_unique_core_match_updates_non_monetary_fields(tmp_path, familybiz_row):
     second_preview = app.preview_import(make_workbook([changed]), "two.xlsx")
     second = app.commit_import(make_workbook([changed]), second_preview.preview_token, "two.xlsx")
 
-    assert second.statistics.updated == 1
+    assert second.statistics.updated == 0
+    assert second.statistics.unresolved == 1
     assert app.database.count("transactions") == 1
+    assert app.database.count("reconciliation_cases") == 1
 
 
 def test_monetary_change_creates_open_reconciliation_case(tmp_path, familybiz_row):
@@ -170,6 +174,176 @@ def test_revision_inside_recurring_series_stays_reconcilable(tmp_path, familybiz
     assert app.database.count("reconciliation_cases") == 1
 
 
+def test_exact_match_reservation_precedes_competing_non_exact_candidate(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    original = make_workbook([familybiz_row])
+    first = app.preview_import(original, "original.xlsx")
+    app.commit_import(original, first.preview_token, "original.xlsx")
+
+    non_exact = list(familybiz_row)
+    non_exact[2] = "alternate description"
+    payload = make_workbook([non_exact, familybiz_row])
+    preview = app.preview_import(payload, "exact-wins.xlsx")
+    decisions = json.loads(preview.decision_plan_json)
+
+    assert preview.predicted_statistics.unchanged == 1
+    assert preview.predicted_statistics.inserted == 1
+    assert preview.predicted_statistics.ambiguous == 0
+    assert {item["decision_type"] for item in decisions["groups"]} == {
+        "exact_match",
+        "new",
+    }
+    result = app.commit_import(payload, preview.preview_token, "exact-wins.xlsx")
+    assert result.statistics.unchanged == 1
+    assert result.statistics.inserted == 1
+    assert app.database.count("transactions") == 2
+
+
+def test_exact_reservation_leaves_remaining_duplicate_occurrence_for_reconciliation(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    alternative = list(familybiz_row)
+    alternative[2] = "alternate description"
+    seeded = make_workbook([familybiz_row, alternative])
+    seeded_preview = app.preview_import(seeded, "seeded.xlsx")
+    app.commit_import(seeded, seeded_preview.preview_token, "seeded.xlsx")
+
+    repeated = make_workbook([familybiz_row, familybiz_row])
+    preview = app.preview_import(repeated, "repeated.xlsx")
+    assert preview.predicted_statistics.unchanged == 1
+    assert preview.predicted_statistics.ambiguous == 1
+    assert preview.predicted_statistics.inserted == 0
+    decisions = json.loads(preview.decision_plan_json)["groups"]
+    assert sorted(group["decision_type"] for group in decisions) == [
+        "ambiguous",
+        "exact_match",
+    ]
+
+
+def test_competing_non_exact_occurrences_share_canonical_ambiguity_group(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    original = make_workbook([familybiz_row])
+    first = app.preview_import(original, "original.xlsx")
+    app.commit_import(original, first.preview_token, "original.xlsx")
+
+    first_revision = list(familybiz_row)
+    first_revision[2] = "alternate merchant A"
+    second_revision = list(familybiz_row)
+    second_revision[2] = "alternate merchant B"
+    payload_a = make_workbook([first_revision, second_revision])
+    payload_b = make_workbook([second_revision, first_revision])
+    preview_a = app.preview_import(payload_a, "order-a.xlsx")
+    preview_b = app.preview_import(payload_b, "order-b.xlsx")
+    groups_a = json.loads(preview_a.decision_plan_json)["groups"]
+    groups_b = json.loads(preview_b.decision_plan_json)["groups"]
+
+    def economic_groups(groups):
+        return sorted(
+            (
+                group["decision_type"],
+                tuple(group["candidate_references"]),
+                group["ambiguity_group"],
+                group["multiplicity"],
+            )
+            for group in groups
+        )
+
+    assert economic_groups(groups_a) == economic_groups(groups_b)
+    assert preview_a.predicted_statistics.ambiguous == 2
+    assert len({group["ambiguity_group"] for group in groups_a}) == 1
+    assert all(group["decision_type"] == "ambiguous" for group in groups_a)
+
+
+def test_older_unresolved_case_does_not_reserve_later_exact_candidate(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    original = make_workbook([familybiz_row])
+    first = app.preview_import(original, "original.xlsx")
+    app.commit_import(original, first.preview_token, "original.xlsx")
+
+    revision = list(familybiz_row)
+    revision[1] = -19.40
+    changed = make_workbook([revision])
+    changed_preview = app.preview_import(changed, "revision.xlsx")
+    app.commit_import(changed, changed_preview.preview_token, "revision.xlsx")
+    old_case = app.database.open_reconciliation_cases()[0]
+
+    extra = list(familybiz_row)
+    extra[0] = "18/09/2026"
+    later = make_workbook([familybiz_row, extra])
+    later_preview = app.preview_import(later, "later-exact.xlsx")
+    result = app.commit_import(later, later_preview.preview_token, "later-exact.xlsx")
+
+    assert result.statistics.unchanged == 1
+    assert result.statistics.inserted == 1
+    assert app.database.open_reconciliation_cases()[0]["id"] == old_case["id"]
+    assert app.database.count("transactions") == 2
+
+
+def test_relevant_transaction_change_without_new_batch_stales_preview(
+    tmp_path, familybiz_row
+):
+    from family_finance.persistence.models import TransactionRow
+
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+
+    proposed = list(familybiz_row)
+    proposed[2] = "a changed description"
+    payload = make_workbook([proposed])
+    preview = app.preview_import(payload, "proposed.xlsx")
+    def counts():
+        with app.database.session() as session:
+            source_files = session.execute(
+                text("SELECT COUNT(*) FROM source_files")
+            ).scalar_one()
+        return {
+            "transactions": app.database.count("transactions"),
+            "source_records": app.database.count("source_records"),
+            "source_files": source_files,
+            "import_batches": app.database.count("import_batches"),
+        }
+
+    counts_before = counts()
+    archived_before = sorted(path.name for path in app.settings.archive_root.glob("*"))
+    with app.database.write_session() as session:
+        transaction = session.get(TransactionRow, 1)
+        transaction.description = "changed after preview"
+
+    with pytest.raises(PreviewStaleError, match="matching state changed"):
+        app.commit_import(payload, preview.preview_token, "proposed.xlsx")
+    assert counts() == counts_before
+    assert sorted(path.name for path in app.settings.archive_root.glob("*")) == archived_before
+
+
+def test_plan_and_not_configured_registry_are_canonical(tmp_path, familybiz_row):
+    app = service(tmp_path)
+    payload = make_workbook([familybiz_row])
+    first = app.preview_import(payload, "one.xlsx")
+    second = app.preview_import(payload, "one.xlsx")
+
+    with app.database.engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA reverse_unordered_selects=ON")
+    reordered_query_preview = app.preview_import(payload, "one.xlsx")
+
+    assert first.decision_plan_version == "familybiz-decision-plan-v1"
+    assert first.decision_plan_fingerprint == second.decision_plan_fingerprint
+    assert first.decision_plan_json == second.decision_plan_json
+    assert first.decision_plan_fingerprint == reordered_query_preview.decision_plan_fingerprint
+    assert first.decision_plan_json == reordered_query_preview.decision_plan_json
+    registry = json.loads(first.matching_baseline_json)["account_registry"]
+    assert registry["configured"] is False
+    assert registry["configuration_state"] == "not_configured"
+
+
 def test_multiple_recurring_revisions_are_not_duplicated(tmp_path, familybiz_row):
     app = service(tmp_path)
     recurring_a = list(familybiz_row)
@@ -203,25 +377,23 @@ def test_preview_baseline_change_aborts_commit(tmp_path, familybiz_row):
 
     try:
         app.commit_import(file_a, preview.preview_token, "a.xlsx")
-    except ValueError as exc:
-        assert "database changed" in str(exc)
+    except PreviewStaleError as exc:
+        assert "database matching state changed" in str(exc)
     else:
         raise AssertionError("stale preview was accepted")
 
 
-def test_commit_of_modified_invalid_file_records_rejection_without_transactions(
+def test_commit_of_invalid_file_is_validation_error_without_any_write(
     tmp_path, familybiz_row
 ):
     app = service(tmp_path)
     valid = make_workbook([familybiz_row])
     preview = app.preview_import(valid, "one.xlsx")
 
-    result = app.commit_import(b"corrupt", preview.preview_token, "one.xlsx")
-
-    assert result.status.value == "rejected"
-    assert result.statistics.rejected == 1
+    with pytest.raises(ImportValidationError, match="validation failed"):
+        app.commit_import(b"corrupt", preview.preview_token, "one.xlsx")
     assert app.database.count("transactions") == 0
-    assert app.database.count("import_batches") == 1
+    assert app.database.count("import_batches") == 0
 
 
 def test_runtime_database_setup_records_alembic_revision(tmp_path):

@@ -136,17 +136,23 @@ class ImportPreview(BaseModel):
     parser_version: str
     file_sha256: str
     baseline_batch_id: str | None = None
+    baseline_fingerprint: str
+    matching_baseline_json: str
+    matcher_version: str
+    decision_plan_version: str
+    decision_plan_fingerprint: str
+    decision_plan_json: str
     candidate_count: int
     warning_count: int
     rejected_count: int
     issue_counts: dict[str, int] = Field(default_factory=dict)
     preview_rows: list[dict[str, Any]] = Field(default_factory=list)
+    predicted_statistics: ImportStatistics | None = None
 
 
 class ImportPreflight(ImportPreview):
     """Occurrence-aware, read-only prediction used by local automation."""
 
-    predicted_statistics: ImportStatistics | None = None
     duplicate_file: bool = False
     ambiguous_count: int = 0
     reconciliation_count: int = 0

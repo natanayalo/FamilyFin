@@ -85,9 +85,40 @@ def test_unexpected_nonempty_row_is_rejected(familybiz_row):
         FamilyBizParser().parse(output.getvalue(), filename="synthetic.xlsx")
 
 
-def test_row_limit_is_rejected_before_workbook_load(familybiz_row):
+def test_transaction_row_limit_is_enforced(familybiz_row):
     from family_finance.config import Settings
 
-    settings = Settings(max_rows=1)
-    with pytest.raises(FamilyBizSchemaError, match="row limit"):
+    settings = Settings(max_rows=0)
+    with pytest.raises(FamilyBizSchemaError, match="transaction row limit"):
         FamilyBizParser(settings).parse(make_workbook([familybiz_row]), filename="synthetic.xlsx")
+
+
+def test_populated_cells_outside_supported_schema_are_rejected(familybiz_row):
+    from io import BytesIO
+
+    from openpyxl import load_workbook
+
+    workbook = load_workbook(BytesIO(make_workbook([familybiz_row])))
+    workbook.active.cell(6, 11).value = "outside schema"
+    output = BytesIO()
+    workbook.save(output)
+
+    with pytest.raises(FamilyBizSchemaError, match="outside the supported ten-column"):
+        FamilyBizParser().parse(output.getvalue(), filename="synthetic.xlsx")
+
+
+def test_actual_xml_cell_row_coordinate_is_validated(familybiz_row):
+    from io import BytesIO
+    from zipfile import ZIP_DEFLATED, ZipFile
+
+    source = make_workbook([familybiz_row])
+    rewritten = BytesIO()
+    with ZipFile(BytesIO(source)) as original, ZipFile(rewritten, "w", ZIP_DEFLATED) as target:
+        for item in original.infolist():
+            payload = original.read(item.filename)
+            if item.filename == "xl/worksheets/sheet1.xml":
+                payload = payload.replace(b'r="B6"', b'r="B7"', 1)
+            target.writestr(item, payload)
+
+    with pytest.raises(FamilyBizSchemaError, match="cell has an invalid XML coordinate"):
+        FamilyBizParser().parse(rewritten.getvalue(), filename="synthetic.xlsx")
