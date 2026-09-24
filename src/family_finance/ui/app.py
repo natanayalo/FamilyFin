@@ -20,6 +20,7 @@ def main() -> None:
     from family_finance.dashboard import DashboardService
     from family_finance.forecasting import ForecastValidationError
     from family_finance.formatting import format_amount, format_month, format_rate
+    from family_finance.importers.familybiz import sha256_bytes
     from family_finance.models import (
         ApartmentGuardrails,
         DashboardFilters,
@@ -183,12 +184,20 @@ def main() -> None:
             return
         st.subheader("End-month category distribution")
         st.dataframe(
-            [item.model_dump(mode="json") for item in result.categories],
+            [
+                {
+                    "category": item.category,
+                    "amount": format_amount(item.amount, result.currency),
+                }
+                for item in result.categories
+            ],
             use_container_width=True,
             hide_index=True,
         )
         st.subheader("Fixed, variable, and unknown behavior")
-        st.bar_chart(result.behavior_totals)
+        st.bar_chart(
+            {label: float(amount) for label, amount in result.behavior_totals.items()}
+        )
         st.subheader("Monthly category trends")
         category_names = sorted({category for item in result.series for category in item.metrics.spending_by_category})
         if category_names:
@@ -204,7 +213,12 @@ def main() -> None:
             st.line_chart(trend, y=category_names)
         st.subheader("Exact transaction drill-down")
         month_options = [item.month for item in result.series]
-        selected_month = st.selectbox("Month", month_options, format_func=format_month)
+        selected_month = st.selectbox(
+            "Month",
+            month_options,
+            index=len(month_options) - 1,
+            format_func=format_month,
+        )
         month_metrics = next(item.metrics for item in result.series if item.month == selected_month)
         selected_category = st.selectbox("Category", ["(all categories)"] + category_names)
         metric_options = sorted(
@@ -214,7 +228,17 @@ def main() -> None:
             or metric == f"spending_by_category:{selected_category}"
             or not metric.startswith("spending_by_category:")
         )
-        metric = st.selectbox("Metric", metric_options, format_func=lambda item: item.replace("_", " "))
+        default_metric = (
+            "gross_consumption"
+            if "gross_consumption" in metric_options
+            else metric_options[0]
+        )
+        metric = st.selectbox(
+            "Metric",
+            metric_options,
+            index=metric_options.index(default_metric),
+            format_func=lambda item: item.replace("_", " "),
+        )
         contributor_ids = month_metrics.contributors_for(metric)
         st.caption(f"{len(contributor_ids)} contributing transaction(s)")
         st.dataframe(
@@ -307,11 +331,22 @@ def main() -> None:
             st.warning("Review items prevent complete metrics. Open the Classification page to resolve them.")
         st.subheader("Upload and import")
         upload = st.file_uploader("Upload a FamilyBiz XLSX export", type=["xlsx"])
+        upload_bytes = upload.getvalue() if upload is not None else None
+        preview = st.session_state.get("family_finance_preview")
+        if upload_bytes is not None and preview:
+            preview_hash = preview.get("inspection", {}).get("file_sha256")
+            preview_filename = st.session_state.get("family_finance_filename")
+            if preview_hash != sha256_bytes(upload_bytes) or preview_filename != upload.name:
+                st.session_state.pop("family_finance_preview", None)
+                st.session_state.pop("family_finance_file", None)
+                st.session_state.pop("family_finance_filename", None)
+                preview = None
+                st.info("The selected file changed. Inspect it again before committing.")
         if upload is not None and st.button("Inspect and preview", type="primary"):
             try:
-                preview = service.preview_import(upload.getvalue(), upload.name)
+                preview = service.preview_import(upload_bytes, upload.name)
                 st.session_state["family_finance_preview"] = preview.model_dump(mode="json")
-                st.session_state["family_finance_file"] = upload.getvalue()
+                st.session_state["family_finance_file"] = upload_bytes
                 st.session_state["family_finance_filename"] = upload.name
             except (ValueError, OSError, SQLAlchemyError) as exc:
                 st.error(str(exc))
@@ -519,7 +554,12 @@ def main() -> None:
                         st.error(str(exc))
 
         with st.expander("Seed from the supplied planning CSV"):
-            upload = st.file_uploader("Planning CSV", type=["csv"], key="planning-csv-upload")
+            upload = st.file_uploader(
+                "Planning CSV",
+                type=["csv"],
+                help="Application validation limit: 10 MB per file.",
+                key="planning-csv-upload",
+            )
             csv_start = st.date_input(
                 "Scenario start month",
                 value=planning.suggested_start_month("ILS"),
@@ -1177,7 +1217,12 @@ def main() -> None:
 
             st.download_button("Download CSV template", net_worth.csv_template(snapshot_date), "net-worth-template.csv", "text/csv", key="net-worth-template")
             with st.expander("Strict CSV import"):
-                upload = st.file_uploader("Net-worth CSV", type=["csv"], key="net-worth-csv-upload")
+                upload = st.file_uploader(
+                    "Net-worth CSV",
+                    type=["csv"],
+                    help="Application validation limit: 10 MB per file.",
+                    key="net-worth-csv-upload",
+                )
                 if upload is not None and st.button("Preview net-worth CSV", key="net-worth-csv-preview"):
                     try:
                         preview = net_worth.preview_csv(upload.getvalue(), upload.name)
