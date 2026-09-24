@@ -97,31 +97,82 @@ reference_fingerprint = hashlib.sha256(json.dumps(
 ).encode("utf-8")).hexdigest()
 connection.execute("UPDATE accounts SET source_reference_fingerprint=? WHERE id=?",
                    (reference_fingerprint, account_id))
-rows = []
-def add_row(booking, amount, description):
-    value = str(amount)
-    return (account_id, booking.isoformat(), booking.isoformat(), value, "ILS", "ILS", value,
-            description, "purchase", "household", "accepted", "2026-01-01T00:00:00+00:00",
-            "2026-01-01T00:00:00+00:00")
-
-for index in range(22_500):
-    booking = date(2000, 1, 1) + timedelta(days=index)
-    amount = -float((index % 8000) + 1)
-    description = f"exact transaction {index}"
-    if index % 10 == 0:
-        description += " with a deliberately long description " + ("detail " * 124) + "detail"
-    rows.append(add_row(booking, amount, description))
-for index in range(7_500):
-    booking = date(2000, 1, 1) + timedelta(days=300_000 + index)
-    amount = -float(((300_000 + index) % 8000) + 1)
-    rows.append(add_row(booking, amount, f"candidate transaction {index}"))
-insert_sql = (
+created_at = "2026-01-01T00:00:00+00:00"
+source_file_id = connection.execute(
+    "INSERT INTO source_files (sha256, original_filename, archived_path, compressed_bytes, "
+    "uncompressed_bytes, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+    ("b" * 64, "capacity-history.xlsx", str(data_root / "capacity-history.xlsx"), 1, 1, created_at),
+).lastrowid
+batch_id = "capacity-history"
+connection.execute(
+    "INSERT INTO import_batches (id, source_file_id, parser_version, baseline_batch_id, report_start, "
+    "report_end, max_transaction_date, freshness_days, status, statistics_json, error_code, created_at) "
+    "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    (batch_id, source_file_id, "familybiz-v2", None, None, None, None, None, "committed",
+     json.dumps({"total_records": 30_000, "inserted": 30_000}), None, created_at),
+)
+insert_transaction_sql = (
     "INSERT INTO transactions (account_id, booking_date, allocation_date, amount, currency, "
     "original_currency, original_amount, description, movement_type, category, state, created_at, updated_at) "
     "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
 )
-for offset in range(0, len(rows), 5000):
-    connection.executemany(insert_sql, rows[offset:offset + 5000])
+insert_source_sql = (
+    "INSERT INTO source_records (id, import_batch_id, account_id, sheet_name, section_index, "
+    "source_row_number, raw_payload_json, normalized_json, row_fingerprint, validation_state, "
+    "issues_json, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+)
+insert_link_sql = (
+    "INSERT INTO transaction_sources (transaction_id, source_record_id, match_method, linked_at) "
+    "VALUES (?, ?, ?, ?)"
+)
+transaction_id_start = connection.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM transactions").fetchone()[0]
+source_record_id_start = connection.execute("SELECT COALESCE(MAX(id), 0) + 1 FROM source_records").fetchone()[0]
+
+for offset in range(0, 30_000, 1_000):
+    transaction_rows = []
+    source_rows = []
+    link_rows = []
+    for local_index in range(min(1_000, 30_000 - offset)):
+        index = offset + local_index
+        if index < 22_500:
+            logical_index = index
+            date_offset = logical_index
+            description = f"exact transaction {logical_index}"
+            if logical_index % 10 == 0:
+                description += " with a deliberately long description " + ("detail " * 124) + "detail"
+        else:
+            logical_index = index - 22_500
+            date_offset = 300_000 + logical_index
+            description = f"candidate transaction {logical_index}"
+        booking = date(2000, 1, 1) + timedelta(days=date_offset)
+        amount = -float((date_offset % 8000) + 1)
+        value = str(amount)
+        transaction_id = transaction_id_start + index
+        source_record_id = source_record_id_start + index
+        transaction_rows.append((
+            account_id, booking.isoformat(), booking.isoformat(), value, "ILS", "ILS", value,
+            description, "purchase", "household", "accepted", created_at, created_at,
+        ))
+        normalized = {
+            "booking_date": booking.isoformat(),
+            "allocation_date": booking.isoformat(),
+            "amount": value,
+            "currency": "ILS",
+            "original_currency": "ILS",
+            "original_amount": value,
+            "description": description,
+            "movement_type": "purchase",
+            "category": "household",
+        }
+        source_rows.append((
+            source_record_id, batch_id, account_id, "FamilyBiz", 1, 6 + index, "{}",
+            json.dumps(normalized, ensure_ascii=False, sort_keys=True, separators=(",", ":")),
+            f"capacity-source-{source_record_id}", "accepted", "[]", created_at,
+        ))
+        link_rows.append((transaction_id, source_record_id, "inserted", created_at))
+    connection.executemany(insert_transaction_sql, transaction_rows)
+    connection.executemany(insert_source_sql, source_rows)
+    connection.executemany(insert_link_sql, link_rows)
 connection.commit()
 connection.close()
 

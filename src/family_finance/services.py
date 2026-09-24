@@ -8,7 +8,7 @@ import io
 import json
 import uuid
 from collections import Counter
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from itertools import groupby
 from pathlib import Path
 from typing import Any
@@ -34,8 +34,11 @@ from family_finance.persistence.db import Database, json_dumps, utc_now
 from family_finance.persistence.models import (
     AccountRow,
     ImportBatchRow,
+    ReconciliationCaseRow,
     SourceFileRow,
+    SourceRecordRow,
     TransactionRow,
+    TransactionSourceRow,
 )
 from family_finance.persistence.repositories import ImportRepository
 
@@ -52,17 +55,22 @@ class ImportValidationError(ValueError):
     """The submitted workbook failed parser or schema validation."""
 
 
-_MATCHER_VERSION = "familybiz-matcher-v2"
+_MATCHER_VERSION = "familybiz-matcher-v3"
 _DECISION_PLAN_VERSION = "familybiz-decision-plan-v1"
+_MAX_BOOKING_DATE_SHIFT_DAYS = 7
 
 
 class _PlannedImport:
-    def __init__(self, *, plan_json, plan_fingerprint, statistics, group_decisions, exact_ids):
+    def __init__(
+        self, *, plan_json, plan_fingerprint, statistics, group_decisions,
+        exact_ids, referenced_transaction_ids,
+    ):
         self.plan_json = plan_json
         self.plan_fingerprint = plan_fingerprint
         self.statistics = statistics
         self.group_decisions = group_decisions
         self.exact_ids = exact_ids
+        self.referenced_transaction_ids = referenced_transaction_ids
 
 
 class ImportService:
@@ -130,9 +138,6 @@ class ImportService:
         parsed = self.parser.parse(file_bytes, filename=filename)
         with self.database.session() as session:
             baseline = self._latest_committed_batch_in_session(session)
-            baseline_fingerprint, matching_baseline_json = self._matching_state(
-                session, parsed.records, parsed.inspection.file_sha256
-            )
             duplicate = session.execute(
                 select(SourceFileRow.id).where(
                     SourceFileRow.sha256 == parsed.inspection.file_sha256
@@ -141,6 +146,12 @@ class ImportService:
             planned = self._build_import_plan(
                 session, parsed.records, parsed.inspection.file_sha256,
                 parsed.inspection.parser_version, duplicate=duplicate,
+            )
+            baseline_fingerprint, matching_baseline_json = self._matching_state(
+                session,
+                parsed.records,
+                parsed.inspection.file_sha256,
+                planned.referenced_transaction_ids,
             )
         token_payload = self._preview_token_payload(
             parsed, baseline, baseline_fingerprint, planned
@@ -186,9 +197,6 @@ class ImportService:
         parsed = self.parser.parse(file_bytes, filename=filename)
         with self.database.session() as session:
             baseline = self._latest_committed_batch_in_session(session)
-            baseline_fingerprint, matching_baseline_json = self._matching_state(
-                session, parsed.records, parsed.inspection.file_sha256
-            )
             duplicate = session.execute(
                 select(SourceFileRow.id).where(
                     SourceFileRow.sha256 == parsed.inspection.file_sha256
@@ -197,6 +205,12 @@ class ImportService:
             planned = self._build_import_plan(
                 session, parsed.records, parsed.inspection.file_sha256,
                 parsed.inspection.parser_version, duplicate=duplicate,
+            )
+            baseline_fingerprint, matching_baseline_json = self._matching_state(
+                session,
+                parsed.records,
+                parsed.inspection.file_sha256,
+                planned.referenced_transaction_ids,
             )
         statistics = planned.statistics
         issue_counts = self._issue_counts(parsed.issues, statistics.ambiguous)
@@ -266,15 +280,18 @@ class ImportService:
 
         with self.database.write_session() as session:
             locked_baseline = self._latest_committed_batch_in_session(session)
-            locked_fingerprint, _baseline_json = self._matching_state(
-                session, parsed.records, parsed.inspection.file_sha256
-            )
             planned = self._build_import_plan(
                 session,
                 parsed.records,
                 parsed.inspection.file_sha256,
                 parsed.inspection.parser_version,
                 duplicate=False,
+            )
+            locked_fingerprint, _baseline_json = self._matching_state(
+                session,
+                parsed.records,
+                parsed.inspection.file_sha256,
+                planned.referenced_transaction_ids,
             )
             if token.get("baseline_fingerprint") != locked_fingerprint:
                 raise PreviewStaleError(
@@ -564,8 +581,14 @@ class ImportService:
         ).scalar_one_or_none()
         return str(row) if row else None
 
-    def _matching_state(self, session, records, workbook_hash: str) -> tuple[str, str]:
-        """Fingerprint only persisted state consulted by import matching."""
+    def _matching_state(
+        self,
+        session,
+        records,
+        workbook_hash: str,
+        referenced_transaction_ids: set[int],
+    ) -> tuple[str, str]:
+        """Fingerprint matching inputs and provenance for candidates in this plan."""
         relevant_references = sorted({
             record.account.source_reference_fingerprint for record in records
         })
@@ -590,9 +613,12 @@ class ImportService:
                 TransactionRow.id,
                 AccountRow.source_reference_fingerprint,
                 TransactionRow.booking_date,
+                TransactionRow.allocation_date,
                 TransactionRow.amount,
                 TransactionRow.currency,
                 TransactionRow.description,
+                TransactionRow.movement_type,
+                TransactionRow.category,
                 TransactionRow.original_currency,
                 TransactionRow.original_amount,
             )
@@ -604,6 +630,112 @@ class ImportService:
             transaction_count += 1
             transaction_digest.update(_canonical_json(list(row)).encode())
             transaction_digest.update(b"\n")
+
+        referenced_ids = sorted({int(value) for value in referenced_transaction_ids})
+        referenced_id_set = set(referenced_ids)
+        source_record_ids: set[int] = set()
+        transaction_source_digest = hashlib.sha256()
+        transaction_source_count = 0
+        if relevant_account_ids and referenced_id_set:
+            link_statement = (
+                select(
+                    TransactionSourceRow.transaction_id,
+                    TransactionSourceRow.source_record_id,
+                    TransactionSourceRow.match_method,
+                    TransactionSourceRow.linked_at,
+                )
+                .join(
+                    TransactionRow,
+                    TransactionRow.id == TransactionSourceRow.transaction_id,
+                )
+                .where(TransactionRow.account_id.in_(relevant_account_ids))
+                .order_by(
+                    TransactionSourceRow.transaction_id,
+                    TransactionSourceRow.source_record_id,
+                )
+            )
+            for row in session.execute(link_statement).yield_per(1000):
+                transaction_id = int(row.transaction_id)
+                if transaction_id not in referenced_id_set:
+                    continue
+                transaction_source_count += 1
+                source_record_ids.add(int(row.source_record_id))
+                transaction_source_digest.update(_canonical_json(list(row)).encode())
+                transaction_source_digest.update(b"\n")
+
+        reconciliation_digest = hashlib.sha256()
+        reconciliation_count = 0
+        reconciliation_statement = select(
+            ReconciliationCaseRow.id,
+            ReconciliationCaseRow.import_batch_id,
+            ReconciliationCaseRow.source_record_id,
+            ReconciliationCaseRow.status,
+            ReconciliationCaseRow.reason,
+            ReconciliationCaseRow.candidate_transaction_ids_json,
+            ReconciliationCaseRow.resolution_json,
+            ReconciliationCaseRow.created_at,
+            ReconciliationCaseRow.resolved_at,
+        ).order_by(ReconciliationCaseRow.id)
+        if referenced_id_set:
+            for row in session.execute(reconciliation_statement).yield_per(1000):
+                try:
+                    candidate_ids = sorted({
+                        int(value)
+                        for value in json.loads(row.candidate_transaction_ids_json)
+                    })
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    candidate_ids = []
+                if not referenced_id_set.intersection(candidate_ids):
+                    continue
+                try:
+                    resolution = (
+                        _canonical_json(json.loads(row.resolution_json))
+                        if row.resolution_json is not None
+                        else None
+                    )
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    resolution = row.resolution_json
+                reconciliation_count += 1
+                source_record_ids.add(int(row.source_record_id))
+                case_state = [
+                    row.id,
+                    row.import_batch_id,
+                    int(row.source_record_id),
+                    row.status,
+                    row.reason,
+                    candidate_ids,
+                    resolution,
+                    row.created_at,
+                    row.resolved_at,
+                ]
+                reconciliation_digest.update(_canonical_json(case_state).encode())
+                reconciliation_digest.update(b"\n")
+
+        source_record_digest = hashlib.sha256()
+        source_record_count = 0
+        ordered_source_record_ids = sorted(source_record_ids)
+        for offset in range(0, len(ordered_source_record_ids), 500):
+            source_id_chunk = ordered_source_record_ids[offset : offset + 500]
+            source_statement = (
+                select(
+                    SourceRecordRow.id,
+                    SourceRecordRow.account_id,
+                    SourceRecordRow.sheet_name,
+                    SourceRecordRow.section_index,
+                    SourceRecordRow.source_row_number,
+                    SourceRecordRow.normalized_json,
+                    SourceRecordRow.row_fingerprint,
+                    SourceRecordRow.validation_state,
+                    SourceRecordRow.issues_json,
+                    SourceRecordRow.created_at,
+                )
+                .where(SourceRecordRow.id.in_(source_id_chunk))
+                .order_by(SourceRecordRow.id)
+            )
+            for row in session.execute(source_statement).yield_per(500):
+                source_record_count += 1
+                source_record_digest.update(_canonical_json(list(row)).encode())
+                source_record_digest.update(b"\n")
 
         file_already_imported = session.execute(
             select(SourceFileRow.id).where(SourceFileRow.sha256 == workbook_hash)
@@ -621,6 +753,21 @@ class ImportService:
             "transactions": {
                 "count": transaction_count,
                 "fingerprint": transaction_digest.hexdigest(),
+            },
+            "provenance": {
+                "referenced_transaction_ids": referenced_ids,
+                "transaction_sources": {
+                    "count": transaction_source_count,
+                    "fingerprint": transaction_source_digest.hexdigest(),
+                },
+                "source_records": {
+                    "count": source_record_count,
+                    "fingerprint": source_record_digest.hexdigest(),
+                },
+                "reconciliation_cases": {
+                    "count": reconciliation_count,
+                    "fingerprint": reconciliation_digest.hexdigest(),
+                },
             },
             "source_file": {
                 "workbook_sha256": workbook_hash,
@@ -658,10 +805,18 @@ class ImportService:
 
         core_groups: dict[str, list[str]] = {}
         fuzzy_groups: dict[str, list[str]] = {}
+        date_agnostic_groups: dict[tuple[str, date], list[str]] = {}
+        amount_agnostic_groups: dict[str, list[str]] = {}
         for group_key, group in groups.items():
             record = records[group["representative"]]
             core_groups.setdefault(_core_signature(record), []).append(group_key)
             fuzzy_groups.setdefault(_fuzzy_signature(record), []).append(group_key)
+            date_agnostic_groups.setdefault(
+                (_date_agnostic_signature(record), record.booking_date), []
+            ).append(group_key)
+            amount_agnostic_groups.setdefault(
+                _amount_agnostic_signature(record), []
+            ).append(group_key)
 
         record_references = sorted({
             record.account.source_reference_fingerprint for record in records
@@ -679,9 +834,12 @@ class ImportService:
                     TransactionRow.id,
                     TransactionRow.account_id,
                     TransactionRow.booking_date,
+                    TransactionRow.allocation_date,
                     TransactionRow.amount,
                     TransactionRow.currency,
                     TransactionRow.description,
+                    TransactionRow.movement_type,
+                    TransactionRow.category,
                     TransactionRow.original_currency,
                     TransactionRow.original_amount,
                 )
@@ -693,16 +851,27 @@ class ImportService:
                     transaction_id,
                     account_id,
                     booking_date,
+                    allocation_date,
                     amount,
                     currency,
                     description,
+                    movement_type,
+                    category,
                     original_currency,
                     original_amount,
                 ) = row
                 account_reference = account_references[int(account_id)]
                 exact_key = _transaction_exact_signature(
-                    account_reference, booking_date, amount, currency, description,
-                    original_currency, original_amount,
+                    account_reference,
+                    booking_date,
+                    allocation_date,
+                    amount,
+                    currency,
+                    description,
+                    movement_type,
+                    category,
+                    original_currency,
+                    original_amount,
                 )
                 exact_group = groups.get(exact_key)
                 if exact_group is not None:
@@ -721,6 +890,37 @@ class ImportService:
                     original_currency, original_amount,
                 )
                 for group_key in fuzzy_groups.get(fuzzy_key, ()):
+                    if group_key != exact_key:
+                        groups[group_key]["nonexact_candidates"].add(int(transaction_id))
+
+                date_agnostic_signature = _transaction_date_agnostic_signature(
+                    account_reference,
+                    amount,
+                    currency,
+                    description,
+                    original_currency,
+                    original_amount,
+                )
+                transaction_booking_date = date.fromisoformat(str(booking_date))
+                for day_shift in range(
+                    -_MAX_BOOKING_DATE_SHIFT_DAYS,
+                    _MAX_BOOKING_DATE_SHIFT_DAYS + 1,
+                ):
+                    nearby_date = transaction_booking_date + timedelta(days=day_shift)
+                    for group_key in date_agnostic_groups.get(
+                        (date_agnostic_signature, nearby_date), ()
+                    ):
+                        if group_key != exact_key:
+                            groups[group_key]["nonexact_candidates"].add(int(transaction_id))
+
+                amount_agnostic_key = _transaction_amount_agnostic_signature(
+                    account_reference,
+                    booking_date,
+                    currency,
+                    description,
+                    original_currency,
+                )
+                for group_key in amount_agnostic_groups.get(amount_agnostic_key, ()):
                     if group_key != exact_key:
                         groups[group_key]["nonexact_candidates"].add(int(transaction_id))
 
@@ -887,12 +1087,19 @@ class ImportService:
             output.write("]}")
         output.write("]}")
         plan_json = output.getvalue()
+        referenced_transaction_ids = {
+            transaction_id for transaction_id in exact_ids if transaction_id is not None
+        }
+        for group_key, decision in group_decisions.items():
+            if decision["type"] == "ambiguous":
+                referenced_transaction_ids.update(decision["candidates"])
         return _PlannedImport(
             plan_json=plan_json,
             plan_fingerprint=hashlib.sha256(plan_json.encode("utf-8")).hexdigest(),
             statistics=statistics,
             group_decisions=group_decisions,
             exact_ids=exact_ids,
+            referenced_transaction_ids=referenced_transaction_ids,
         )
 
     @staticmethod
@@ -971,9 +1178,12 @@ def _exact_signature(record) -> str:
     return _transaction_exact_signature(
         record.account.source_reference_fingerprint,
         record.booking_date.isoformat(),
+        record.allocation_date.isoformat(),
         record.amount,
         record.currency,
         record.description,
+        record.movement_type,
+        record.category,
         record.original_currency,
         record.original_amount,
     )
@@ -982,18 +1192,24 @@ def _exact_signature(record) -> str:
 def _transaction_exact_signature(
     account_reference,
     booking_date,
+    allocation_date,
     amount,
     currency,
     description,
+    movement_type,
+    category,
     original_currency,
     original_amount,
 ) -> str:
     return _signature([
         account_reference,
         str(booking_date),
+        str(allocation_date),
         _amount_signature(amount),
         currency,
         description,
+        movement_type,
+        category,
         original_currency,
         _amount_signature(original_amount),
     ])
@@ -1044,6 +1260,54 @@ def _transaction_fuzzy_signature(
         description,
         original_currency,
         _amount_signature(original_amount),
+    ])
+
+
+def _date_agnostic_signature(record) -> str:
+    return _transaction_date_agnostic_signature(
+        record.account.source_reference_fingerprint,
+        record.amount,
+        record.currency,
+        record.description,
+        record.original_currency,
+        record.original_amount,
+    )
+
+
+def _transaction_date_agnostic_signature(
+    account_reference, amount, currency, description, original_currency, original_amount
+) -> str:
+    """Find same-amount observations whose booking date may have shifted."""
+    return _signature([
+        account_reference,
+        _amount_signature(amount),
+        currency,
+        description,
+        original_currency,
+        _amount_signature(original_amount),
+    ])
+
+
+def _amount_agnostic_signature(record) -> str:
+    return _transaction_amount_agnostic_signature(
+        record.account.source_reference_fingerprint,
+        record.booking_date.isoformat(),
+        record.currency,
+        record.description,
+        record.original_currency,
+    )
+
+
+def _transaction_amount_agnostic_signature(
+    account_reference, booking_date, currency, description, original_currency
+) -> str:
+    """Find same-date observations when both reported amounts changed together."""
+    return _signature([
+        account_reference,
+        str(booking_date),
+        currency,
+        description,
+        original_currency,
     ])
 
 

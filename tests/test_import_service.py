@@ -73,6 +73,123 @@ def test_monetary_change_creates_open_reconciliation_case(tmp_path, familybiz_ro
     assert app.database.count("transactions") == 1
 
 
+@pytest.mark.parametrize(
+    ("field_index", "changed_value"),
+    [
+        pytest.param(3, "20/09/2026", id="allocation-date"),
+        pytest.param(4, "refund", id="movement-type"),
+        pytest.param(5, "restaurants", id="category"),
+    ],
+)
+def test_source_field_change_requires_reconciliation_without_updating_transaction(
+    tmp_path, familybiz_row, field_index, changed_value
+):
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+
+    with app.database.connect() as connection:
+        original = tuple(connection.execute(text(
+            "SELECT booking_date, allocation_date, amount, currency, description, "
+            "movement_type, category, original_currency, original_amount "
+            "FROM transactions WHERE id=1"
+        )).fetchone())
+
+    revised = list(familybiz_row)
+    revised[field_index] = changed_value
+    payload = make_workbook([revised])
+    preview = app.preview_import(payload, "source-field-revision.xlsx")
+    result = app.commit_import(payload, preview.preview_token, "source-field-revision.xlsx")
+
+    assert preview.predicted_statistics is not None
+    assert preview.predicted_statistics.model_dump() == result.statistics.model_dump()
+    assert result.statistics.unresolved == 1
+    assert result.statistics.unchanged == 0
+    assert result.statistics.inserted == 0
+    assert app.database.count("transactions") == 1
+    with app.database.connect() as connection:
+        after = tuple(connection.execute(text(
+            "SELECT booking_date, allocation_date, amount, currency, description, "
+            "movement_type, category, original_currency, original_amount "
+            "FROM transactions WHERE id=1"
+        )).fetchone())
+    assert after == original
+
+
+def test_booking_date_change_is_reconciliation_candidate_not_new_transaction(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+    metrics_before = app.metrics_service.monthly_metrics("2026-09")
+
+    revised = list(familybiz_row)
+    revised[0] = "20/09/2026"
+    payload = make_workbook([revised])
+    preview = app.preview_import(payload, "booking-date-change.xlsx")
+    result = app.commit_import(payload, preview.preview_token, "booking-date-change.xlsx")
+
+    assert preview.predicted_statistics is not None
+    assert preview.predicted_statistics.model_dump() == result.statistics.model_dump()
+    assert result.statistics.unresolved == 1
+    assert result.statistics.inserted == 0
+    assert app.database.count("transactions") == 1
+    metrics_after = app.metrics_service.monthly_metrics("2026-09")
+    assert (
+        metrics_after.gross_income,
+        metrics_after.gross_consumption,
+        metrics_after.refunds,
+        metrics_after.net_consumption,
+        metrics_after.spending_by_category,
+    ) == (
+        metrics_before.gross_income,
+        metrics_before.gross_consumption,
+        metrics_before.refunds,
+        metrics_before.net_consumption,
+        metrics_before.spending_by_category,
+    )
+
+
+def test_reporting_and_original_amount_change_remains_a_reconciliation_candidate(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+    metrics_before = app.metrics_service.monthly_metrics("2026-09")
+
+    revised = list(familybiz_row)
+    revised[1] = -18.40
+    revised[8] = -18.40
+    payload = make_workbook([revised])
+    preview = app.preview_import(payload, "amounts-change.xlsx")
+    result = app.commit_import(payload, preview.preview_token, "amounts-change.xlsx")
+
+    assert preview.predicted_statistics is not None
+    assert preview.predicted_statistics.model_dump() == result.statistics.model_dump()
+    assert result.statistics.unresolved == 1
+    assert result.statistics.inserted == 0
+    assert app.database.count("transactions") == 1
+    metrics_after = app.metrics_service.monthly_metrics("2026-09")
+    assert (
+        metrics_after.gross_income,
+        metrics_after.gross_consumption,
+        metrics_after.refunds,
+        metrics_after.net_consumption,
+        metrics_after.spending_by_category,
+    ) == (
+        metrics_before.gross_income,
+        metrics_before.gross_consumption,
+        metrics_before.refunds,
+        metrics_before.net_consumption,
+        metrics_before.spending_by_category,
+    )
+
+
 def test_reconciliation_can_link_existing_candidate(tmp_path, familybiz_row):
     app = service(tmp_path)
     original = make_workbook([familybiz_row])
@@ -322,6 +439,61 @@ def test_relevant_transaction_change_without_new_batch_stales_preview(
         app.commit_import(payload, preview.preview_token, "proposed.xlsx")
     assert counts() == counts_before
     assert sorted(path.name for path in app.settings.archive_root.glob("*")) == archived_before
+
+
+def test_relevant_reconciliation_resolution_stales_preview_without_import_writes(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+
+    changed = list(familybiz_row)
+    changed[1] = -19.40
+    unresolved_payload = make_workbook([changed])
+    unresolved_preview = app.preview_import(unresolved_payload, "unresolved.xlsx")
+    app.commit_import(unresolved_payload, unresolved_preview.preview_token, "unresolved.xlsx")
+    old_case = app.database.open_reconciliation_cases()[0]
+
+    proposed = make_workbook([list(familybiz_row)])
+    preview = app.preview_import(proposed, "proposed-exact.xlsx")
+    app.resolve_reconciliation(old_case["id"], {"resolution": "dismiss"})
+
+    def counts():
+        with app.database.session() as session:
+            source_files = session.execute(text("SELECT COUNT(*) FROM source_files")).scalar_one()
+        return {
+            "transactions": app.database.count("transactions"),
+            "source_records": app.database.count("source_records"),
+            "source_files": source_files,
+            "import_batches": app.database.count("import_batches"),
+        }
+
+    counts_after_resolution = counts()
+    archive_after_resolution = sorted(path.name for path in app.settings.archive_root.glob("*"))
+    with pytest.raises(PreviewStaleError, match="matching state changed"):
+        app.commit_import(proposed, preview.preview_token, "proposed-exact.xlsx")
+    assert counts() == counts_after_resolution
+    assert sorted(path.name for path in app.settings.archive_root.glob("*")) == archive_after_resolution
+
+
+def test_unrelated_planning_scenario_change_does_not_stale_import_preview(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+
+    changed = list(familybiz_row)
+    changed[2] = "reconciliation candidate"
+    payload = make_workbook([changed])
+    preview = app.preview_import(payload, "proposed.xlsx")
+    app.planning_service.create_manual_scenario("Unrelated plan", "2026-09")
+
+    result = app.commit_import(payload, preview.preview_token, "proposed.xlsx")
+    assert result.statistics.unresolved == 1
 
 
 def test_plan_and_not_configured_registry_are_canonical(tmp_path, familybiz_row):
