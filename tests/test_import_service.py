@@ -94,7 +94,7 @@ def test_source_field_change_requires_reconciliation_without_updating_transactio
             "SELECT booking_date, allocation_date, amount, currency, description, "
             "movement_type, category, original_currency, original_amount "
             "FROM transactions WHERE id=1"
-        )).fetchone())
+        )).fetchone().values())
 
     revised = list(familybiz_row)
     revised[field_index] = changed_value
@@ -113,7 +113,7 @@ def test_source_field_change_requires_reconciliation_without_updating_transactio
             "SELECT booking_date, allocation_date, amount, currency, description, "
             "movement_type, category, original_currency, original_amount "
             "FROM transactions WHERE id=1"
-        )).fetchone())
+        )).fetchone().values())
     assert after == original
 
 
@@ -187,6 +187,40 @@ def test_reporting_and_original_amount_change_remains_a_reconciliation_candidate
         metrics_before.refunds,
         metrics_before.net_consumption,
         metrics_before.spending_by_category,
+    )
+
+
+def test_compound_revision_outside_candidate_signatures_is_recorded_as_new(
+    tmp_path, familybiz_row
+):
+    app = service(tmp_path)
+    initial = make_workbook([familybiz_row])
+    initial_preview = app.preview_import(initial, "initial.xlsx")
+    app.commit_import(initial, initial_preview.preview_token, "initial.xlsx")
+
+    revised = list(familybiz_row)
+    revised[0] = "22/09/2026"
+    revised[1] = -35.75
+    revised[2] = "revised merchant descriptor"
+    revised[8] = -35.75
+    payload = make_workbook([revised])
+    preview = app.preview_import(payload, "compound-revision.xlsx")
+    result = app.commit_import(payload, preview.preview_token, "compound-revision.xlsx")
+
+    assert preview.predicted_statistics is not None
+    assert preview.predicted_statistics.model_dump() == result.statistics.model_dump()
+    assert result.statistics.inserted == 1
+    assert result.statistics.unresolved == 0
+    assert app.database.count("transactions") == 2
+    with app.database.connect() as connection:
+        rows = connection.execute(text(
+            "SELECT booking_date, amount, description FROM transactions ORDER BY id"
+        )).fetchall()
+    assert tuple(rows[0].values()) == ("2026-09-19", "-17.4", "merchant")
+    assert tuple(rows[1].values()) == (
+        "2026-09-22",
+        "-35.75",
+        "revised merchant descriptor",
     )
 
 
