@@ -34,6 +34,33 @@ The workbook contains 1,452 transaction rows from 1 September 2025 through 19 Se
 
 These are warnings unless a value is required for safe parsing. The raw row payload is preserved in source_records; normalization is used for matching and analytics fields.
 
+## Import matching policy and limits
+
+FamilyBiz does not provide a stable transaction ID, so the importer uses
+source-field signatures rather than assuming that a plausible match is the
+same purchase. An exact match compares the account reference, booking date,
+allocation date, reporting amount and currency, description, movement type,
+category, and original amount and currency. Exact occurrences are reserved
+one-to-one before candidate matching.
+
+The candidate search is deliberately bounded. It can find revisions with a
+same-date description or amount change, paired reporting/original amount
+changes on the same date and description, and booking-date shifts of up to
+seven days when the other amount, currency, and description fields still
+match. A single plausible candidate and competing candidates both go to
+reconciliation; the importer never applies a non-exact revision automatically.
+An occurrence with no candidate under these signatures is treated as new.
+
+There is a residual duplicate risk when multiple identifying fields change
+together. For example, a nearby booking-date change combined with a changed
+description and changes to both amounts can evade the current signatures and
+be imported as new. The synthetic importer test records this limitation. The
+available workbook has no stable transaction IDs and contains duplicate-looking
+occurrences, but provides no evidence that this compound revision pattern is
+common. A broader review-only search could raise many false candidates among
+repeated purchases, so it is not enabled without representative exports that
+justify a useful additional signal. Non-exact matches remain manual decisions.
+
 ## Planning CSV
 
 The supplied CSV has 41 rows and 33 columns. It is a manually maintained planning sheet with five side-by-side budget versions, income, savings, notes, and monthly spending assumptions. It is not transaction-level data and is intentionally excluded from the FamilyBiz importer. Phase 4 parses the rightmost structurally recognized target block: the supplied file yields 24 explicit expense targets, two recurring income rows, one monthly savings summary, and nine notes attached to explicit targets. Observed-month columns, differences, historical savings balances, and unexpected-income history are excluded.

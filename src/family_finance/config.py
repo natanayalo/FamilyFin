@@ -15,8 +15,8 @@ class Settings:
     data_root: Path = PROJECT_ROOT / "data" / "local"
     max_compressed_bytes: int = 25 * 1024 * 1024
     max_uncompressed_bytes: int = 100 * 1024 * 1024
-    max_rows: int = 200_000
-    parser_version: str = "familybiz-v1"
+    max_rows: int = 50_000
+    parser_version: str = "familybiz-v2"
     planning_csv_max_bytes: int = 10 * 1024 * 1024
     planning_csv_max_rows: int = 5_000
     planning_csv_max_columns: int = 100

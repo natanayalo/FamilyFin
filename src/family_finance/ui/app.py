@@ -352,7 +352,24 @@ def main() -> None:
                 st.error(str(exc))
         preview = st.session_state.get("family_finance_preview")
         if preview:
-            st.json({"inspection": preview["inspection"], "issue_counts": preview["issue_counts"], "sample": preview["preview_rows"][:10]})
+            st.json({
+                "inspection": preview["inspection"],
+                "issue_counts": preview["issue_counts"],
+                "predicted_statistics": preview["predicted_statistics"],
+                "decision_plan": {
+                    "version": preview["decision_plan_version"],
+                    "fingerprint": preview["decision_plan_fingerprint"],
+                    "matcher_version": preview["matcher_version"],
+                    "matching_baseline": json.loads(preview["matching_baseline_json"]),
+                },
+                "sample": preview["preview_rows"][:10],
+            })
+            st.download_button(
+                "Download complete decision plan",
+                data=preview["decision_plan_json"],
+                file_name=f"{preview['file_sha256']}-import-plan.json",
+                mime="application/json",
+            )
             if st.button("Commit import"):
                 try:
                     result = service.commit_import(
