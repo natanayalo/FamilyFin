@@ -3,10 +3,11 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import stat
-from typing import Any
+from typing import Annotated, Any
 
 import httpx
 import pytest
+from fastapi import FastAPI, File, Form, UploadFile
 from sqlalchemy import select, text, update
 from sqlalchemy.exc import IntegrityError
 
@@ -343,3 +344,50 @@ def test_route_aware_body_limit_catches_chunked_upload_overflow(tmp_path):
     asyncio.run(middleware(scope, receive, send))
     assert response_starts[0]["status"] == 413
     assert reached_endpoint is False
+
+
+def test_fastapi_parses_bounded_synthetic_multipart_request(tmp_path):
+    settings = Settings(
+        data_root=tmp_path,
+        max_compressed_bytes=2048,
+        api_max_request_bytes=1024,
+    )
+    app = FastAPI()
+    app.add_middleware(RequestSizeLimitMiddleware, settings=settings)
+    reached_endpoint = []
+
+    @app.post("/api/v1/imports/familybiz/previews")
+    async def synthetic_preview(
+        file: Annotated[UploadFile, File()],
+        note: Annotated[str, Form()],
+    ):
+        content = await file.read()
+        reached_endpoint.append(True)
+        return {"filename": file.filename, "note": note, "size": len(content)}
+
+    with ApiTestClient(app, base_url="http://testserver") as client:
+        accepted = client.post(
+            "/api/v1/imports/familybiz/previews",
+            files={"file": ("sample.csv", b"a" * 2048, "text/csv")},
+            data={"note": "synthetic"},
+        )
+        assert accepted.status_code == 200
+        assert accepted.json() == {
+            "filename": "sample.csv",
+            "note": "synthetic",
+            "size": 2048,
+        }
+
+        oversized = client.post(
+            "/api/v1/imports/familybiz/previews",
+            files={
+                "file": (
+                    "large.csv",
+                    b"a" * (settings.max_compressed_bytes + 1_048_577),
+                    "text/csv",
+                )
+            },
+            data={"note": "synthetic"},
+        )
+        assert oversized.status_code == 413
+        assert len(reached_endpoint) == 1
