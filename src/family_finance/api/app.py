@@ -28,6 +28,37 @@ from family_finance.config import Settings
 from family_finance.persistence.db import Database
 from family_finance.services import ImportService
 
+MULTIPART_OVERHEAD_BYTES = 1 * 1024 * 1024
+MULTIPART_UPLOAD_ROUTE_LIMITS = {
+    ("POST", "/api/v1/imports/familybiz/previews"): "max_compressed_bytes",
+    ("POST", "/api/v1/imports/familybiz/commits"): "max_compressed_bytes",
+    ("POST", "/api/v1/planning/seeds/csv/previews"): "planning_csv_max_bytes",
+    ("POST", "/api/v1/planning/seeds/csv/commits"): "planning_csv_max_bytes",
+    ("POST", "/api/v1/net-worth/csv/previews"): "net_worth_csv_max_bytes",
+    ("POST", "/api/v1/net-worth/csv/commits"): "net_worth_csv_max_bytes",
+}
+
+
+def request_body_limit(
+    method: str,
+    path: str,
+    content_type: str | None,
+    settings: Settings,
+) -> int:
+    """Return a parser-aligned multipart cap or the small JSON cap.
+
+    Only explicitly enumerated upload routes receive file-size allowance.
+    Every multipart body is bounded by parser file bytes plus 1 MiB for the
+    multipart boundary, filename, token, and bounded form fields.
+    """
+
+    media_type = (content_type or "").split(";", 1)[0].strip().casefold()
+    route = (method.upper(), path.rstrip("/") or "/")
+    parser_limit_name = MULTIPART_UPLOAD_ROUTE_LIMITS.get(route)
+    if parser_limit_name and media_type == "multipart/form-data":
+        return int(getattr(settings, parser_limit_name)) + MULTIPART_OVERHEAD_BYTES
+    return settings.api_max_request_bytes
+
 
 class LoginBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -247,15 +278,28 @@ class RequestContextMiddleware:
 
 
 class RequestSizeLimitMiddleware:
-    """Buffer bounded API request bodies so chunked requests cannot bypass limits."""
+    """Enforce small JSON and parser-aligned multipart limits, including chunked bodies."""
 
-    def __init__(self, app, *, maximum_bytes: int) -> None:
+    def __init__(self, app, *, settings: Settings) -> None:
         self.app = app
-        self.maximum_bytes = maximum_bytes
+        self.settings = settings
 
     async def __call__(self, scope, receive, send) -> None:
         if scope["type"] != "http" or not scope.get("path", "").startswith("/api/"):
             await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        method = scope.get("method", "GET")
+        path = scope.get("path", "")
+        content_type = headers.get(b"content-type", b"").decode("latin-1")
+        limit = request_body_limit(method, path, content_type, self.settings)
+        try:
+            content_length = int(headers.get(b"content-length", b"0"))
+        except ValueError:
+            content_length = 0
+        if content_length > limit:
+            await self._reject_too_large(scope, receive, send)
             return
 
         chunks = bytearray()
@@ -266,20 +310,8 @@ class RequestSizeLimitMiddleware:
             if message["type"] != "http.request":
                 continue
             chunks.extend(message.get("body", b""))
-            if len(chunks) > self.maximum_bytes:
-                request_id = scope.get("state", {}).get("request_id", str(uuid.uuid4()))
-                response = JSONResponse(
-                    _error_envelope(request_id, "REQUEST_TOO_LARGE", "Request body exceeds the configured limit"),
-                    status_code=413,
-                    headers={
-                        "X-Request-ID": request_id,
-                        "Cache-Control": "private, no-store",
-                        "X-Content-Type-Options": "nosniff",
-                        "Referrer-Policy": "no-referrer",
-                        "X-Frame-Options": "DENY",
-                    },
-                )
-                await response(scope, receive, send)
+            if len(chunks) > limit:
+                await self._reject_too_large(scope, receive, send)
                 return
             if not message.get("more_body", False):
                 break
@@ -295,6 +327,22 @@ class RequestSizeLimitMiddleware:
             return {"type": "http.request", "body": body, "more_body": False}
 
         await self.app(scope, replay_receive, send)
+
+    @staticmethod
+    async def _reject_too_large(scope, receive, send) -> None:
+        request_id = scope.get("state", {}).get("request_id", str(uuid.uuid4()))
+        response = JSONResponse(
+            _error_envelope(request_id, "REQUEST_TOO_LARGE", "Request body exceeds the configured limit"),
+            status_code=413,
+            headers={
+                "X-Request-ID": request_id,
+                "Cache-Control": "private, no-store",
+                "X-Content-Type-Options": "nosniff",
+                "Referrer-Policy": "no-referrer",
+                "X-Frame-Options": "DENY",
+            },
+        )
+        await response(scope, receive, send)
 
 
 def current_user(request: Request) -> AuthenticatedUser:
@@ -367,7 +415,7 @@ def create_app(
     )
     app.add_middleware(
         RequestSizeLimitMiddleware,
-        maximum_bytes=resolved_settings.api_max_request_bytes,
+        settings=resolved_settings,
     )
 
     @app.exception_handler(ApiError)
@@ -447,6 +495,9 @@ def create_app(
     @auth_router.post("/session")
     def sign_in(body: LoginBody, request: Request, response: Response):
         try:
+            # The server entry point disables proxy-header trust. Behind the
+            # single loopback proxy this intentionally forms one throttle
+            # bucket per account; never split it using client-supplied XFF.
             credentials = request.app.state.auth_service.login(
                 username=body.username,
                 password=body.password,

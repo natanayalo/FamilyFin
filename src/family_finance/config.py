@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-API_MAX_BODY_BYTES = 25 * 1024 * 1024
+API_MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -39,8 +39,8 @@ class Settings:
     def __post_init__(self) -> None:
         if not 1 <= self.api_session_hours <= 24:
             raise ValueError("API session lifetime must be between 1 and 24 hours")
-        if not 1024 <= self.api_max_request_bytes <= API_MAX_BODY_BYTES:
-            raise ValueError("API request limit must be between 1 KiB and 25 MiB")
+        if not 1024 <= self.api_max_request_bytes <= API_MAX_JSON_BODY_BYTES:
+            raise ValueError("API JSON request limit must be between 1 KiB and 1 MiB")
 
     @property
     def database_path(self) -> Path:
@@ -104,7 +104,7 @@ class Settings:
                 24, max(1, int(os.environ.get("FAMILY_FINANCE_API_SESSION_HOURS", "8")))
             ),
             api_max_request_bytes=min(
-                API_MAX_BODY_BYTES,
+                API_MAX_JSON_BODY_BYTES,
                 max(
                     1024,
                     int(os.environ.get("FAMILY_FINANCE_API_MAX_REQUEST_BYTES", str(1024 * 1024))),

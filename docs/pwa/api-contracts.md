@@ -75,7 +75,9 @@ Pydantic domain values are serialized in JSON mode, then reviewed against these 
 
 Field validation remains owned by the existing service/parser. The API may reject malformed transport types before calling it, but must not weaken workbook, CSV, decimal, date, account-coverage, category, schedule, classification, forecast, mortgage, completeness, or stale-valuation validation. Return safe service errors and issue codes; do not expose uploaded row content in logs.
 
-Important configured file limits in the current code: FamilyBiz XLSX 25 MiB compressed, 100 MiB uncompressed, and at most 50,000 rows; planning CSV 10 MiB, 5,000 rows, 100 columns, 10,000 characters per field; net-worth CSV 10 MiB, 10,000 rows, 20 columns, 10,000 characters per field. Confirm the parser is authoritative when configuring reverse-proxy body limits.
+Important configured file limits in the current code: FamilyBiz XLSX 25 MiB compressed, 100 MiB uncompressed, and at most 50,000 rows; planning CSV 10 MiB, 5,000 rows, 100 columns, 10,000 characters per field; net-worth CSV 10 MiB, 10,000 rows, 20 columns, 10,000 characters per field. The transport applies the small JSON limit (1 MiB by default) to all routes except explicitly listed multipart uploads. FamilyBiz multipart preview/commit routes use `max_compressed_bytes + 1 MiB` for boundary and form-field overhead; Planning and Net Worth CSV multipart preview/commit routes use their respective parser byte limit plus the same overhead. A multipart request gets this allowance only on the exact planned POST route; a JSON request or an unlisted route remains under the JSON cap. The parser remains authoritative for file and expanded-content limits.
+
+Login throttling keys on normalized username and the direct socket peer address. Uvicorn disables proxy-header trust, and the API does not consume `Forwarded` or `X-Forwarded-For`. With the planned same-host loopback proxy, all remote household clients share that peer identity; this intentionally provides one persistent failure bucket per account across clients. The throttling key is HMACed before storage.
 
 ## Collections and pagination
 

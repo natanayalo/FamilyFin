@@ -4,7 +4,7 @@ Status: follow-up plan for independent implementation PRs. T00 changes documenta
 
 ## Repository prerequisites
 
-T01 foundation progress: API-owned `BEGIN IMMEDIATE` transaction participation, atomic idempotency response storage, FastAPI lifecycle, two-account authentication/session services, request/origin/host controls, typed transport errors, and safe health/status are implemented. No financial mutation route is registered or replay-safe. Remote mutating automation and attention-file commits remain blocked on the documented readiness and per-run verified pre-import backup remediation.
+T01 foundation progress: API-owned `BEGIN IMMEDIATE` transaction participation, atomic idempotency response storage, FastAPI lifecycle, two-account authentication/session services, request/origin/host controls, typed transport errors, safe health/status, and bounded route-aware upload transport policy are implemented. JSON/unlisted bodies remain capped at 1 MiB; planned multipart routes add only their parser's file limit plus bounded overhead. No financial mutation route is registered or replay-safe. Remote mutating automation and attention-file commits remain blocked on the documented readiness and per-run verified pre-import backup remediation.
 
 | Area | Present state | Required before feature modules |
 | --- | --- | --- |
