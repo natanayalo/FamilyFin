@@ -3,8 +3,11 @@ from __future__ import annotations
 import csv
 import io
 
+from sqlalchemy import select
+
 from family_finance.api.auth import SESSION_COOKIE_NAME
 from family_finance.models import ForecastActualComparison
+from family_finance.persistence.models import ActorAuditEventRow
 from tests.test_api_auth import ApiTestClient, make_api
 
 
@@ -17,6 +20,24 @@ def _sign_in(client: ApiTestClient) -> dict[str, str]:
     assert response.status_code == 200
     assert client.cookies.get(SESSION_COOKIE_NAME)
     return {"Origin": "https://testserver", "X-CSRF-Token": response.json()["data"]["csrf_token"]}
+
+
+def _sign_in_as(client: ApiTestClient, username: str, password: str) -> dict[str, str]:
+    response = client.post(
+        "/api/v1/auth/session",
+        json={"username": username, "password": password},
+        headers={"Origin": "https://testserver"},
+    )
+    assert response.status_code == 200
+    token = client.cookies.get(SESSION_COOKIE_NAME)
+    assert token
+    csrf_token = response.json()["data"]["csrf_token"]
+    client.cookies.clear()
+    return {
+        "Origin": "https://testserver",
+        "X-CSRF-Token": csrf_token,
+        "Cookie": f"{SESSION_COOKIE_NAME}={token}",
+    }
 
 
 def _account_payload(key: str, name: str, *, side: str, category: str, liquidity: str | None):
@@ -44,8 +65,16 @@ def _add_accounts(client: ApiTestClient, headers: dict[str, str]):
         json=_account_payload("loan", "Personal loan", side="liability", category="loan", liquidity=None),
         headers=headers,
     )
-    assert asset.status_code == 201
+    assert asset.status_code == 201, asset.text
     assert liability.status_code == 201
+    assert asset.json()["data"]["updated_at"]
+    duplicate = client.post(
+        "/api/v1/net-worth/accounts",
+        json=_account_payload("cash", "Second cash account", side="asset", category="cash", liquidity="liquid"),
+        headers=headers,
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "ACCOUNT_ALREADY_EXISTS"
     return asset.json()["data"], liability.json()["data"]
 
 
@@ -55,6 +84,18 @@ def test_net_worth_routes_require_authentication_and_keep_decimal_strings(tmp_pa
         assert client.get("/api/v1/net-worth/accounts").status_code == 401
         headers = _sign_in(client)
         cash, loan = _add_accounts(client, headers)
+
+        edited = client.put(
+            "/api/v1/net-worth/accounts/cash",
+            json={
+                **_account_payload("cash", "Household checking", side="asset", category="cash", liquidity="liquid"),
+                "expected_updated_at": cash["updated_at"],
+            },
+            headers=headers,
+        )
+        assert edited.status_code == 200
+        cash = edited.json()["data"]
+        assert cash["display_name"] == "Household checking"
 
         saved = client.post(
             "/api/v1/net-worth/snapshots",
@@ -121,24 +162,102 @@ def test_net_worth_routes_require_authentication_and_keep_decimal_strings(tmp_pa
 
         closed = client.post(
             "/api/v1/net-worth/accounts/cash/close",
-            json={"closed_on": "2026-12-31"},
+            json={"closed_on": "2026-12-31", "expected_updated_at": cash["updated_at"]},
             headers=headers,
         )
         assert closed.status_code == 200
         assert closed.json()["data"]["active_to"] == "2026-12-31"
         reactivated = client.post(
             "/api/v1/net-worth/accounts/cash/reactivate",
-            json={"active_from": "2020-01-01"},
+            json={"active_from": "2020-01-01", "expected_updated_at": closed.json()["data"]["updated_at"]},
             headers=headers,
         )
         assert reactivated.status_code == 200
         assert reactivated.json()["data"]["active_to"] is None
         assert cash["side"] == "asset" and loan["side"] == "liability"
         assert database.path == settings.database_path
+        with database.session() as session:
+            event_types = set(session.execute(select(ActorAuditEventRow.event_type)).scalars())
+        assert {
+            "net_worth.account.create",
+            "net_worth.account.update",
+            "net_worth.account.close",
+            "net_worth.account.reactivate",
+            "net_worth.snapshot.create",
+            "net_worth.snapshot.revision.create",
+        } <= event_types
+
+
+def test_two_users_cannot_overwrite_stale_account_edits_or_lifecycle_changes(tmp_path):
+    _, _, _, app = make_api(tmp_path)
+    with ApiTestClient(app, base_url="https://testserver") as client:
+        sam = _sign_in_as(client, "sam", "Long-test-password-One!")
+        lee = _sign_in_as(client, "lee", "Long-test-password-Two!")
+        created = client.post(
+            "/api/v1/net-worth/accounts",
+            json=_account_payload("shared-cash", "Shared cash", side="asset", category="cash", liquidity="liquid"),
+            headers=sam,
+        )
+        assert created.status_code == 201
+
+        sam_read = client.get("/api/v1/net-worth/accounts?include_closed=true", headers=sam).json()["data"][0]
+        lee_read = client.get("/api/v1/net-worth/accounts?include_closed=true", headers=lee).json()["data"][0]
+        assert sam_read["updated_at"] == lee_read["updated_at"]
+        original_version = sam_read["updated_at"]
+
+        edit = client.put(
+            "/api/v1/net-worth/accounts/shared-cash",
+            json={
+                **_account_payload("shared-cash", "Lee's cash", side="asset", category="cash", liquidity="liquid"),
+                "expected_updated_at": lee_read["updated_at"],
+            },
+            headers=lee,
+        )
+        assert edit.status_code == 200
+        stale_edit = client.put(
+            "/api/v1/net-worth/accounts/shared-cash",
+            json={
+                **_account_payload("shared-cash", "Sam's stale edit", side="asset", category="cash", liquidity="liquid"),
+                "expected_updated_at": original_version,
+            },
+            headers=sam,
+        )
+        assert stale_edit.status_code == 409
+        assert stale_edit.json()["error"]["code"] == "STALE_ACCOUNT"
+
+        current_version = edit.json()["data"]["updated_at"]
+        closed = client.post(
+            "/api/v1/net-worth/accounts/shared-cash/close",
+            json={"closed_on": "2026-12-31", "expected_updated_at": current_version},
+            headers=lee,
+        )
+        assert closed.status_code == 200
+        stale_close = client.post(
+            "/api/v1/net-worth/accounts/shared-cash/close",
+            json={"closed_on": "2026-12-31", "expected_updated_at": current_version},
+            headers=sam,
+        )
+        assert stale_close.status_code == 409
+        assert stale_close.json()["error"]["code"] == "STALE_ACCOUNT"
+
+        closed_version = closed.json()["data"]["updated_at"]
+        reactivated = client.post(
+            "/api/v1/net-worth/accounts/shared-cash/reactivate",
+            json={"active_from": "2020-01-01", "expected_updated_at": closed_version},
+            headers=lee,
+        )
+        assert reactivated.status_code == 200
+        stale_reactivate = client.post(
+            "/api/v1/net-worth/accounts/shared-cash/reactivate",
+            json={"active_from": "2020-01-01", "expected_updated_at": closed_version},
+            headers=sam,
+        )
+        assert stale_reactivate.status_code == 409
+        assert stale_reactivate.json()["error"]["code"] == "STALE_ACCOUNT"
 
 
 def test_net_worth_csv_template_preview_commit_and_strict_headers(tmp_path):
-    _, _, _, app = make_api(tmp_path)
+    _, database, _, app = make_api(tmp_path)
     with ApiTestClient(app, base_url="https://testserver") as client:
         headers = _sign_in(client)
         _add_accounts(client, headers)
@@ -183,6 +302,11 @@ def test_net_worth_csv_template_preview_commit_and_strict_headers(tmp_path):
         assert committed.status_code == 201
         assert committed.json()["data"]["origin"] == "csv"
         assert committed.json()["data"]["balances"][0]["amount_ils"] == "800.75"
+        with database.session() as session:
+            csv_audits = session.execute(
+                select(ActorAuditEventRow).where(ActorAuditEventRow.event_type == "net_worth.csv.commit")
+            ).scalars().all()
+        assert len(csv_audits) == 1
 
         malformed = client.post(
             "/api/v1/net-worth/csv/previews",
@@ -209,7 +333,7 @@ def test_net_worth_csv_template_preview_commit_and_strict_headers(tmp_path):
 
 
 def test_net_worth_snapshot_coverage_archive_and_forecast_compare_contract(tmp_path, monkeypatch):
-    _, _, _, app = make_api(tmp_path)
+    _, database, _, app = make_api(tmp_path)
     with ApiTestClient(app, base_url="https://testserver") as client:
         headers = _sign_in(client)
         _add_accounts(client, headers)
@@ -248,6 +372,25 @@ def test_net_worth_snapshot_coverage_archive_and_forecast_compare_contract(tmp_p
         )
         revision = created.json()["data"]
         snapshot_id = revision["snapshot_id"]
+        next_revision = client.post(
+            f"/api/v1/net-worth/snapshots/{snapshot_id}/revisions",
+            json={
+                "expected_revision_number": 1,
+                "balances": [
+                    {"account_key": "cash", "amount_ils": "22", "valuation_date": "2026-06-30"},
+                    {"account_key": "loan", "amount_ils": "5", "valuation_date": "2026-06-30"},
+                ],
+            },
+            headers=headers,
+        )
+        assert next_revision.status_code == 201
+        restored = client.post(
+            f"/api/v1/net-worth/snapshots/{snapshot_id}/revisions/1/restore",
+            json={"expected_revision_number": 2},
+            headers=headers,
+        )
+        assert restored.status_code == 201
+        assert restored.json()["data"]["revision_number"] == 3
         archived = client.post(
             f"/api/v1/net-worth/snapshots/{snapshot_id}/archive",
             json={"archived": True},
@@ -257,10 +400,18 @@ def test_net_worth_snapshot_coverage_archive_and_forecast_compare_contract(tmp_p
         assert archived.json()["data"]["archived"] is True
         blocked_restore = client.post(
             f"/api/v1/net-worth/snapshots/{snapshot_id}/revisions/1/restore",
-            json={"expected_revision_number": 1},
+            json={"expected_revision_number": 3},
             headers=headers,
         )
         assert blocked_restore.status_code == 409
+        with database.session() as session:
+            event_types = set(session.execute(select(ActorAuditEventRow.event_type)).scalars())
+        assert {
+            "net_worth.snapshot.create",
+            "net_worth.snapshot.revision.create",
+            "net_worth.snapshot.revision.restore",
+            "net_worth.snapshot.archive",
+        } <= event_types
 
         expected = ForecastActualComparison(
             forecast_id="forecast-1", forecast_revision_id="forecast-revision-1",

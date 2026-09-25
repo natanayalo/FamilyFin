@@ -28,6 +28,7 @@ import styles from "./net-worth.module.css";
 type AccountDraft = {
   mode: "create" | "edit";
   account_key: string;
+  expected_updated_at: string | null;
   display_name: string;
   side: "asset" | "liability";
   category: string;
@@ -82,7 +83,7 @@ function displayError(error: unknown) {
 
 function emptyAccountDraft(): AccountDraft {
   return {
-    mode: "create", account_key: "", display_name: "", side: "asset", category: "cash",
+    mode: "create", account_key: "", expected_updated_at: null, display_name: "", side: "asset", category: "cash",
     liquidity: "liquid", owner_label: "", active_from: todayIso(), active_to: "", stale_after_days: "45",
   };
 }
@@ -240,7 +241,7 @@ export function NetWorthPage() {
     const mode = accountDraft.mode;
     await runMutation(async () => {
       if (mode === "create") await apiRequest("/net-worth/accounts", { method: "POST", body: JSON.stringify(payload) });
-      else await apiRequest(`/net-worth/accounts/${encodeURIComponent(accountDraft.account_key)}`, { method: "PUT", body: JSON.stringify(payload) });
+      else await apiRequest(`/net-worth/accounts/${encodeURIComponent(accountDraft.account_key)}`, { method: "PUT", body: JSON.stringify({ ...payload, expected_updated_at: accountDraft.expected_updated_at }) });
       setAccountDraft(null);
     }, mode === "create" ? "החשבון נוסף לרשימה." : "פרטי החשבון עודכנו.");
   }
@@ -248,7 +249,7 @@ export function NetWorthPage() {
   function editAccount(account?: NetWorthAccount) {
     if (!account) { setAccountDraft(emptyAccountDraft()); return; }
     setAccountDraft({
-      mode: "edit", account_key: account.account_key, display_name: account.display_name,
+      mode: "edit", account_key: account.account_key, expected_updated_at: account.updated_at, display_name: account.display_name,
       side: account.side, category: account.category, liquidity: account.liquidity ?? "",
       owner_label: account.owner_label ?? "", active_from: account.active_from,
       active_to: account.active_to ?? "", stale_after_days: String(account.stale_after_days),
@@ -416,8 +417,8 @@ export function NetWorthPage() {
               <button type="button" onClick={() => editAccount(account)}>עריכה</button>
               <button type="button" onClick={() => void loadAccountHistory(account.account_key)}>היסטוריה</button>
               {account.active_to
-                ? <button type="button" disabled={saving || needsReconcile} onClick={() => void runMutation(() => apiRequest(`/net-worth/accounts/${encodeURIComponent(account.account_key)}/reactivate`, { method: "POST", body: JSON.stringify({ active_from: todayIso() }) }), "החשבון הופעל מחדש.")}>הפעלה מחדש</button>
-                : <button type="button" disabled={saving || needsReconcile} onClick={() => void runMutation(() => apiRequest(`/net-worth/accounts/${encodeURIComponent(account.account_key)}/close`, { method: "POST", body: JSON.stringify({ closed_on: todayIso() }) }), "החשבון נסגר לתאריכים עתידיים.")}>סגירה</button>}
+                ? <button type="button" disabled={saving || needsReconcile} onClick={() => void runMutation(() => apiRequest(`/net-worth/accounts/${encodeURIComponent(account.account_key)}/reactivate`, { method: "POST", body: JSON.stringify({ active_from: todayIso(), expected_updated_at: account.updated_at }) }), "החשבון הופעל מחדש.")}>הפעלה מחדש</button>
+                : <button type="button" disabled={saving || needsReconcile} onClick={() => void runMutation(() => apiRequest(`/net-worth/accounts/${encodeURIComponent(account.account_key)}/close`, { method: "POST", body: JSON.stringify({ closed_on: todayIso(), expected_updated_at: account.updated_at }) }), "החשבון נסגר לתאריכים עתידיים.")}>סגירה</button>}
             </td>
           </tr>)}
         </tbody></table>

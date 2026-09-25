@@ -59,6 +59,9 @@ class ApiTestClient:
     def post(self, url: str, **kwargs: Any):
         return self._request("post", url, **kwargs)
 
+    def put(self, url: str, **kwargs: Any):
+        return self._request("put", url, **kwargs)
+
     def delete(self, url: str, **kwargs: Any):
         return self._request("delete", url, **kwargs)
 

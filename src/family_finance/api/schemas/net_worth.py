@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Annotated, Literal
 
@@ -52,13 +52,21 @@ class AccountBody(NetWorthAccountInput):
 class AccountCloseBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_updated_at: datetime
     closed_on: IsoDate | None = None
 
 
 class AccountReactivateBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_updated_at: datetime
     active_from: IsoDate | None = None
+
+
+class AccountUpdateBody(AccountBody):
+    """Account edits require the exact version returned by an account read."""
+
+    expected_updated_at: datetime
 
 
 class SnapshotBalanceBody(BaseModel):

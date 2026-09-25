@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -12,10 +13,12 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy.exc import ArgumentError
 
 from family_finance.api.app import ApiError, authenticated_router
+from family_finance.api.audit import record_actor_audit
 from family_finance.api.schemas.net_worth import (
     AccountBody,
     AccountCloseBody,
     AccountReactivateBody,
+    AccountUpdateBody,
     CsvCommitFields,
     ForecastComparisonBody,
     IsoDate,
@@ -25,6 +28,7 @@ from family_finance.api.schemas.net_worth import (
     SnapshotRevisionBody,
 )
 from family_finance.net_worth import (
+    DuplicateNetWorthAccountError,
     DuplicateNetWorthImportError,
     ExistingSnapshotRevisionError,
     NetWorthPreviewStaleError,
@@ -71,9 +75,37 @@ def _envelope(request: Request, value: Any) -> dict[str, Any]:
     return {"data": _wire(value), "meta": {"request_id": request.state.request_id}}
 
 
-def _service(request: Request, operation, *args, **kwargs):
+def _service(
+    request: Request,
+    operation,
+    *args,
+    _audit: tuple[str, str] | None = None,
+    _precondition: Callable[[], None] | None = None,
+    _flush_audit_first: bool = False,
+    **kwargs,
+):
     try:
-        result = operation(*args, **kwargs)
+        if _audit is None:
+            result = operation(*args, **kwargs)
+        else:
+            actor = request.state.authenticated_user
+            with request.app.state.database.api_write_unit_of_work() as session:
+                record_actor_audit(
+                    session,
+                    actor_id=actor.user_id,
+                    event_type=_audit[0],
+                    target_type=_audit[1],
+                    request_id=request.state.request_id,
+                )
+                # CSV commit has a filesystem step before its database writes.
+                # Flush the database audit row before installing that archive.
+                if _flush_audit_first:
+                    session.flush()
+                if _precondition is not None:
+                    _precondition()
+                result = operation(*args, **kwargs)
+    except DuplicateNetWorthAccountError:
+        raise ApiError(409, "ACCOUNT_ALREADY_EXISTS", "An account with this key already exists") from None
     except StaleNetWorthRevisionError:
         raise ApiError(409, "STALE_REVISION", "The snapshot changed. Reload it before saving again") from None
     except NetWorthPreviewStaleError:
@@ -118,27 +150,71 @@ def list_accounts(
 
 @router.post("/accounts", status_code=201)
 def create_account(body: AccountBody, request: Request):
-    return _service(request, request.app.state.services.net_worth_service.create_account, body)
+    return _service(
+        request,
+        request.app.state.services.net_worth_service.create_account,
+        body,
+        _audit=("net_worth.account.create", "net_worth_account"),
+    )
 
 
 @router.put("/accounts/{account_key}")
-def update_account(account_key: str, body: AccountBody, request: Request):
+def update_account(account_key: str, body: AccountUpdateBody, request: Request):
     if body.account_key and body.account_key != account_key:
         raise ApiError(422, "VALIDATION_ERROR", "Account key in the path and body must match")
-    changes = body.model_dump(mode="python", exclude={"account_key"})
-    return _service(request, request.app.state.services.net_worth_service.update_account, account_key, **changes)
+    service = request.app.state.services.net_worth_service
+    changes = body.model_dump(mode="python", exclude={"account_key", "expected_updated_at"})
+    return _service(
+        request,
+        service.update_account,
+        account_key,
+        _audit=("net_worth.account.update", "net_worth_account"),
+        _precondition=lambda: _require_current_account_version(
+            request, service, account_key, body.expected_updated_at
+        ),
+        **changes,
+    )
 
 
 @router.post("/accounts/{account_key}/close")
-def close_account(account_key: str, request: Request, body: AccountCloseBody | None = None):
-    closed_on = body.closed_on if body else None
-    return _service(request, request.app.state.services.net_worth_service.close_account, account_key, closed_on)
+def close_account(account_key: str, body: AccountCloseBody, request: Request):
+    service = request.app.state.services.net_worth_service
+    return _service(
+        request,
+        service.close_account,
+        account_key,
+        body.closed_on,
+        _audit=("net_worth.account.close", "net_worth_account"),
+        _precondition=lambda: _require_current_account_version(
+            request, service, account_key, body.expected_updated_at
+        ),
+    )
 
 
 @router.post("/accounts/{account_key}/reactivate")
-def reactivate_account(account_key: str, request: Request, body: AccountReactivateBody | None = None):
-    active_from = body.active_from if body else None
-    return _service(request, request.app.state.services.net_worth_service.reactivate_account, account_key, active_from)
+def reactivate_account(account_key: str, body: AccountReactivateBody, request: Request):
+    service = request.app.state.services.net_worth_service
+    return _service(
+        request,
+        service.reactivate_account,
+        account_key,
+        body.active_from,
+        _audit=("net_worth.account.reactivate", "net_worth_account"),
+        _precondition=lambda: _require_current_account_version(
+            request, service, account_key, body.expected_updated_at
+        ),
+    )
+
+
+def _timestamp_token(value: datetime) -> str:
+    aware = value.replace(tzinfo=UTC) if value.tzinfo is None else value.astimezone(UTC)
+    return aware.isoformat().replace("+00:00", "Z")
+
+
+def _require_current_account_version(request: Request, service, account_key: str, expected_updated_at: datetime):
+    current = service.get_account(account_key)
+    if current.updated_at is None or _timestamp_token(current.updated_at) != _timestamp_token(expected_updated_at):
+        raise ApiError(409, "STALE_ACCOUNT", "The account changed. Reload it before saving again")
 
 
 @router.get("/snapshots")
@@ -165,6 +241,7 @@ def create_snapshot(body: SnapshotCreateBody, request: Request):
         _balances(body.balances),
         notes=body.notes,
         quality_acknowledged=body.quality_acknowledged,
+        _audit=("net_worth.snapshot.create", "net_worth_snapshot"),
     )
 
 
@@ -178,15 +255,18 @@ def save_revision(snapshot_id: str, body: SnapshotRevisionBody, request: Request
         expected_revision_number=body.expected_revision_number,
         notes=body.notes,
         quality_acknowledged=body.quality_acknowledged,
+        _audit=("net_worth.snapshot.revision.create", "net_worth_snapshot"),
     )
 
 
 @router.post("/snapshots/{snapshot_id}/revisions/{revision_number}/restore", status_code=201)
 def restore_revision(snapshot_id: str, revision_number: int, body: SnapshotRestoreBody, request: Request):
     service = request.app.state.services.net_worth_service
-    identity = _service(request, service.get_snapshot, snapshot_id)["data"]
-    if identity["archived"]:
-        raise ApiError(409, "INVALID_STATE", "Archived snapshots cannot be restored")
+    def require_active_snapshot():
+        identity = service.get_snapshot(snapshot_id)
+        if identity.archived:
+            raise ApiError(409, "INVALID_STATE", "Archived snapshots cannot be restored")
+
     return _service(
         request,
         service.restore_revision,
@@ -195,13 +275,22 @@ def restore_revision(snapshot_id: str, revision_number: int, body: SnapshotResto
         expected_revision_number=body.expected_revision_number,
         quality_acknowledged=body.quality_acknowledged,
         notes=body.notes,
+        _audit=("net_worth.snapshot.revision.restore", "net_worth_snapshot"),
+        _precondition=require_active_snapshot,
     )
 
 
 @router.post("/snapshots/{snapshot_id}/archive")
 def set_snapshot_archived(snapshot_id: str, body: SnapshotArchiveBody, request: Request):
     service = request.app.state.services.net_worth_service
-    return _service(request, service.archive_snapshot, snapshot_id, body.archived)
+    event = "net_worth.snapshot.archive" if body.archived else "net_worth.snapshot.unarchive"
+    return _service(
+        request,
+        service.archive_snapshot,
+        snapshot_id,
+        body.archived,
+        _audit=(event, "net_worth_snapshot"),
+    )
 
 
 @router.get("/accounts/{account_key}/history")
@@ -287,6 +376,8 @@ def commit_csv(
         original_filename,
         create_new_revision=fields.create_new_revision,
         quality_acknowledged=fields.quality_acknowledged,
+        _audit=("net_worth.csv.commit", "net_worth_import"),
+        _flush_audit_first=True,
     )
 
 
