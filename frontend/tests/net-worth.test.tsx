@@ -30,7 +30,7 @@ vi.mock("@/features/net-worth/api", () => ({
 const account = {
   id: "account-id", account_key: "cash", display_name: "מזומן", side: "asset" as const,
   category: "cash", liquidity: "liquid" as const, owner_label: null, active_from: "2020-01-01",
-  active_to: null, stale_after_days: 45, created_at: null, updated_at: null,
+  active_to: null, stale_after_days: 45, created_at: null, updated_at: "2026-09-25T10:00:00Z",
 };
 const snapshot = {
   snapshot_id: "snapshot-id", snapshot_date: "2026-08-31", current_revision_number: 1,
@@ -97,5 +97,38 @@ describe("Net Worth feature", () => {
     expect(body.expected_revision_number).toBe(1);
     expect(body.balances[0].amount_ils).toBe("12345678901234567890.123456");
     expect(typeof body.balances[0].amount_ils).toBe("string");
+  });
+
+  it("sends the account version from the loaded row when editing account metadata", async () => {
+    render(<NetWorthPage />);
+    await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    fireEvent.click(screen.getByRole("button", { name: "עריכה" }));
+    fireEvent.change(screen.getByLabelText("שם החשבון"), { target: { value: "יתרת מזומן" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת חשבון" }));
+
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledWith(
+      "/net-worth/accounts/cash",
+      expect.objectContaining({ method: "PUT" }),
+    ));
+    const body = JSON.parse(vi.mocked(apiRequest).mock.calls[0][1]?.body as string);
+    expect(body.expected_updated_at).toBe(account.updated_at);
+  });
+
+  it.each([
+    { active_to: null, button: "סגירה", field: "closed_on" },
+    { active_to: "2026-09-01", button: "הפעלה מחדש", field: "active_from" },
+  ])("sends the account version when account lifecycle changes", async ({ active_to, button, field }) => {
+    vi.mocked(getAccounts).mockResolvedValue([{ ...account, active_to }]);
+    render(<NetWorthPage />);
+    await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    fireEvent.click(screen.getByRole("button", { name: button }));
+
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledWith(
+      `/net-worth/accounts/cash/${field === "closed_on" ? "close" : "reactivate"}`,
+      expect.objectContaining({ method: "POST" }),
+    ));
+    const body = JSON.parse(vi.mocked(apiRequest).mock.calls[0][1]?.body as string);
+    expect(body[field]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(body.expected_updated_at).toBe(account.updated_at);
   });
 });
