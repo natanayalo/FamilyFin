@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
+from contextvars import ContextVar, Token
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Self
@@ -12,6 +14,18 @@ from typing import Any, Self
 from sqlalchemy import create_engine, event, func, select, text
 from sqlalchemy.engine import Connection, Engine
 from sqlalchemy.orm import Session, sessionmaker
+
+
+@dataclass
+class _ApiTransaction:
+    database: Database
+    session: Session
+    rollback_only: bool = False
+
+
+_api_transaction: ContextVar[_ApiTransaction | None] = ContextVar(
+    "family_finance_api_transaction", default=None
+)
 
 
 def utc_now() -> str:
@@ -142,6 +156,16 @@ class Database:
 
     @contextmanager
     def session(self) -> Iterator[Session]:
+        ambient = _api_transaction.get()
+        if ambient is not None:
+            if ambient.database is not self:
+                raise RuntimeError("A service attempted to use a different database in an API transaction")
+            try:
+                yield ambient.session
+            except Exception:
+                ambient.rollback_only = True
+                raise
+            return
         session = self.session_factory()
         try:
             yield session
@@ -156,6 +180,19 @@ class Database:
     def write_session(self) -> Iterator[Session]:
         """Yield a SQLAlchemy session inside an explicit immediate write."""
 
+        ambient = _api_transaction.get()
+        if ambient is not None:
+            if ambient.database is not self:
+                raise RuntimeError("A service attempted to write to a different database in an API transaction")
+            # The API boundary owns commit/rollback. Service contexts must not
+            # commit independently or suppress failures inside that boundary.
+            try:
+                yield ambient.session
+            except Exception:
+                ambient.rollback_only = True
+                raise
+            return
+
         raw_connection = self.engine.connect()
         raw_connection.exec_driver_sql("BEGIN IMMEDIATE")
         session = Session(bind=raw_connection, expire_on_commit=False, autoflush=False)
@@ -168,6 +205,43 @@ class Database:
             raw_connection.rollback()
             raise
         finally:
+            session.close()
+            raw_connection.close()
+
+    @contextmanager
+    def api_write_unit_of_work(self) -> Iterator[Session]:
+        """Own one immediate transaction that participating services can join.
+
+        The API caller must persist its completed response using the yielded
+        session before leaving this context. Domain writes and response records
+        then commit or roll back together. This is deliberately opt-in: normal
+        CLI and Streamlit service calls retain their existing transaction
+        ownership through ``write_session``.
+        """
+
+        if self.read_only:
+            raise RuntimeError("A read-only database cannot start an API write unit of work")
+        if _api_transaction.get() is not None:
+            raise RuntimeError("API write units of work cannot be nested")
+
+        raw_connection = self.engine.connect()
+        raw_connection.exec_driver_sql("BEGIN IMMEDIATE")
+        session = Session(bind=raw_connection, expire_on_commit=False, autoflush=False)
+        transaction = _ApiTransaction(database=self, session=session)
+        token: Token = _api_transaction.set(transaction)
+        try:
+            yield session
+            if transaction.rollback_only:
+                raise RuntimeError("A participating service failed; the API transaction was marked rollback-only")
+            session.flush()
+            session.commit()
+            raw_connection.commit()
+        except Exception:
+            session.rollback()
+            raw_connection.rollback()
+            raise
+        finally:
+            _api_transaction.reset(token)
             session.close()
             raw_connection.close()
 

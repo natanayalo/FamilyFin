@@ -7,12 +7,84 @@ money as text, matching the existing schema's canonical Decimal representation.
 
 from __future__ import annotations
 
-from sqlalchemy import Boolean, ForeignKey, Index, Integer, Text
+from sqlalchemy import Boolean, ForeignKey, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 class Base(DeclarativeBase):
     pass
+
+
+class ApiIdempotencyRecordRow(Base):
+    """Completed API response stored atomically with a participating mutation."""
+
+    __tablename__ = "api_idempotency_records"
+    __table_args__ = (
+        UniqueConstraint(
+            "actor_id", "http_method", "canonical_route", "idempotency_key",
+            name="uq_api_idempotency_scope_key",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    actor_id: Mapped[str] = mapped_column(Text)
+    http_method: Mapped[str] = mapped_column(Text)
+    canonical_route: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text)
+    request_hash: Mapped[str] = mapped_column(Text)
+    response_status: Mapped[int] = mapped_column(Integer)
+    response_body: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+
+
+class ApiUserRow(Base):
+    __tablename__ = "api_users"
+
+    user_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    username: Mapped[str] = mapped_column(Text, unique=True)
+    display_name: Mapped[str] = mapped_column(Text)
+    password_salt: Mapped[str] = mapped_column(Text)
+    password_hash: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ApiSessionRow(Base):
+    __tablename__ = "api_sessions"
+
+    token_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("api_users.user_id", ondelete="CASCADE"))
+    csrf_hash: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
+    expires_at: Mapped[str] = mapped_column(Text)
+    revoked_at: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
+class ApiLoginThrottleRow(Base):
+    __tablename__ = "api_login_throttles"
+
+    throttle_key_hash: Mapped[str] = mapped_column(Text, primary_key=True)
+    failure_count: Mapped[int] = mapped_column(Integer)
+    window_started_at: Mapped[str] = mapped_column(Text)
+    blocked_until: Mapped[str | None] = mapped_column(Text, nullable=True)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
+class ActorAuditEventRow(Base):
+    """Append-only operational metadata; deliberately excludes request payloads."""
+
+    __tablename__ = "actor_audit_events"
+
+    id: Mapped[str] = mapped_column(Text, primary_key=True)
+    actor_id: Mapped[str | None] = mapped_column(
+        ForeignKey("api_users.user_id", ondelete="SET NULL"), nullable=True
+    )
+    event_type: Mapped[str] = mapped_column(Text)
+    request_id: Mapped[str] = mapped_column(Text)
+    target_type: Mapped[str | None] = mapped_column(Text, nullable=True)
+    outcome: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[str] = mapped_column(Text)
 
 
 class AccountRow(Base):

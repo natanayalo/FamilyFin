@@ -2,6 +2,8 @@
 
 Status: T00 specification only. No frontend, API, schema, or financial logic is changed here.
 
+T01 implementation update: the Python API/authentication foundation now provides a FastAPI app, two local household identities, server-side sessions, CSRF/origin controls, request limits, request IDs, safe actor audit metadata, and atomic idempotency primitives. There are still no financial HTTP routes and no route is currently declared replay-safe. See [deployment.md](deployment.md) and [api-contracts.md](api-contracts.md).
+
 ## Repository baseline and change status
 
 The checked-out repository was clean at commit b8bb6d069ca9e2202ef90504336baa44918d9dd0 on 2026-09-25. The current master contains PR #1 (dashboard review fixes) and PR #2 (import integrity). A live GitHub query returned only those two PRs, both merged; no pending PR was listed.
@@ -41,7 +43,7 @@ Startup should run migrations once before serving traffic, then create one reusa
 
 Tailscale access is the network boundary, not the household application identity. Add exactly two individually named application accounts with equal read and edit permissions. Do not offer public registration, third-party sign-in, or an administrator-only financial role. Require application authentication even from an allowed tailnet device.
 
-The current repository has no application login, users, roles, or per-user session. A credentials bootstrap and recovery procedure, password/MFA policy, session lifetime, and account recovery owner must be decided before authentication ships. Recommended initial transport: a server-side session referenced by a Secure, HttpOnly, SameSite=Strict cookie; CSRF protection for mutations; reauthentication for credential changes; throttled login attempts; explicit sign-out and session revocation. Never keep credentials or session tokens in localStorage.
+The API foundation now provisions exactly two individually named household accounts through a one-time local host bootstrap; both accounts have equal permissions and there is no public registration, third-party login, or administrator-only financial role. Passwords use salted scrypt hashes. An authorized host operator can reset one account at the console; the reset revokes that account's sessions. Sessions are server-side, revocable, eight hours by default, and referenced by Secure, HttpOnly, SameSite=Strict cookies. Mutation requests require same-origin checks and CSRF tokens, and login attempts are throttled. Never keep credentials or session tokens in localStorage. MFA is not implemented and remains a product/security decision for a future review.
 
 The current provenance records imported source files, batches, transaction links, assumptions, and immutable revisions. They do not consistently record which household user made a change. If actor attribution is required, add an append-only actor audit record for authenticated mutations and preserve the actor across Streamlit/CLI flows where practical. This requires a schema/service integration design because existing services commit their own transactions; an HTTP-only log written after the financial commit would have a crash gap. Do not claim actor provenance exists today.
 
