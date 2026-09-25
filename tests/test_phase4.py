@@ -22,14 +22,6 @@ from family_finance.models import (
 from family_finance.planning import StaleRevisionError
 from family_finance.services import ImportService
 
-CSV_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "הוצאות בית מעודכן 18_4_26.xlsx - בית כללי.csv"
-WORKBOOK_FIXTURE = Path(__file__).resolve().parents[1] / "data" / "familybiz report 21-09-26.xlsx"
-PRIVATE_IMPORT_FIXTURES_AVAILABLE = CSV_FIXTURE.is_file() and WORKBOOK_FIXTURE.is_file()
-PRIVATE_IMPORT_FIXTURE_SKIP = pytest.mark.skipif(
-    not PRIVATE_IMPORT_FIXTURES_AVAILABLE,
-    reason="requires local financial import fixtures, which are intentionally not committed",
-)
-
 
 def service(tmp_path):
     return ImportService(Settings(data_root=tmp_path / "local"))
@@ -106,14 +98,14 @@ def test_historical_seed_persists_provisional_quality_and_snapshot(tmp_path):
     assert draft.issue_codes == preview.issue_codes
 
 
-@PRIVATE_IMPORT_FIXTURE_SKIP
-def test_csv_seed_counts_mapping_notes_quality_archive_audit_and_backup(tmp_path):
+def test_csv_seed_counts_mapping_notes_quality_archive_audit_and_backup(
+    tmp_path, familybiz_workbook_bytes, planning_csv_bytes
+):
     app = service(tmp_path)
-    workbook_bytes = WORKBOOK_FIXTURE.read_bytes()
-    import_preview = app.preview_import(workbook_bytes, WORKBOOK_FIXTURE.name)
-    app.commit_import(workbook_bytes, import_preview.preview_token, WORKBOOK_FIXTURE.name)
-    csv_bytes = CSV_FIXTURE.read_bytes()
-    preview = app.planning_service.preview_csv_seed(csv_bytes, CSV_FIXTURE.name)
+    import_preview = app.preview_import(familybiz_workbook_bytes, "synthetic-familybiz.xlsx")
+    app.commit_import(familybiz_workbook_bytes, import_preview.preview_token, "synthetic-familybiz.xlsx")
+    csv_bytes = planning_csv_bytes
+    preview = app.planning_service.preview_csv_seed(csv_bytes, "synthetic-planning.csv")
     assert (preview.expense_target_count, preview.recurring_income_count, preview.savings_summary_count) == (24, 2, 1)
     assert len(preview.expense_notes) == 9
     assert preview.provisional is True
@@ -143,14 +135,14 @@ def test_csv_seed_counts_mapping_notes_quality_archive_audit_and_backup(tmp_path
     assert BackupService(app.database, app.settings).verify(backup_dir).passed
 
 
-@PRIVATE_IMPORT_FIXTURE_SKIP
-def test_csv_quality_recomputed_after_all_expenses_are_mapped(tmp_path):
+def test_csv_quality_recomputed_after_all_expenses_are_mapped(
+    tmp_path, familybiz_workbook_bytes, planning_csv_bytes
+):
     app = service(tmp_path)
-    workbook_bytes = WORKBOOK_FIXTURE.read_bytes()
-    import_preview = app.preview_import(workbook_bytes, WORKBOOK_FIXTURE.name)
-    app.commit_import(workbook_bytes, import_preview.preview_token, WORKBOOK_FIXTURE.name)
-    csv_bytes = CSV_FIXTURE.read_bytes()
-    preview = app.planning_service.preview_csv_seed(csv_bytes, CSV_FIXTURE.name)
+    import_preview = app.preview_import(familybiz_workbook_bytes, "synthetic-familybiz.xlsx")
+    app.commit_import(familybiz_workbook_bytes, import_preview.preview_token, "synthetic-familybiz.xlsx")
+    csv_bytes = planning_csv_bytes
+    preview = app.planning_service.preview_csv_seed(csv_bytes, "synthetic-planning.csv")
     categories = app.planning_service.analysis_categories("ILS")
     assert categories
     mappings = {

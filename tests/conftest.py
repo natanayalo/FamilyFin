@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import io
 
 import pytest
@@ -46,3 +47,27 @@ def familybiz_row() -> list[object]:
         -17.40,
     ]
 
+
+@pytest.fixture
+def familybiz_workbook_bytes(familybiz_row: list[object]) -> bytes:
+    """Provide a small synthetic import for tests that need source history."""
+    return make_workbook([familybiz_row])
+
+
+@pytest.fixture
+def planning_csv_bytes() -> bytes:
+    """Provide a deterministic multi-block planning CSV without household data."""
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(
+        ["קטגוריה", "מיני קטגוריה", "יעד", "הערות", "הוצאות חודשי", "הכנסות", "סכום", "חסכון"]
+    )
+    for index in range(24):
+        category = "household" if index == 0 else f"Synthetic category {index}"
+        note = f"Synthetic note {index}" if index < 9 else ""
+        writer.writerow([category, "", "100", note, "", "", "", ""])
+    writer.writerow(["סהכ הוצאות", "", "2500", "", "", "", "", ""])
+    writer.writerow(["", "", "", "", "", "משכורת", "10000", ""])
+    writer.writerow(["", "", "", "", "", "Salary bonus", "1000", ""])
+    writer.writerow(["", "", "", "", "2500", "סהכ הכנסות", "11000", "5000"])
+    return output.getvalue().encode("utf-8")
