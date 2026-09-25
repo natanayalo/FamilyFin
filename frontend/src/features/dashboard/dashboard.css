@@ -22,6 +22,10 @@
 .dashboard-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:12px;font-size:11px;color:var(--muted-foreground)}
 .dashboard-legend span{display:inline-flex;align-items:center;gap:6px}
 .dashboard-legend i{width:8px;height:8px;border-radius:50%}
+.dashboard-chart-data{margin-top:15px}
+.dashboard-chart-data summary{width:max-content;cursor:pointer;color:var(--accent-foreground);font-size:12px;font-weight:600;text-decoration:underline;text-underline-offset:3px}
+.dashboard-chart-data summary:focus-visible{outline:3px solid #b9cfc1;outline-offset:3px;border-radius:2px}
+.dashboard-chart-data[open] summary{margin-bottom:10px}
 .dashboard-data-table{width:100%;border-collapse:collapse;text-align:right;font-size:12px}
 .dashboard-data-table th,.dashboard-data-table td{padding:10px 8px;border-bottom:1px solid var(--line);vertical-align:top}
 .dashboard-data-table th{color:var(--muted-foreground);font-weight:500}
