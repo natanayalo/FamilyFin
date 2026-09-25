@@ -19,6 +19,7 @@ from family_finance.api.app import (
     authenticated_router,
     current_user,
 )
+from family_finance.api.audit import record_actor_audit
 from family_finance.api.auth import AuthenticatedUser
 from family_finance.api.idempotency import IdempotencyKeyReusedError, IdempotencyStore
 from family_finance.api.schemas.data_quality import (
@@ -28,6 +29,7 @@ from family_finance.api.schemas.data_quality import (
     ReconciliationResolutionBody,
     import_history_item,
 )
+from family_finance.dashboard import DashboardService
 from family_finance.importers.familybiz import FamilyBizSchemaError
 from family_finance.persistence.models import ReconciliationCaseRow, SourceRecordRow
 from family_finance.services import (
@@ -276,7 +278,9 @@ def _import_history(request: Request) -> list[dict[str, Any]]:
 
 @router.get("/dashboard/quality")
 def get_data_quality(request: Request):
-    dashboard = request.app.state.dashboard_service
+    # MetricsService keeps per-series mutable context. A facade per request
+    # prevents simultaneous dashboard requests from sharing that state.
+    dashboard = DashboardService(request.app.state.database)
     quality = dashboard.data_quality()
     history = _import_history(request)
     latest_id = quality.latest_import.get("id") if quality.latest_import else None
@@ -315,7 +319,10 @@ async def preview_familybiz(request: Request):
 
 
 @router.post("/imports/familybiz/commits")
-async def commit_familybiz(request: Request):
+async def commit_familybiz(
+    request: Request,
+    user: Annotated[AuthenticatedUser, Depends(current_user)],
+):
     file_bytes, filename, preview_token = await _uploaded_xlsx(
         request,
         expected_fields={"file", "preview_token"},
@@ -328,13 +335,26 @@ async def commit_familybiz(request: Request):
             "A preview token is required",
             fields={"preview_token": ["Create a fresh preview before committing."]},
         )
+    def commit_with_audit():
+        # The service joins this API-owned SQLite transaction. Its archive
+        # write remains a filesystem side effect outside SQLite atomicity.
+        with request.app.state.database.api_write_unit_of_work() as session:
+            result = request.app.state.services.commit_import(
+                file_bytes,
+                preview_token,
+                filename,
+            )
+            record_actor_audit(
+                session,
+                actor_id=user.user_id,
+                event_type="familybiz.import_commit",
+                request_id=request.state.request_id,
+                target_type="import_batch",
+            )
+            return result
+
     try:
-        result = await run_in_threadpool(
-            request.app.state.services.commit_import,
-            file_bytes,
-            preview_token,
-            filename,
-        )
+        result = await run_in_threadpool(commit_with_audit)
     except PreviewStaleError:
         raise _error(
             request,
@@ -407,6 +427,15 @@ async def resolve_reconciliation_case(
         result = service.resolve_reconciliation(case_id, body_json)
         return 200, result.model_dump(mode="json")
 
+    def audit_decision(session) -> None:
+        record_actor_audit(
+            session,
+            actor_id=user.user_id,
+            event_type="reconciliation.resolve",
+            request_id=request.state.request_id,
+            target_type="reconciliation_case",
+        )
+
     try:
         result = await run_in_threadpool(
             idempotency.execute,
@@ -416,6 +445,7 @@ async def resolve_reconciliation_case(
             idempotency_key=idempotency_key,
             request={"case_id": case_id, **body_json},
             operation=operation,
+            on_success=audit_decision,
         )
     except IdempotencyKeyReusedError:
         raise _error(

@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from sqlalchemy import select
+from sqlalchemy.orm import Session
 
 from family_finance.persistence.db import Database, utc_now
 from family_finance.persistence.models import ApiIdempotencyRecordRow
@@ -63,6 +64,7 @@ class IdempotencyStore:
         idempotency_key: str,
         request: Any,
         operation: Callable[[], tuple[int, Any]],
+        on_success: Callable[[Session], None] | None = None,
     ) -> IdempotencyResponse:
         """Execute once or replay a matching committed response.
 
@@ -119,6 +121,8 @@ class IdempotencyStore:
                 result = IdempotencyResponse(
                     status_code=int(status_code), body=json.loads(body_json), replayed=False
                 )
+                if on_success is not None:
+                    on_success(session)
 
         # The context commits before a caller can send this response.
         return result

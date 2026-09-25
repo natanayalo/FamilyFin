@@ -25,7 +25,6 @@ from family_finance.api.auth import (
 )
 from family_finance.api.idempotency import IdempotencyKeyReusedError
 from family_finance.config import Settings
-from family_finance.dashboard import DashboardService
 from family_finance.persistence.db import Database
 from family_finance.services import ImportService
 
@@ -396,12 +395,6 @@ def create_app(
         # Construct the existing service graph once per process. This keeps all
         # HTTP routes on the same data root and avoids per-request initialization.
         app.state.services = ImportService(settings=resolved_settings, database=app.state.database)
-        app.state.dashboard_service = DashboardService(
-            app.state.database,
-            metrics=app.state.services.metrics_service,
-            classifier=app.state.services.classification_service,
-            insights=app.state.services.insights_service,
-        )
         app.state.auth_service = AuthService(app.state.database, resolved_settings)
         yield
         if owns_database:
