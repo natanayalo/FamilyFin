@@ -573,4 +573,9 @@ def create_app(
 
     app.include_router(public_router)
     app.include_router(auth_router)
+    # Import after the transport primitives are defined to keep feature routes
+    # free to use the shared authentication and error helpers without a cycle.
+    from family_finance.api.routers.dashboard import router as dashboard_router
+
+    app.include_router(dashboard_router)
     return app
