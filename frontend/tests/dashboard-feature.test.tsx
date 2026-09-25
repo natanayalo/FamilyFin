@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ExpensesFeature } from "@/features/dashboard/expenses";
 import { OverviewFeature } from "@/features/dashboard/overview";
@@ -162,6 +162,29 @@ describe("dashboard feature adapters", () => {
     expect(contributorRequest?.[1]?.body).toBe(JSON.stringify({ transaction_ids: [12] }));
   });
 
+  it("provides an expandable chart table with the exact service values", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => response(overview)));
+    render(<OverviewFeature />);
+
+    const summary = await screen.findByText("הצגת נתונים בטבלה");
+    const details = summary.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+
+    fireEvent.click(summary);
+    expect(details).toHaveAttribute("open");
+    const table = within(details as HTMLElement).getByRole("table", {
+      name: "נתוני תרשים: מגמת הכנסה, צריכה נטו ועודף תפעולי",
+    });
+    expect(within(table).getAllByText("09/2026")).toHaveLength(3);
+    expect(within(table).getByText("הכנסה")).toBeVisible();
+    expect(within(table).getByText("1000.00")).toBeVisible();
+    expect(within(table).getByText("צריכה נטו")).toBeVisible();
+    expect(within(table).getByText("17.40")).toBeVisible();
+    expect(within(table).getByText("עודף תפעולי")).toBeVisible();
+    expect(within(table).getByText("982.60")).toBeVisible();
+  });
+
   it("shows expense behavior, comparisons, and heuristic insight drill-downs", async () => {
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
@@ -177,6 +200,7 @@ describe("dashboard feature adapters", () => {
     expect(screen.getByText("לעומת חודש קודם אינה זמינה: חודש ההשוואה מחוץ לטווח שנבחר.")).toBeVisible();
     expect(screen.getByText("כל זיהוי הוא היוריסטי בלבד ואינו סיווג חשבונאי.")).toBeVisible();
     expect(screen.getByText("Synthetic baseline rule")).toBeVisible();
+    expect(screen.getByText(/קטגוריות ההוצאות מבוססות על קטגוריית הניתוח \(analysis_category\), ובהיעדרה על קטגוריית המקור \(source_category\)/)).toBeVisible();
 
     fireEvent.click(screen.getByRole("button", { name: "הצגת העסקאות בדפוס (1)" }));
     expect(await screen.findByText("Synthetic grocery")).toBeVisible();

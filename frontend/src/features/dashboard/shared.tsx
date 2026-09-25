@@ -147,6 +147,22 @@ export function SeriesChart({ points, lines, title }: { points: MonthlySeriesPoi
         : null)}
     </svg>
     <div className="dashboard-legend">{lines.map((line, index) => <span key={line.key}><i style={{ background: chartColors[index % chartColors.length] }} />{line.label}</span>)}</div>
+    <details className="dashboard-chart-data">
+      <summary>הצגת נתונים בטבלה</summary>
+      <div className="overflow-x-auto">
+        <table className="dashboard-data-table" aria-label={`נתוני תרשים: ${title}`}>
+          <thead><tr><th scope="col">חודש</th><th scope="col">מדד</th><th scope="col">ערך</th></tr></thead>
+          <tbody>{points.flatMap((point) => lines.map((line) => {
+            const value = line.value(point);
+            return <tr key={`${point.month}:${line.key}`}>
+              <td data-label="חודש">{formatMonth(point.month)}</td>
+              <td data-label="מדד">{line.label}</td>
+              <td data-label="ערך" className="amount">{value ?? "לא זמין"}</td>
+            </tr>;
+          }))}</tbody>
+        </table>
+      </div>
+    </details>
   </div>;
 }
 

@@ -124,7 +124,7 @@ export function ExpensesFeature() {
           </section>
           <ExpenseInsights data={data} />
         </>}
-      <div className="dashboard-note">נתוני הוצאות הם תצוגה לפי סיווגי המקור. דפוסים חוזרים וחריגות הם רמזים לבדיקה ואינם משנים סיווגים או רישומים.</div>
+      <div className="dashboard-note">קטגוריות ההוצאות מבוססות על קטגוריית הניתוח (analysis_category), ובהיעדרה על קטגוריית המקור (source_category). דפוסים חוזרים וחריגות הם רמזים לבדיקה ואינם משנים סיווגים או רישומים.</div>
     </>}
   </div>;
 }
