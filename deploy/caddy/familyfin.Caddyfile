@@ -1,0 +1,15 @@
+# Install as /etc/caddy/Caddyfile after installing Caddy v2.
+# Caddy is the only local HTTP entry point. Tailscale Serve proxies to its
+# loopback listener; Caddy keeps the browser's Host and Origin headers intact.
+:8080 {
+	bind 127.0.0.1
+
+	@api path /api /api/*
+	handle @api {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

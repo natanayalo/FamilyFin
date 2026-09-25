@@ -1,0 +1,35 @@
+[Unit]
+Description=FamilyFin household finance API
+After=network-online.target
+Wants=network-online.target
+RequiresMountsFor=/var/lib/familyfin/data
+
+[Service]
+Type=simple
+User=familyfin-api
+Group=familyfin-api
+WorkingDirectory=/opt/familyfin/current
+EnvironmentFile=/etc/familyfin/api.env
+Environment=FAMILY_FINANCE_API_PORT=8000
+Environment=PYTHONUNBUFFERED=1
+UMask=0077
+ExecStart=/opt/familyfin/current/.venv/bin/family-finance-api
+Restart=on-failure
+RestartSec=3s
+TimeoutStopSec=30s
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/familyfin/data
+
+[Install]
+WantedBy=multi-user.target
