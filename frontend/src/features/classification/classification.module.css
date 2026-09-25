@@ -1,0 +1,58 @@
+.module { display: grid; gap: 18px; }
+.panel, .coverageCard { padding: 22px; }
+.panelHead, .coverageHead, .transactionHead { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.panelHead h2, .coverageHead h2 { margin: 0; font-size: 18px; font-weight: 650; }
+.panelHead p, .coverageHead p { margin: 6px 0 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.6; }
+.coverageHead > strong { font-size: 28px; font-variant-numeric: tabular-nums; color: var(--primary); }
+.coverageCard progress { display: block; width: 100%; height: 10px; margin: 20px 0 12px; accent-color: var(--primary); }
+.coverageStats { display: flex; flex-wrap: wrap; gap: 8px 22px; color: var(--muted-foreground); font-size: 13px; }
+.coverageStats b { color: var(--foreground); font-size: 16px; font-variant-numeric: tabular-nums; }
+.coverageBreakdown { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 18px; margin-top: 20px; border-top: 1px solid var(--border); padding-top: 17px; }
+.coverageBreakdown > div { display: grid; align-content: start; gap: 8px; }
+.coverageBreakdown h3 { margin: 0 0 2px; color: var(--muted-foreground); font-size: 12px; font-weight: 600; }
+.coverageBreakdown span { display: flex; justify-content: space-between; gap: 12px; font-size: 13px; }
+.coverageBreakdown b { font-variant-numeric: tabular-nums; }
+.countPill { padding: 6px 10px; border-radius: 999px; background: var(--secondary); color: var(--secondary-foreground); font-size: 12px; white-space: nowrap; }
+.filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin: 20px 0; }
+.checkFilter { display: flex; align-items: center; gap: 9px; align-self: end; min-height: 43px; font-size: 13px; }
+.checkFilter input { width: 17px; height: 17px; accent-color: var(--primary); }
+.queue { display: grid; gap: 12px; }
+.reviewItem { padding: 18px; border: 1px solid var(--border); border-radius: 14px; background: var(--background); }
+.transactionHead h3 { margin: 0; font-size: 16px; font-weight: 600; overflow-wrap: anywhere; }
+.transactionHead p { margin: 6px 0 0; color: var(--muted-foreground); font-size: 12px; }
+.amount { color: var(--foreground); font-size: 18px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
+.chips span { padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-size: 11px; }
+.explanation { margin: 12px 0 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.65; }
+.issues { margin: 10px 0; padding-inline-start: 22px; color: var(--destructive); font-size: 12px; line-height: 1.65; }
+.sourceDetails { margin: 12px 0; color: var(--muted-foreground); font-size: 12px; }
+.sourceDetails summary { cursor: pointer; width: fit-content; }
+.sourceDetails pre { max-height: 250px; overflow: auto; padding: 12px; border-radius: 9px; background: var(--muted); direction: ltr; text-align: left; white-space: pre-wrap; overflow-wrap: anywhere; }
+.overrideForm { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 15px; padding-top: 16px; border-top: 1px solid var(--border); }
+.actions { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; margin-top: 17px; }
+.overrideForm .actions { grid-column: 1 / -1; margin-top: 0; }
+.ruleFields { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; margin-top: 20px; }
+.preview { display: grid; gap: 4px; margin-top: 14px; padding: 13px 15px; border: 1px solid var(--border); border-radius: 10px; background: var(--muted); font-size: 13px; line-height: 1.6; }
+.preview span { color: var(--muted-foreground); }
+.ruleHistory { display: grid; margin-top: 12px; }
+.ruleRow { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 14px 0; border-bottom: 1px solid var(--border); }
+.ruleRow strong { display: block; font-size: 14px; }
+.ruleRow p, .ruleRow small { display: block; margin: 4px 0 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+.pagination { display: flex; justify-content: space-between; gap: 10px; margin-top: 16px; }
+.concurrencyNote { margin: 0; color: var(--muted-foreground); font-size: 12px; line-height: 1.7; }
+.error { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 15px; border: 1px solid var(--destructive); border-radius: 11px; color: var(--destructive); background: color-mix(in srgb, var(--destructive) 8%, var(--card)); font-size: 13px; }
+
+@media (max-width: 900px) {
+  .filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .ruleFields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 620px) {
+  .panel, .coverageCard { padding: 17px; }
+  .filters { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 11px; }
+  .overrideForm { grid-template-columns: 1fr; }
+  .overrideForm .actions { grid-column: auto; }
+  .ruleFields { grid-template-columns: 1fr; }
+  .transactionHead { display: grid; grid-template-columns: minmax(0, 1fr) auto; }
+  .amount { font-size: 15px; }
+  .coverageHead > strong { font-size: 23px; }
+}

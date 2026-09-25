@@ -573,4 +573,9 @@ def create_app(
 
     app.include_router(public_router)
     app.include_router(auth_router)
+    # Import after ApiError/authenticated_router are defined to keep feature
+    # routers on the foundation's shared authentication and error contracts.
+    from family_finance.api.routers.classification import router as classification_router
+
+    app.include_router(classification_router)
     return app
