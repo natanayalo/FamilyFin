@@ -46,8 +46,9 @@ def test_unique_non_exact_candidate_requires_reconciliation(tmp_path, familybiz_
     changed = list(familybiz_row)
     changed[2] = "updated description"
     changed[5] = "updated category"
-    second_preview = app.preview_import(make_workbook([changed]), "two.xlsx")
-    second = app.commit_import(make_workbook([changed]), second_preview.preview_token, "two.xlsx")
+    changed_file = make_workbook([changed])
+    second_preview = app.preview_import(changed_file, "two.xlsx")
+    second = app.commit_import(changed_file, second_preview.preview_token, "two.xlsx")
 
     assert second.statistics.updated == 0
     assert second.statistics.unresolved == 1
