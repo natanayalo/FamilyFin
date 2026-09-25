@@ -9,7 +9,7 @@ The checked-out repository was clean at commit b8bb6d069ca9e2202ef90504336baa449
 - [PR #1, Fix dashboard review findings](https://github.com/natanayalo/FamilyFin/pull/1), merged 2026-09-24. Its changes are already in the current tree.
 - [PR #2, Import Integrity](https://github.com/natanayalo/FamilyFin/pull/2), merged 2026-09-24. It added deterministic occurrence-aware import planning, a capacity check, expanded parser/import validation, and documentation of a remaining compound-revision matching limitation.
 - Completeness and source coverage are current code in metrics and dashboard services, including explicit incomplete/provisional state and an “unknown” coverage value where source completeness cannot be established. No separate pending coverage PR was found.
-- Audit and verified backup support predate these PRs and are current: AuditService checks database, schema, archive, provenance, and domain invariants; BackupService creates and verifies a backup set. The automation backup root is optional unless configured. Restore remains a documented manual procedure.
+- Audit and verified backup support predate these PRs and are current: AuditService checks database, schema, archive, provenance, and domain invariants; BackupService creates and verifies a backup set. The automation backup root is currently optional unless configured; this is an existing safety gap, not an acceptable remote-mutation contract. Restore remains a documented manual procedure.
 
 The current app has nine Streamlit pages. The page inventory and exact service/API correspondence are in [ui-parity-matrix.md](ui-parity-matrix.md). The service layer and SQLite model remain the financial source of truth.
 
@@ -33,9 +33,9 @@ The template uses the Next App Router and its documented production command star
 | SQLite and archives | Existing database, Alembic history, WAL, source archives, imported provenance, and saved revisions | Move to cloud storage or a browser database as part of the UI migration |
 | Host operations | Process supervision, HTTPS on the tailnet, filesystem permissions, backup destination, audit and restore runbook | Expose a public internet endpoint or silently restore/overwrite household data |
 
-Keep Streamlit and the CLI installed and usable during and after the PWA rollout. Both UIs must point at the same configured data root. Keep migrations 0001–0010 and all existing tables/data; add only forward-only migrations needed for app identities, sessions, actor audit, or HTTP idempotency. Do not drop or rewrite imported records, source files, classifications, reconciliation decisions, scenario revisions, forecast revisions, net-worth snapshots, or apartment studies.
+Keep Streamlit available as the fallback financial UI until the final parity and recovery acceptance gate passes. T12 retires Streamlit after that gate; it is not an indefinite second financial interface. Keep the Python CLI as an ongoing operational interface. Both UIs must point at the same configured data root while they coexist. Keep migrations 0001–0010 and all existing tables/data; add only forward-only migrations needed for app identities, sessions, actor audit, or atomic HTTP idempotency. Do not drop or rewrite imported records, source files, classifications, reconciliation decisions, scenario revisions, forecast revisions, net-worth snapshots, or apartment studies.
 
-Startup should run migrations once before serving traffic, then create one reusable service graph for the Python process. Do not instantiate ImportService per request: its construction initializes the database and builds the related services. Keep the current CLI commands. The legacy Streamlit app stays available as a recovery/fallback UI, not as a second calculation implementation.
+Startup should run migrations once before serving traffic, then create one reusable service graph for the Python process. Do not instantiate ImportService per request: its construction initializes the database and builds the related services. Keep the current CLI commands. The legacy Streamlit app stays available as a recovery/fallback UI only until the final parity and recovery gate passes; T12 retires it after sign-off.
 
 ## Authentication and authorization
 
@@ -68,13 +68,13 @@ Pass the current revision number for planning, forecast, apartment, and net-wort
 
 Some current writes lack a service-level expected revision, including classification changes and account lifecycle operations. SQLite will serialize the writes, but the second user can still act on stale displayed state. The API workstream must document those limits and either add conditional transport checks around the current service state or defer those controls to a service/persistence follow-up; it must not report a conflict guarantee that does not exist.
 
-Use an Idempotency-Key for every mutation that can be retried after a mobile network timeout. Store the authenticated actor, route, request hash, and completed response in API metadata so replaying the same key returns the original result and a different body is rejected. This is new transport infrastructure, separate from financial logic. Do not automatically retry a mutation without it.
+An Idempotency-Key by itself does not make a mutation safe to replay. Existing services manage their own transactions, so a separate API metadata write after service commit has a crash window and is not an acceptable contract. T01 must use an API-owned SQLite unit of work for any route that claims replay safety: the domain change and completed idempotency result must commit in the same transaction, with existing services participating without independent commit. Same-key concurrent requests must serialize and re-read the committed result; key reuse with a different canonical request returns 409. A crash before commit rolls back both; a crash after commit leaves both available for replay. External filesystem effects need their own verified recovery/deduplication protocol or the route cannot claim replay safety. Do not blanket-mark routes retryable before they pass this gate. Until then clients must not automatically retry after timeout; they show outcome unknown and ask the user to reconcile state before any resubmission.
 
 ## Backward compatibility and migration
 
 1. Preserve the current Python financial services and their return/exception semantics. Route handlers adapt those results; new Pydantic transport DTOs may wrap but must not replace domain models.
 2. Preserve the current SQLite file, archive directories, Alembic history, and content hashes. Database initialization remains the Alembic path already used by Database.
-3. Keep CLI inspect, audit, backup, verify-backup, and automate commands. Keep Streamlit pages and their localhost configuration; do not remove Streamlit.
+3. Keep CLI inspect, audit, backup, verify-backup, and automate commands as ongoing operational interfaces. Keep Streamlit pages and localhost configuration until final parity and recovery acceptance passes; T12 retires Streamlit after that gate.
 4. During rollout, compare PWA responses with existing service outputs for the same filters and saved revisions. No independent JavaScript formulas are allowed.
 5. Keep restore manual and operator-controlled. The application has no safe automated restore service or Streamlit flow today.
 
@@ -89,3 +89,4 @@ Use an Idempotency-Key for every mutation that can be retried after a mobile net
 - No restore endpoint exists. Restore is manual and must remain so unless a separate, reviewed recovery design is approved.
 - Current UI lets the user download the complete import decision plan. The PWA should preserve this action only behind authentication and no-store download headers; whether any import-plan fields need additional redaction is unresolved.
 - Existing classification/account writes lack consistent optimistic revision tokens. Their exact concurrent-edit behavior must be agreed in the API implementation before claiming lost-update protection.
+- The final parity and recovery acceptance gate must be defined and signed off before T12 retires Streamlit. It must include workflow parity, verified backup readiness, a successful restore practice, and verified private access. The operational owner and evidence retention location remain undecided.

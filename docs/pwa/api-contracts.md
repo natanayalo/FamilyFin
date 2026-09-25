@@ -89,7 +89,15 @@ Current preview-token families:
 
 The FamilyBiz preview also displays and downloads the complete deterministic decision plan. Preserve preview counts, issues, plan version/fingerprint, matching baseline, and sample rows. Protect the full download as household data. A network timeout must not cause the client to blindly repeat a commit.
 
-Use Idempotency-Key on state-changing requests. This is new API metadata, not a financial-domain token. Save the authenticated actor, route, request-body hash, and completed response so an identical retry returns the original response; reject reuse with a different request. Do not reuse an idempotency key for a different action.
+## Idempotency and outcome-unknown mutations
+
+An Idempotency-Key is only a request identity; storing it separately after a service commit does not make a mutation replay-safe. Existing services own their transactions, so T01 must not return a success from a non-atomic wrapper and promise that a retry will recover the original result.
+
+For a route to advertise replay safety, T01 must provide an API-owned SQLite unit of work that starts the write transaction (using the existing serialized-write policy), invokes the existing service without allowing it to commit independently, and writes the idempotency record in that same SQLite transaction. This requires existing services to join the API-owned transaction; it must preserve their financial logic and CLI/Streamlit behavior. The record is uniquely scoped by authenticated actor, HTTP method, canonical route, and key, and contains a canonical request hash plus the completed HTTP status and response body. The response is sent only after that transaction commits. Same scope/key and same request hash replays the stored response without invoking the service; same scope/key with a different hash returns 409 IDEMPOTENCY_KEY_REUSED. Concurrent uses serialize and re-read the committed record before doing work.
+
+This gives a defined crash outcome: before commit, both financial writes and the idempotency record roll back; after commit, both exist and a retry returns the recorded response. It requires service transaction participation to be designed and verified; it is not available in the current repository. Filesystem or other external effects are not covered by a SQLite transaction. A route with such effects must add an independently verified recovery/deduplication mechanism or remain outside the replay-safe contract.
+
+Keep completed records for as long as a key can be retried. If response bodies are pruned, retain a durable scope/key/hash tombstone and reject that expired key rather than rerunning its mutation. Before a route passes the same-transaction or verified-recovery gate, do not claim automatic replay safety, automatically retry it in the browser, or treat Idempotency-Key as protection. On a transport timeout, show that the outcome is unknown, reconcile current state where possible, and require an explicit user decision before another submission. Route documentation and acceptance tests must identify which mutations have passed the gate. Do not reuse a key for a different action.
 
 ## Revision and concurrent-edit protocol
 
@@ -107,7 +115,7 @@ Every row is a proposed wrapper around named existing services. Request bodies u
 | --- | --- | --- |
 | Sign in/current session/sign out | POST /auth/session, GET /auth/session, DELETE /auth/session | New authentication infrastructure; no current auth service exists |
 | Overview | GET /dashboard/overview | DashboardService.default_filters, overview |
-| Expenses and transaction contributors | GET /dashboard/expenses; GET /dashboard/contributors?transaction_ids=... | DashboardService.expenses, contributors |
+| Expenses and transaction contributors | GET /dashboard/expenses; POST /dashboard/contributors/query | DashboardService.expenses, contributors |
 | Data quality | GET /dashboard/quality | DashboardService.data_quality |
 | FamilyBiz preview/commit | POST /imports/familybiz/previews; POST /imports/familybiz/commits | ImportService.preview_import, commit_import |
 | Import history | GET /imports/history | ImportService.history |
@@ -122,7 +130,7 @@ Every row is a proposed wrapper around named existing services. Request bodies u
 | Net-worth CSV/revisions/reporting | GET /net-worth/csv-template; POST /net-worth/csv/previews; POST /net-worth/csv/commits; GET /net-worth/snapshots/{snapshot_id}/revisions; POST /net-worth/snapshots/{snapshot_id}/revisions/{revision_number}/restore; POST /net-worth/snapshots/{snapshot_id}/archive; GET /net-worth/accounts/{account_key}/history; GET /net-worth/summary; GET /net-worth/trend; POST /net-worth/forecast-comparisons | NetWorthService.csv_template, preview_csv, commit_csv, list_revisions, restore_revision, archive_snapshot/unarchive_snapshot, account_history, summary, trend, compare_forecast_actual |
 | Forecast pool seed bridge | POST /forecasts/net-worth-pool-seeds | NetWorthService.create_forecast_pool_seeds |
 | Apartment studies | GET /apartment/studies?include_archived=...; POST /apartment/studies; GET /apartment/studies/{study_id}; GET /apartment/studies/{study_id}/revisions; POST /apartment/studies/{study_id}/projections; POST /apartment/studies/{study_id}/revisions; POST /apartment/studies/{study_id}/revisions/{revision_number}/restore; POST /apartment/studies/{study_id}/clone; POST /apartment/studies/{study_id}/archive | ApartmentPlanningService list/get/list_revisions/get_revision/project_draft/create_study/save_revision/restore_revision/clone_study/archive_study/unarchive_study; available_pool_balances |
-| Automation/insights | GET /automation/status; POST /automation/runs; GET /automation/attention-files; POST /automation/attention-files/previews; POST /automation/attention-files/commits; GET /insights/preferences; PUT /insights/preferences; GET /insights/alerts; POST /insights/alerts/{alert_id}/acknowledge; POST /insights/alerts/{alert_id}/resolve; GET /insights/monthly-summaries | AuditService.run; AutomationService.run/list_attention_files/preflight_attention/commit_attention; InsightsService get/save preferences, list/acknowledge/resolve alerts, list_summary_revisions, summary_markdown, summary_json |
+| Automation/insights | GET /automation/status; POST /automation/runs (dry_run=true only; dry_run=false disabled until backup remediation is implemented and verified); GET /automation/attention-files; POST /automation/attention-files/previews; POST /automation/attention-files/commits (blocked pending same backup remediation); GET /insights/preferences; PUT /insights/preferences; GET /insights/alerts; POST /insights/alerts/{alert_id}/acknowledge; POST /insights/alerts/{alert_id}/resolve; GET /insights/monthly-summaries | AuditService.run; AutomationService.run/list_attention_files/preflight_attention/commit_attention; InsightsService get/save preferences, list/acknowledge/resolve alerts, list_summary_revisions, summary_markdown, summary_json |
 | Audit/backup operations | GET /operations/audit; POST /operations/backups; POST /operations/backups/verify | AuditService.run; BackupService.create, verify. No current restore service or endpoint. |
 
 The current Automation & Insights page reads latest AutomationRunRow directly and calls a private inbox file helper to display status. The adapter may reproduce those existing reads for parity; do not invent a new domain service method and do not expose raw ORM models.
@@ -132,6 +140,8 @@ Service-only capabilities are explicitly distinguished from the current Streamli
 ## Mutation request shapes
 
 Every body below is JSON except explicit multipart uploads. Unknown properties are rejected. Decimal inputs are JSON strings. Inner object validation is performed by the named existing Pydantic model/service; the route layer should not duplicate or weaken its rules.
+
+Contributor query is a read-only authenticated JSON request: POST `/api/v1/dashboard/contributors/query` with `{ "transaction_ids": [ ... ] }`. Require 1–100 distinct integer IDs, reject malformed or duplicate IDs, and verify every ID exists using the existing transaction model/read path before calling `DashboardService.contributors`; do not invent a domain service method solely for this check. Do not accept these IDs in a URL, log them, or include them in a copied share link. The response uses the common envelope and no-store policy.
 
 | Operation | Required body fields |
 | --- | --- |
