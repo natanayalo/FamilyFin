@@ -1,1 +1,1 @@
-"""Feature-owned transport schemas."""
+"""Feature-owned HTTP request schemas."""

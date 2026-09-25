@@ -1,1 +1,1 @@
-"""Authenticated feature routers."""
+"""Feature-owned authenticated API routers."""
