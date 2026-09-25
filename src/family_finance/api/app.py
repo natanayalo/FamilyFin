@@ -582,4 +582,9 @@ def create_app(
     app.include_router(dashboard_router)
     app.include_router(data_quality_router)
     app.include_router(classification_router)
+    # Keep each financial adapter feature-owned. The import is local to avoid
+    # coupling the transport foundation to feature schema modules at import time.
+    from family_finance.api.routers.net_worth import router as net_worth_router
+
+    app.include_router(net_worth_router)
     return app
