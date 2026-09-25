@@ -226,7 +226,10 @@ class Database:
 
         raw_connection = self.engine.connect()
         raw_connection.exec_driver_sql("BEGIN IMMEDIATE")
-        session = Session(bind=raw_connection, expire_on_commit=False, autoflush=False)
+        # Participating services often read their just-written result before
+        # returning it. API-owned units need normal query autoflush for those
+        # reads to observe pending rows while keeping commit ownership here.
+        session = Session(bind=raw_connection, expire_on_commit=False, autoflush=True)
         transaction = _ApiTransaction(database=self, session=session)
         token: Token = _api_transaction.set(transaction)
         try:
