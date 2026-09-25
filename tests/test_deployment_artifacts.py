@@ -55,3 +55,32 @@ def test_deployment_docs_require_tailnet_only_access_and_no_funnel() -> None:
     assert "Funnel status must show no active endpoint" in deployment
     assert "non-tailnet device" in deployment
     assert "Cache-Control: private, no-store" in deployment
+
+
+def test_restore_activation_uses_the_canonical_writable_data_root() -> None:
+    api_service = _read("deploy/systemd/familyfin-api.service")
+    api_env = _read("deploy/systemd/api.env.example")
+    backup_service = _read("deploy/systemd/familyfin-backup.service")
+    deployment = _read("docs/pwa/deployment.md")
+    restore = deployment.split("### Restore practice and incident recovery", 1)[1].split(
+        "## Authentication and privacy operations", 1
+    )[0]
+
+    assert "ProtectSystem=strict" in api_service
+    assert "ReadWritePaths=/var/lib/familyfin/data" in api_service
+    assert "EnvironmentFile=/etc/familyfin/api.env" in api_service
+    assert "FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data" in api_env
+    assert "ReadWritePaths=/var/lib/familyfin/data /mnt/familyfin-backup" in backup_service
+    assert "EnvironmentFile=/etc/familyfin/api.env" in backup_service
+    assert "familyfin-backup.timer familyfin-backup.service" in restore
+    assert "familyfin-web.service familyfin-api.service caddy.service" in restore
+    assert "FAMILY_FINANCE_DATABASE_URL=sqlite:////var/lib/familyfin/recovery-staging-" in restore
+    assert "FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/recovery-staging-" in restore
+    assert 'sudo mv -- "$STAGING_ROOT" "$CANONICAL_ROOT"' in restore
+    assert 'sudo mv -- "$CANONICAL_ROOT" "$PRESERVED_ROOT"' in restore
+    assert "sudo systemctl start familyfin-api.service familyfin-web.service caddy.service" in restore
+    assert "sudo systemctl start familyfin-backup.timer" in restore
+    assert "Do not repoint the API environment file to the staging directory" in restore
+    assert "Point `/etc/familyfin/api.env` at the staging root" not in restore
+    assert "familyfin-backup.timer" in restore
+    assert "Recovery is accepted only after" in restore
