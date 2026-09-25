@@ -171,24 +171,99 @@ Perform a restore drill at least quarterly into a separate `0700` staging direct
 
 For an actual recovery, keep it manual and operator-controlled:
 
-1. Put household users into maintenance mode. Stop `familyfin-web`, `familyfin-api`, and Caddy, and confirm no CLI/Streamlit process is using the data root.
+1. Put household users into maintenance mode. Stop all writers and public entry points, including the backup timer and any active backup job:
+
+   ```sh
+   sudo systemctl stop familyfin-backup.timer familyfin-backup.service \
+     familyfin-web.service familyfin-api.service caddy.service
+   ```
+
+   Confirm those units are stopped and no CLI or Streamlit process is using the data root.
 2. Select a complete snapshot from the protected volume. Verify it with `family-finance verify-backup` using the matching release; stop if any hash, schema, database, invariant, or archive-coverage check fails.
-3. Preserve the active data root by renaming it to a timestamped recovery directory. Create a new `0700`, `familyfin-api`-owned staging root and copy the verified snapshot contents into it as one matched set; do not mix databases and archive directories from different snapshots.
-4. Apply migrations to the staged database with `FAMILY_FINANCE_DATABASE_URL` set to its `family_finance.sqlite3` path, then run `family-finance audit` with `FAMILY_FINANCE_DATA_ROOT` set to the staging root. For a staging root such as `/var/lib/familyfin/recovery-20260925T021500Z`, run:
+3. Create a unique staging directory beside the canonical data root, on the same filesystem. This rename procedure requires `/var/lib/familyfin/data` to be a directory on the `/var/lib/familyfin` filesystem, not a separate mountpoint. Copy the verified snapshot as one matched set, then verify the staged copy before changing it. For example:
+
+   ```sh
+   BACKUP_DIR=/mnt/familyfin-backup/familyfin-YYYYMMDDTHHMMSSZ-PID
+   STAGING_ROOT=/var/lib/familyfin/recovery-staging-20260925T021500Z
+   sudo install -d -o familyfin-api -g familyfin-api -m 0700 "$STAGING_ROOT"
+   sudo -u familyfin-api rsync -a -- "$BACKUP_DIR"/ "$STAGING_ROOT"/
+   sudo -u familyfin-api env \
+     FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data \
+     PATH=/opt/familyfin/current/.venv/bin:/usr/bin:/bin \
+     /opt/familyfin/current/.venv/bin/family-finance verify-backup "$STAGING_ROOT"
+   ```
+
+   Stop if either verification fails. Do not mix a database and archive directories from different snapshots.
+4. Apply migrations to the staged database with `FAMILY_FINANCE_DATABASE_URL` set to its `family_finance.sqlite3` path, then run `family-finance audit` with `FAMILY_FINANCE_DATA_ROOT` set to the staging root. For the staging root above, run:
 
    ```sh
    sudo -u familyfin-api env \
-     FAMILY_FINANCE_DATABASE_URL=sqlite:////var/lib/familyfin/recovery-20260925T021500Z/family_finance.sqlite3 \
+     FAMILY_FINANCE_DATABASE_URL=sqlite:////var/lib/familyfin/recovery-staging-20260925T021500Z/family_finance.sqlite3 \
      /opt/familyfin/current/.venv/bin/alembic upgrade head
    sudo -u familyfin-api env \
-     FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/recovery-20260925T021500Z \
+     FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/recovery-staging-20260925T021500Z \
      PATH=/opt/familyfin/current/.venv/bin:/usr/bin:/bin \
      /opt/familyfin/current/.venv/bin/family-finance audit
    ```
 
-   Require both commands to succeed.
-5. Point `/etc/familyfin/api.env` at the staging root, confirm the service account owns the files, then start API, PWA, and Caddy. The API creates a new `api-secret.key`; both users must sign in again. Complete the private-access and health checks above.
-6. Keep the old live root and the selected backup untouched until both users confirm access and the audit passes. If recovery fails, stop the services and point the environment file back at the preserved old root.
+   Require both commands to succeed. Confirm the staging root is owned by `familyfin-api` and mode `0700`.
+5. Keep `/etc/familyfin/api.env` unchanged at `FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data`. The API unit retains `ProtectSystem=strict` and `ReadWritePaths=/var/lib/familyfin/data`; the staging path is only for the one-shot verification and migration commands. Rename the live root aside, then atomically rename the verified staging directory into the canonical path. Both directories must remain on the same filesystem:
+
+   ```sh
+   set -eu
+   CANONICAL_ROOT=/var/lib/familyfin/data
+   STAGING_ROOT=/var/lib/familyfin/recovery-staging-20260925T021500Z
+   PRESERVED_ROOT=/var/lib/familyfin/data.recovery-old-20260925T021500Z
+   test "$(stat -c '%d' "$CANONICAL_ROOT")" = "$(stat -c '%d' /var/lib/familyfin)"
+   test "$(stat -c '%d' "$STAGING_ROOT")" = "$(stat -c '%d' /var/lib/familyfin)"
+   test ! -e "$PRESERVED_ROOT"
+   sudo mv -- "$CANONICAL_ROOT" "$PRESERVED_ROOT"
+   if ! sudo mv -- "$STAGING_ROOT" "$CANONICAL_ROOT"; then
+     sudo mv -- "$PRESERVED_ROOT" "$CANONICAL_ROOT"
+     echo "Staging activation failed; the previous data root was restored" >&2
+     exit 1
+   fi
+   grep -Fx 'FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data' /etc/familyfin/api.env
+   ```
+
+   Do not repoint the API environment file to the staging directory. If the second rename fails, the command restores the preserved root to the canonical path before exiting.
+6. Start API, PWA, and Caddy at the canonical path. Run the audit against that root and check service state:
+
+   ```sh
+   sudo systemctl start familyfin-api.service familyfin-web.service caddy.service
+   sudo systemctl is-active familyfin-api.service familyfin-web.service caddy.service
+   sudo -u familyfin-api env \
+     FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data \
+     PATH=/opt/familyfin/current/.venv/bin:/usr/bin:/bin \
+     /opt/familyfin/current/.venv/bin/family-finance audit
+   ```
+
+   From authorized client devices, check the health/no-store response, both household logins, session behavior, and private-access checks above. The restored data has no `api-secret.key`; the API creates a replacement key and both users sign in again.
+7. After those application checks pass, restart the backup timer and run one backup immediately:
+
+   ```sh
+   sudo systemctl start familyfin-backup.timer
+   sudo systemctl start familyfin-backup.service
+   sudo systemctl show familyfin-backup.service -p Result
+   ```
+
+   Require `Result=success` and verify the new snapshot as described in [Backup check](#backup-check). Recovery is accepted only after the application checks and this fresh verified backup pass.
+8. Keep `PRESERVED_ROOT` and the selected source backup untouched until recovery is accepted. If any acceptance check fails, stop the backup timer/job and app services, rename the failed canonical tree to a separate recovery-failed path, move `PRESERVED_ROOT` back to `/var/lib/familyfin/data`, then restart the app services. For example:
+
+   ```sh
+   set -eu
+   CANONICAL_ROOT=/var/lib/familyfin/data
+   PRESERVED_ROOT=/var/lib/familyfin/data.recovery-old-20260925T021500Z
+   FAILED_ROOT=/var/lib/familyfin/data.recovery-failed-20260925T021500Z
+   sudo systemctl stop familyfin-backup.timer familyfin-backup.service \
+     familyfin-web.service familyfin-api.service caddy.service
+   test ! -e "$FAILED_ROOT"
+   sudo mv -- "$CANONICAL_ROOT" "$FAILED_ROOT"
+   sudo mv -- "$PRESERVED_ROOT" "$CANONICAL_ROOT"
+   sudo systemctl start familyfin-api.service familyfin-web.service caddy.service
+   ```
+
+   Keep the failed tree for investigation. Restart the backup timer only after the original root passes the audit and acceptance checks.
 
 Never automate restore or delete the previous live root as part of the recovery procedure. Keep the Python CLI and Streamlit fallback available until the separate PWA parity/recovery gate authorizes retiring Streamlit.
 
