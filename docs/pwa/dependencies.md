@@ -1,10 +1,10 @@
 # PWA prerequisites and feature-module ownership
 
-Status: follow-up plan for independent implementation PRs. T00 changes documentation only.
+Status: follow-up plan for independent implementation PRs. T00 changes documentation only. T05 now implements and documents the authenticated classification API and PWA feature; the other feature rows remain follow-up work.
 
 ## Repository prerequisites
 
-T01 foundation progress: API-owned `BEGIN IMMEDIATE` transaction participation, atomic idempotency response storage, FastAPI lifecycle, two-account authentication/session services, request/origin/host controls, typed transport errors, safe health/status, and bounded route-aware upload transport policy are implemented. JSON/unlisted bodies remain capped at 1 MiB; planned multipart routes add only their parser's file limit plus bounded overhead. No financial mutation route is registered or replay-safe. Remote mutating automation and attention-file commits remain blocked on the documented readiness and per-run verified pre-import backup remediation.
+T01 foundation progress: API-owned `BEGIN IMMEDIATE` transaction participation, atomic idempotency response storage, FastAPI lifecycle, two-account authentication/session services, request/origin/host controls, typed transport errors, safe health/status, and bounded route-aware upload transport policy are implemented. JSON/unlisted bodies remain capped at 1 MiB; planned multipart routes add only their parser's file limit plus bounded overhead. T05 classification routes are registered and use conditional state checks, but they are not replay-safe. Other financial mutation routes remain unimplemented. Remote mutating automation and attention-file commits remain blocked on the documented readiness and per-run verified pre-import backup remediation.
 
 | Area | Present state | Required before feature modules |
 | --- | --- | --- |

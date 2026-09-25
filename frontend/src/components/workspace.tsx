@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Menu } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { useAppAuth } from "@/components/app-provider";
 import { ThemeToggle } from "@/components/theme-toggle";
 import { Button } from "@/components/ui/button";
@@ -39,7 +39,7 @@ function SectionLink({ id, mobile = false }: { id: string; mobile?: boolean }) {
   </Link>;
 }
 
-export function Workspace({ sectionId = "dashboard" }: { sectionId?: string }) {
+export function Workspace({ sectionId = "dashboard", children }: { sectionId?: string; children?: ReactNode }) {
   const { auth, online, signOut } = useAppAuth();
   const pathname = usePathname();
   const [signOutError, setSignOutError] = useState("");
@@ -79,7 +79,7 @@ export function Workspace({ sectionId = "dashboard" }: { sectionId?: string }) {
       {signOutError && <div className="offline-banner" role="alert">{signOutError}</div>}
       <main className="content">
         <div className="page-heading"><div><div className="eyebrow">FamilyFin · מרחב משפחתי</div><h1>{section.title}</h1><p>{section.note}</p></div></div>
-        {!online || auth.status === "offline" ? <ReconnectState /> : auth.status === "signed-out" ? <EmptyState title="החיבור לחשבון הסתיים" description="התחברו מחדש כדי להמשיך לצפות בנתונים." action={<Link className="secondary-button" href="/">חזרה להתחברות</Link>} /> : <Card className="module-card"><div className="module-placeholder"><div><strong>המסך מוכן לחיבור לשירות</strong>{section.note}<br />הנתונים יוצגו כאן לאחר חיבור מודול ה‑API המתאים.</div></div></Card>}
+        {!online || auth.status === "offline" ? <ReconnectState /> : auth.status === "signed-out" ? <EmptyState title="החיבור לחשבון הסתיים" description="התחברו מחדש כדי להמשיך לצפות בנתונים." action={<Link className="secondary-button" href="/">חזרה להתחברות</Link>} /> : children ?? <Card className="module-card"><div className="module-placeholder"><div><strong>המסך מוכן לחיבור לשירות</strong>{section.note}<br />הנתונים יוצגו כאן לאחר חיבור מודול ה‑API המתאים.</div></div></Card>}
         <Card className="status-strip"><span className="info-symbol" aria-hidden="true">i</span><span>המסך הזה אינו שומר מידע בדפדפן. כל נתון פיננסי זמין רק בחיבור מקוון מאומת.</span></Card>
       </main>
     </div>
