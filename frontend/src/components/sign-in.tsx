@@ -4,6 +4,9 @@ import { FormEvent, useState } from "react";
 import { ApiRequestError } from "@/lib/api";
 import { useAppAuth } from "@/components/app-provider";
 import { TextField } from "@/components/ui/form-patterns";
+import { Button } from "@/components/ui/button";
+import { Card } from "@/components/ui/card";
+import { ThemeToggle } from "@/components/theme-toggle";
 
 export function SignIn() {
   const { signIn, online, auth } = useAppAuth();
@@ -37,14 +40,14 @@ export function SignIn() {
         <div className="signin-foot">גישה פרטית · התחברות מאובטחת</div>
       </section>
       <section className="signin-form-wrap">
-        <form className="signin-form" onSubmit={submit}>
+        <div className="signin-form-column"><div className="signin-toolbar"><ThemeToggle /></div><Card className="signin-panel"><form className="signin-form" onSubmit={submit}>
           <div className="eyebrow">ברוכים הבאים</div><h2>התחברות ל‑FamilyFin</h2><p>הזינו את פרטי החשבון שלכם.</p>
           {(error || (auth.status === "signed-out" && auth.error)) && <div className="form-error" role="alert">{error || (auth.status === "signed-out" ? auth.error : "")}</div>}
           {!online && <div className="form-error" role="status">אין חיבור לאינטרנט. התחברות מחייבת חיבור פעיל.</div>}
           <TextField id="username" label="שם משתמש" autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
           <TextField id="password" label="סיסמה" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
-          <button className="primary-button" type="submit" disabled={busy || !online}>{busy ? "מתחברים…" : "התחברות"}</button>
-        </form>
+          <Button className="w-full" size="lg" type="submit" disabled={busy || !online}>{busy ? "מתחברים…" : "התחברות"}</Button>
+        </form></Card></div>
       </section>
     </main>
   );

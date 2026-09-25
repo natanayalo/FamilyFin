@@ -4,6 +4,7 @@ import "@fontsource/noto-sans-hebrew/500.css";
 import "@fontsource/noto-sans-hebrew/600.css";
 import "./globals.css";
 import { AppProvider } from "@/components/app-provider";
+import { ThemeProvider } from "@/components/theme-provider";
 
 export const metadata: Metadata = {
   title: { default: "FamilyFin", template: "%s · FamilyFin" },
@@ -17,8 +18,8 @@ export const viewport: Viewport = { themeColor: "#f6f7f8", width: "device-width"
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="he" dir="rtl">
-      <body><AppProvider>{children}</AppProvider></body>
+    <html lang="he" dir="rtl" suppressHydrationWarning>
+      <body><ThemeProvider><AppProvider>{children}</AppProvider></ThemeProvider></body>
     </html>
   );
 }

@@ -1,4 +1,5 @@
 import { InputHTMLAttributes, ReactNode, SelectHTMLAttributes } from "react";
+import { Input } from "@/components/ui/input";
 
 export function FormField({ id, label, hint, error, required, children }: {
   id: string;
@@ -21,7 +22,7 @@ export function TextField({ id, label, hint, error, required, ...inputProps }: {
   required?: boolean;
 } & Omit<InputHTMLAttributes<HTMLInputElement>, "id">) {
   const describedBy = [hint && `${id}-hint`, error && `${id}-error`].filter(Boolean).join(" ") || undefined;
-  return <FormField id={id} label={label} hint={hint} error={error} required={required}><input className="control-input" id={id} required={required} aria-invalid={Boolean(error)} aria-describedby={describedBy} {...inputProps} /></FormField>;
+  return <FormField id={id} label={label} hint={hint} error={error} required={required}><Input id={id} required={required} aria-invalid={Boolean(error)} aria-describedby={describedBy} {...inputProps} /></FormField>;
 }
 
 export function SelectField({ id, label, hint, error, required, children, ...selectProps }: {
