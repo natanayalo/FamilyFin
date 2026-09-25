@@ -79,6 +79,23 @@ test("theme can switch while keeping preference separate from finance state", as
   await expect(page.locator("html")).not.toHaveClass(/dark/);
 });
 
+test("the in-app offline banner appears on disconnect and clears after reconnect", async ({ page, context }) => {
+  await mockSession(page);
+  await page.goto("/");
+  await expect(page.getByText("מחובר", { exact: true })).toBeVisible();
+  await expect(page.getByText("משתמשת בדיקה")).toBeVisible();
+
+  await context.setOffline(true);
+  const banner = page.locator(".offline-banner");
+  await expect(banner).toContainText("החיבור נותק");
+  await expect(page.getByText("מנותק", { exact: true })).toBeVisible();
+  await expect.poll(() => banner.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe("rgb(252, 245, 231)");
+
+  await context.setOffline(false);
+  await expect(page.getByText("מחובר", { exact: true })).toBeVisible();
+  await expect(banner).toBeHidden();
+});
+
 test("the offline shell and service worker cache only static assets", async ({ page, context }) => {
   await mockSession(page);
   await page.goto("/");

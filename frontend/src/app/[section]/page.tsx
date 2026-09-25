@@ -11,7 +11,7 @@ export default function SectionPage() {
   const { auth, online } = useAppAuth();
   if (!sections.some((item) => item.id === params.section)) return <main className="loading-screen">העמוד לא נמצא.</main>;
   if (auth.status === "loading") return <main className="loading-screen"><LoadingState label="בודקים את החיבור המאובטח…" /></main>;
-  if (auth.status === "signed-in" && online) return <Workspace sectionId={params.section} />;
+  if ((auth.status === "signed-in" && online) || (auth.status === "offline" && auth.session)) return <Workspace sectionId={params.section} />;
   if (auth.status === "offline") return <main className="reconnect-screen"><ReconnectState /></main>;
   return <SignIn />;
 }

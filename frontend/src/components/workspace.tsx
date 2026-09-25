@@ -46,6 +46,7 @@ export function Workspace({ sectionId = "dashboard" }: { sectionId?: string }) {
   const [moreOpen, setMoreOpen] = useState(false);
   const moreButtonRef = useRef<HTMLButtonElement>(null);
   const section = sections.find((item) => item.id === sectionId) ?? sections[0];
+  const session = auth.status === "signed-in" ? auth.session : auth.status === "offline" ? auth.session : undefined;
 
   useEffect(() => setMoreOpen(false), [pathname]);
 
@@ -72,7 +73,8 @@ export function Workspace({ sectionId = "dashboard" }: { sectionId?: string }) {
       {!online && <div className="offline-banner" role="alert">החיבור נותק. הנתונים והפעולות חסומים עד לחיבור מחדש.</div>}
       <header className="topbar"><div><div className="topbar-kicker">המרחב המשפחתי</div><div className="topbar-title">{section.title}</div></div><div className="topbar-actions">
         <div className="connection-pill"><span className="status-dot" />{online ? "מחובר" : "מנותק"}</div><ThemeToggle />
-        {auth.status === "signed-in" && <><div className="user-chip"><span className="avatar">{auth.session.user.display_name.slice(0, 1)}</span><span className="user-name">{auth.session.user.display_name}</span></div><Button className="logout" variant="ghost" size="sm" onClick={async () => { setSignOutError(""); try { await signOut(); } catch { setSignOutError("לא ניתן לאשר יציאה מול השרת. נסו שוב."); } }}>יציאה</Button></>}
+        {session && <div className="user-chip"><span className="avatar">{session.user.display_name.slice(0, 1)}</span><span className="user-name">{session.user.display_name}</span></div>}
+        {auth.status === "signed-in" && <Button className="logout" variant="ghost" size="sm" onClick={async () => { setSignOutError(""); try { await signOut(); } catch { setSignOutError("לא ניתן לאשר יציאה מול השרת. נסו שוב."); } }}>יציאה</Button>}
       </div></header>
       {signOutError && <div className="offline-banner" role="alert">{signOutError}</div>}
       <main className="content">
