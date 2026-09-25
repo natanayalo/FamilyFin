@@ -68,6 +68,10 @@ class NetWorthValidationError(ValueError):
     """A balance, registry, or workflow invariant failed."""
 
 
+class DuplicateNetWorthAccountError(NetWorthValidationError):
+    """The requested account key is already in use."""
+
+
 class NetWorthPreviewStaleError(NetWorthValidationError):
     """The registry or uploaded bytes changed after CSV preview."""
 
@@ -172,7 +176,7 @@ class NetWorthService:
             if session.execute(
                 select(NetWorthAccountRow).where(NetWorthAccountRow.account_key == key)
             ).scalar_one_or_none() is not None:
-                raise NetWorthValidationError(f"Net-worth account key {key!r} already exists")
+                raise DuplicateNetWorthAccountError(f"Net-worth account key {key!r} already exists")
             row = NetWorthAccountRow(
                 id=str(uuid.uuid4()),
                 account_key=key,

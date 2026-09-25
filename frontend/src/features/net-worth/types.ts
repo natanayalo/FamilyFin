@@ -10,7 +10,7 @@ export type NetWorthAccount = {
   active_to: string | null;
   stale_after_days: number;
   created_at: string | null;
-  updated_at: string | null;
+  updated_at: string;
 };
 
 export type SnapshotSummary = {
