@@ -7,6 +7,7 @@ import { sections, Workspace } from "@/components/workspace";
 import { LoadingState, ReconnectState } from "@/components/ui/async-state";
 import { ExpensesFeature } from "@/features/dashboard/expenses";
 import { OverviewFeature } from "@/features/dashboard/overview";
+import { ClassificationFeature } from "@/features/classification/ClassificationFeature";
 
 export default function SectionPage() {
   const params = useParams<{ section: string }>();
@@ -18,7 +19,9 @@ export default function SectionPage() {
       ? <OverviewFeature />
       : params.section === "expenses"
         ? <ExpensesFeature />
-        : undefined;
+        : params.section === "classification"
+          ? <ClassificationFeature />
+          : undefined;
     return <Workspace sectionId={params.section}>{feature}</Workspace>;
   }
   if (auth.status === "offline") return <main className="reconnect-screen"><ReconnectState /></main>;
