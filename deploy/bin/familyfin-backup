@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+umask 077
+
+: "${FAMILY_FINANCE_DATA_ROOT:?Set FAMILY_FINANCE_DATA_ROOT in api.env}"
+: "${FAMILY_FINANCE_BACKUP_ROOT:?Set FAMILY_FINANCE_BACKUP_ROOT in backup.env}"
+
+data_root=$(realpath -e -- "$FAMILY_FINANCE_DATA_ROOT")
+backup_root=$(realpath -e -- "$FAMILY_FINANCE_BACKUP_ROOT")
+
+case "$backup_root/" in
+  "$data_root/"*)
+    echo "Backup destination must be outside the active data root" >&2
+    exit 1
+    ;;
+esac
+case "$data_root/" in
+  "$backup_root/"*)
+    echo "Active data root must be outside the backup destination" >&2
+    exit 1
+    ;;
+esac
+
+if ! mountpoint -q -- "$backup_root"; then
+  echo "Backup destination is not a mounted volume" >&2
+  exit 1
+fi
+if [[ ! -d "$backup_root" || ! -w "$backup_root" ]]; then
+  echo "Backup destination is not writable" >&2
+  exit 1
+fi
+
+timestamp=$(date -u +%Y%m%dT%H%M%SZ)
+destination="$backup_root/familyfin-$timestamp-$$"
+
+family-finance audit
+family-finance backup "$destination"
+family-finance verify-backup "$destination"
