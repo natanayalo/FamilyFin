@@ -10,6 +10,14 @@ htmlcov/
 .env
 .DS_Store
 
+# PWA workspace build artifacts
+frontend/node_modules/
+frontend/.next/
+frontend/out/
+frontend/test-results/
+frontend/playwright-report/
+frontend/blob-report/
+
 # Local financial data and database state
 data/local/
 data/*.xlsx
