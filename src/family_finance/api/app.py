@@ -25,6 +25,7 @@ from family_finance.api.auth import (
 )
 from family_finance.api.idempotency import IdempotencyKeyReusedError
 from family_finance.config import Settings
+from family_finance.dashboard import DashboardService
 from family_finance.persistence.db import Database
 from family_finance.services import ImportService
 
@@ -395,6 +396,12 @@ def create_app(
         # Construct the existing service graph once per process. This keeps all
         # HTTP routes on the same data root and avoids per-request initialization.
         app.state.services = ImportService(settings=resolved_settings, database=app.state.database)
+        app.state.dashboard_service = DashboardService(
+            app.state.database,
+            metrics=app.state.services.metrics_service,
+            classifier=app.state.services.classification_service,
+            insights=app.state.services.insights_service,
+        )
         app.state.auth_service = AuthService(app.state.database, resolved_settings)
         yield
         if owns_database:
@@ -573,4 +580,9 @@ def create_app(
 
     app.include_router(public_router)
     app.include_router(auth_router)
+    # Feature routes are registered after the shared API primitives are fully
+    # initialized. The feature owns its schemas and service adapters.
+    from family_finance.api.routers.data_quality import router as data_quality_router
+
+    app.include_router(data_quality_router)
     return app

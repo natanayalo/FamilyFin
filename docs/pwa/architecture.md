@@ -1,8 +1,8 @@
 # FamilyFin PWA architecture
 
-Status: T00 specification only. No frontend, API, schema, or financial logic is changed here.
+Status: target architecture with T01/T02 foundations and the T04 Data Quality module implemented. Remaining financial modules follow the ownership and route contracts below.
 
-T01 implementation update: the Python API/authentication foundation now provides a FastAPI app, two local household identities, server-side sessions, CSRF/origin controls, request limits, request IDs, safe actor audit metadata, and atomic idempotency primitives. There are still no financial HTTP routes and no route is currently declared replay-safe. See [deployment.md](deployment.md) and [api-contracts.md](api-contracts.md).
+Implementation update: T01 provides a FastAPI app, two local household identities, server-side sessions, CSRF/origin controls, request limits, request IDs, safe actor audit metadata, and atomic idempotency primitives. T04 adds Data Quality, FamilyBiz import, history, and reconciliation routes. Reconciliation resolution is replay-safe; FamilyBiz commit remains outcome-unknown after a timeout pending verified archive recovery. See [deployment.md](deployment.md) and [api-contracts.md](api-contracts.md).
 
 ## Repository baseline and change status
 
