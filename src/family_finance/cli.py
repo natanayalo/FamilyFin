@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 from pathlib import Path
 
+from family_finance.api.auth import AuthService, BootstrapAccount
 from family_finance.audit import AuditService
 from family_finance.automation import AutomationService
 from family_finance.backup import BackupService
 from family_finance.config import Settings
+from family_finance.persistence.db import Database
 from family_finance.services import ImportService
 
 
@@ -27,6 +30,13 @@ def main() -> None:
         "automate", help="Run the local FamilyBiz automation inbox"
     )
     automate_parser.add_argument("--dry-run", action="store_true")
+    subparsers.add_parser(
+        "auth-bootstrap", help="Securely configure the two household API accounts once"
+    )
+    reset_parser = subparsers.add_parser(
+        "auth-reset-password", help="Recover an API account password from the local host"
+    )
+    reset_parser.add_argument("username")
     args = parser.parse_args()
 
     if args.command == "inspect":
@@ -35,6 +45,33 @@ def main() -> None:
         return
 
     settings = Settings.from_environment()
+    if args.command == "auth-bootstrap":
+        accounts = []
+        for label in ("First", "Second"):
+            username = input(f"{label} account username: ").strip()
+            display_name = input(f"{label} account display name: ").strip()
+            password = getpass.getpass(f"{label} account password (14+ characters): ")
+            confirmation = getpass.getpass("Confirm password: ")
+            if password != confirmation:
+                raise SystemExit("Password confirmation did not match")
+            accounts.append(BootstrapAccount(username, display_name, password))
+        settings.ensure_directories()
+        auth = AuthService(Database(settings.database_path), settings)
+        auth.bootstrap_accounts(accounts)
+        print("Two household API accounts were configured.")
+        return
+
+    if args.command == "auth-reset-password":
+        password = getpass.getpass("New password (14+ characters): ")
+        confirmation = getpass.getpass("Confirm new password: ")
+        if password != confirmation:
+            raise SystemExit("Password confirmation did not match")
+        settings.ensure_directories()
+        auth = AuthService(Database(settings.database_path), settings)
+        auth.reset_password(username=args.username, password=password)
+        print("Password updated; active sessions were revoked.")
+        return
+
     if args.command == "automate":
         result = AutomationService(settings=settings).run(dry_run=args.dry_run)
         print(json.dumps({

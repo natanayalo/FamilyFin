@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
+API_MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -30,6 +31,16 @@ class Settings:
     automation_stability_delay_seconds: float = 0.05
     automation_algorithm_version: str = "phase8-insights-v1"
     automation_backup_root: Path | None = None
+    api_session_hours: int = 8
+    api_max_request_bytes: int = 1 * 1024 * 1024
+    api_public_origin: str | None = None
+    api_trusted_hosts: tuple[str, ...] = ("localhost", "127.0.0.1")
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.api_session_hours <= 24:
+            raise ValueError("API session lifetime must be between 1 and 24 hours")
+        if not 1024 <= self.api_max_request_bytes <= API_MAX_JSON_BODY_BYTES:
+            raise ValueError("API JSON request limit must be between 1 KiB and 1 MiB")
 
     @property
     def database_path(self) -> Path:
@@ -79,9 +90,28 @@ class Settings:
     def from_environment(cls) -> Settings:
         root = Path(os.environ.get("FAMILY_FINANCE_DATA_ROOT", cls.data_root))
         backup_value = os.environ.get("FAMILY_FINANCE_AUTOMATION_BACKUP_ROOT", "").strip()
+        trusted_hosts = tuple(
+            item.strip()
+            for item in os.environ.get(
+                "FAMILY_FINANCE_API_TRUSTED_HOSTS", "localhost,127.0.0.1"
+            ).split(",")
+            if item.strip()
+        )
         return cls(
             data_root=root,
             automation_backup_root=Path(backup_value).expanduser() if backup_value else None,
+            api_session_hours=min(
+                24, max(1, int(os.environ.get("FAMILY_FINANCE_API_SESSION_HOURS", "8")))
+            ),
+            api_max_request_bytes=min(
+                API_MAX_JSON_BODY_BYTES,
+                max(
+                    1024,
+                    int(os.environ.get("FAMILY_FINANCE_API_MAX_REQUEST_BYTES", str(1024 * 1024))),
+                ),
+            ),
+            api_public_origin=os.environ.get("FAMILY_FINANCE_API_PUBLIC_ORIGIN", "").strip() or None,
+            api_trusted_hosts=trusted_hosts or ("localhost", "127.0.0.1"),
         )
 
     def ensure_directories(self) -> None:

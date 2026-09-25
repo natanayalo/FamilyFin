@@ -1,13 +1,25 @@
 # FamilyFin PWA API contracts
 
-Status: proposed transport contract for follow-up implementation. No HTTP API exists in the checked-out repository. Routes below adapt current Python services; they are not evidence of implemented endpoints.
+Status: proposed transport contract with the T01 foundation implemented. FastAPI health and authentication/session endpoints are registered; financial routes below remain proposals and are not evidence of implemented endpoints.
+
+Implementation note (T01 foundation): `Database.api_write_unit_of_work()` and `IdempotencyStore` provide the API-owned transaction participation and response-recording primitive described below. Existing service calls made through `Database.session()` and `Database.write_session()` join that transaction when invoked inside it. FastAPI lifecycle, `/api/v1/health`, and `/api/v1/auth/session` (POST/GET/DELETE) are implemented. No financial HTTP mutation route is implemented or declared replay-safe; feature routes must use the authenticated router and pass route-specific atomicity/external-effect review.
 
 ## Common rules
 
-- Base path: /api/v1. Same origin as the PWA. All routes except sign-in, sign-out, and session bootstrap require an authenticated household session.
+- Base path: /api/v1. Same origin as the PWA. All routes except sign-in and health require an authenticated household session. Session bootstrap and sign-out are authenticated.
 - All requests and responses use UTF-8 JSON unless a route explicitly uploads or downloads a file. JSON responses use the envelope below; file downloads use ordinary content headers and no-store.
 - The API is a transport adapter. It calls the existing domain services and returns their serialized results. It must not recalculate amounts, projections, status, classification, matching, completeness, or provenance in TypeScript.
 - Never place financial response data, credentials, preview tokens, or draft edits in URLs, persistent browser storage, logs, analytics, or shared caches.
+
+### Implemented authentication transport
+
+| Operation | Route | Contract |
+| --- | --- | --- |
+| Sign in | `POST /api/v1/auth/session` | JSON `{username, password}`; same-origin `Origin` required. Success returns `{user, csrf_token, expires_at}` and sets the opaque session cookie. Invalid credentials return generic 401; rate-limited attempts return 429 with `Retry-After`. |
+| Session bootstrap | `GET /api/v1/auth/session` | Requires a valid cookie; returns account identity and a CSRF token derived for that session. It returns no financial data. |
+| Sign out | `DELETE /api/v1/auth/session` | Requires a valid cookie, same-origin `Origin`, and matching `X-CSRF-Token`; revokes the server-side session and clears the cookie. |
+
+The cookie is Secure, HttpOnly, SameSite=Strict, scoped to `/api/v1`, and has an eight-hour absolute lifetime by default. The API stores a token digest and verifies revocation and expiration on every authenticated request. Exactly two accounts are created once by the host-only `family-finance auth-bootstrap` command. Password recovery is host-only with `family-finance auth-reset-password`; it revokes that user's sessions. No registration, role management, public credential recovery, or unequal household permissions are exposed over HTTP. MFA is not implemented. Frontend code must hold the CSRF token only in memory and send it in `X-CSRF-Token` for mutations.
 
 Success envelope:
 
@@ -56,13 +68,16 @@ Pydantic domain values are serialized in JSON mode, then reviewed against these 
 | 404 | Missing resource or resource not visible to this household |
 | 409 | Stale preview/revision, duplicate seed, existing-snapshot conflict, or conflicting state transition |
 | 413 | Upload exceeds transport or configured domain size limit |
+| 429 | Login attempts are temporarily throttled; response includes Retry-After |
 | 422 | Domain validation failure, invalid workbook/CSV, invalid decision, or rejected field values |
 | 503 | SQLite write lock/busy condition or unavailable local service; include Retry-After only when a safe retry is possible |
 | 500 | Unexpected failure with a generic message and request ID only |
 
 Field validation remains owned by the existing service/parser. The API may reject malformed transport types before calling it, but must not weaken workbook, CSV, decimal, date, account-coverage, category, schedule, classification, forecast, mortgage, completeness, or stale-valuation validation. Return safe service errors and issue codes; do not expose uploaded row content in logs.
 
-Important configured file limits in the current code: FamilyBiz XLSX 25 MiB compressed, 100 MiB uncompressed, and at most 50,000 rows; planning CSV 10 MiB, 5,000 rows, 100 columns, 10,000 characters per field; net-worth CSV 10 MiB, 10,000 rows, 20 columns, 10,000 characters per field. Confirm the parser is authoritative when configuring reverse-proxy body limits.
+Important configured file limits in the current code: FamilyBiz XLSX 25 MiB compressed, 100 MiB uncompressed, and at most 50,000 rows; planning CSV 10 MiB, 5,000 rows, 100 columns, 10,000 characters per field; net-worth CSV 10 MiB, 10,000 rows, 20 columns, 10,000 characters per field. The transport applies the small JSON limit (1 MiB by default) to all routes except explicitly listed multipart uploads. FamilyBiz multipart preview/commit routes use `max_compressed_bytes + 1 MiB` for boundary and form-field overhead; Planning and Net Worth CSV multipart preview/commit routes use their respective parser byte limit plus the same overhead. A multipart request gets this allowance only on the exact planned POST route; a JSON request or an unlisted route remains under the JSON cap. The parser remains authoritative for file and expanded-content limits.
+
+Login throttling keys on normalized username and the direct socket peer address. Uvicorn disables proxy-header trust, and the API does not consume `Forwarded` or `X-Forwarded-For`. With the planned same-host loopback proxy, all remote household clients share that peer identity; this intentionally provides one persistent failure bucket per account across clients. The throttling key is HMACed before storage.
 
 ## Collections and pagination
 
@@ -91,11 +106,11 @@ The FamilyBiz preview also displays and downloads the complete deterministic dec
 
 ## Idempotency and outcome-unknown mutations
 
-An Idempotency-Key is only a request identity; storing it separately after a service commit does not make a mutation replay-safe. Existing services own their transactions, so T01 must not return a success from a non-atomic wrapper and promise that a retry will recover the original result.
+An Idempotency-Key is only a request identity; storing it separately after a service commit does not make a mutation replay-safe. Existing services own their transactions outside the opt-in API boundary, so a route must not return a success from a non-atomic wrapper and promise that a retry will recover the original result.
 
-For a route to advertise replay safety, T01 must provide an API-owned SQLite unit of work that starts the write transaction (using the existing serialized-write policy), invokes the existing service without allowing it to commit independently, and writes the idempotency record in that same SQLite transaction. This requires existing services to join the API-owned transaction; it must preserve their financial logic and CLI/Streamlit behavior. The record is uniquely scoped by authenticated actor, HTTP method, canonical route, and key, and contains a canonical request hash plus the completed HTTP status and response body. The response is sent only after that transaction commits. Same scope/key and same request hash replays the stored response without invoking the service; same scope/key with a different hash returns 409 IDEMPOTENCY_KEY_REUSED. Concurrent uses serialize and re-read the committed record before doing work.
+For a route to advertise replay safety, it must use the API-owned SQLite unit of work which starts the write transaction (using the existing serialized-write policy), invokes the existing service without allowing it to commit independently, and writes the idempotency record in that same SQLite transaction. `IdempotencyStore.execute()` implements this for database-only service calls; `Database.session()` and `Database.write_session()` join the ambient API transaction for the same `Database` instance. This preserves service financial logic and leaves normal CLI/Streamlit transaction ownership unchanged. The record is uniquely scoped by authenticated actor, HTTP method, canonical route, and key, and contains a canonical request hash plus the completed HTTP status and response body. The response is sent only after that transaction commits. Same scope/key and same request hash replays the stored response without invoking the service; same scope/key with a different hash raises `IdempotencyKeyReusedError` for mapping to 409 IDEMPOTENCY_KEY_REUSED. Concurrent uses serialize and re-read the committed record before doing work.
 
-This gives a defined crash outcome: before commit, both financial writes and the idempotency record roll back; after commit, both exist and a retry returns the recorded response. It requires service transaction participation to be designed and verified; it is not available in the current repository. Filesystem or other external effects are not covered by a SQLite transaction. A route with such effects must add an independently verified recovery/deduplication mechanism or remain outside the replay-safe contract.
+This gives a defined crash outcome: before commit, both financial writes and the idempotency record roll back; after commit, both exist and a retry returns the recorded response. A focused integration test exercises a PlanningService write through the API-owned boundary, injects a failure before record/commit, and verifies rollback followed by successful retry/replay. Filesystem or other external effects are not covered by a SQLite transaction. A route with such effects must add an independently verified recovery/deduplication mechanism or remain outside the replay-safe contract. At this stage no HTTP mutation route has passed its route-specific gate.
 
 Keep completed records for as long as a key can be retried. If response bodies are pruned, retain a durable scope/key/hash tombstone and reject that expired key rather than rerunning its mutation. Before a route passes the same-transaction or verified-recovery gate, do not claim automatic replay safety, automatically retry it in the browser, or treat Idempotency-Key as protection. On a transport timeout, show that the outcome is unknown, reconcile current state where possible, and require an explicit user decision before another submission. Route documentation and acceptance tests must identify which mutations have passed the gate. Do not reuse a key for a different action.
 
