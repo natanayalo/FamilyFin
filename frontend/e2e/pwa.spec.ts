@@ -122,6 +122,11 @@ test("overview and expenses routes show service metrics and contributor drill-do
   await page.goto("/dashboard");
   await expect(page.getByText("הנתונים זמניים; חלק מההשוואות אינן זמינות")).toBeVisible();
   await expect(page.getByText("1000.00 ש״ח").first()).toBeVisible();
+  const chartData = page.locator(".dashboard-chart-data");
+  await chartData.getByText("הצגת נתונים בטבלה").click();
+  const chartTable = chartData.getByRole("table", { name: "נתוני תרשים: מגמת הכנסה, צריכה נטו ועודף תפעולי" });
+  await expect(chartTable.getByText("1000.00", { exact: true })).toBeVisible();
+  await expect(chartTable.getByText("17.40", { exact: true })).toBeVisible();
   const axe = () => new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect((await axe()).violations.map((violation) => violation.id)).toEqual([]);
   await page.getByLabel("מדד או קטגוריה").selectOption("spending_by_category:food");
@@ -131,6 +136,7 @@ test("overview and expenses routes show service metrics and contributor drill-do
   await page.goto("/expenses");
   await expect(page.getByRole("heading", { name: "התפלגות לפי קטגוריה" })).toBeVisible();
   await expect(page.getByText("כל זיהוי הוא היוריסטי בלבד ואינו סיווג חשבונאי.")).toBeVisible();
+  await expect(page.getByText(/קטגוריות ההוצאות מבוססות על קטגוריית הניתוח \(analysis_category\), ובהיעדרה על קטגוריית המקור \(source_category\)/)).toBeVisible();
   expect((await axe()).violations.map((violation) => violation.id)).toEqual([]);
   await page.getByRole("button", { name: "הצגת העסקאות בדפוס (1)" }).click();
   await expect(page.getByText("Synthetic grocery")).toBeVisible();
