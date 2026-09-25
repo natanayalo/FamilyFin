@@ -1,0 +1,29 @@
+[Unit]
+Description=Create and verify a FamilyFin backup
+After=familyfin-api.service
+RequiresMountsFor=/mnt/familyfin-backup
+
+[Service]
+Type=oneshot
+User=familyfin-api
+Group=familyfin-api
+WorkingDirectory=/opt/familyfin/current
+EnvironmentFile=/etc/familyfin/api.env
+EnvironmentFile=/etc/familyfin/backup.env
+Environment=PATH=/opt/familyfin/current/.venv/bin:/usr/bin:/bin
+UMask=0077
+ExecStart=/opt/familyfin/current/deploy/bin/familyfin-backup
+TimeoutStartSec=2h
+
+NoNewPrivileges=true
+PrivateDevices=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/familyfin/data /mnt/familyfin-backup
