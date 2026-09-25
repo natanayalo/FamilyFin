@@ -11,7 +11,7 @@ import { Card } from "@/components/ui/card";
 import { EmptyState, LoadingState, ReconnectState } from "@/components/ui/async-state";
 
 export const sections = [
-  { id: "dashboard", href: "/", label: "סקירה", icon: "◫", title: "סקירה כללית", note: "תמונת מצב של ההכנסות, ההוצאות ואיכות הנתונים." },
+  { id: "dashboard", href: "/dashboard", label: "סקירה", icon: "◫", title: "סקירה כללית", note: "תמונת מצב של ההכנסות, ההוצאות ואיכות הנתונים." },
   { id: "expenses", href: "/expenses", label: "הוצאות", icon: "↘", title: "הוצאות", note: "ניתוח הוצאות, מגמות ועסקאות תורמות." },
   { id: "data-quality", href: "/data-quality", label: "איכות נתונים", icon: "✓", title: "איכות נתונים וייבוא", note: "בדיקת מקורות, ייבוא קבצים והתאמות." },
   { id: "classification", href: "/classification", label: "סיווג", icon: "≡", title: "סיווג עסקאות", note: "תור בדיקה, תיקוני סיווג וכללים חוזרים." },
@@ -80,6 +80,7 @@ export function Workspace({ sectionId = "dashboard", children }: { sectionId?: s
       <main className="content">
         <div className="page-heading"><div><div className="eyebrow">FamilyFin · מרחב משפחתי</div><h1>{section.title}</h1><p>{section.note}</p></div></div>
         {auth.status === "signed-out" ? <EmptyState title="החיבור לחשבון הסתיים" description="התחברו מחדש כדי להמשיך לצפות בנתונים." action={<Link className="secondary-button" href="/">חזרה להתחברות</Link>} /> : children ?? (!online || auth.status === "offline" ? <ReconnectState /> : <Card className="module-card"><div className="module-placeholder"><div><strong>המסך מוכן לחיבור לשירות</strong>{section.note}<br />הנתונים יוצגו כאן לאחר חיבור מודול ה‑API המתאים.</div></div></Card>)}
+        {auth.status === "signed-out" ? <EmptyState title="החיבור לחשבון הסתיים" description="התחברו מחדש כדי להמשיך לצפות בנתונים." action={<Link className="secondary-button" href="/">חזרה להתחברות</Link>} /> : !online || auth.status === "offline" ? <ReconnectState /> : children ?? <Card className="module-card"><div className="module-placeholder"><div><strong>המסך מוכן לחיבור לשירות</strong>{section.note}<br />הנתונים יוצגו כאן לאחר חיבור מודול ה‑API המתאים.</div></div></Card>}
         <Card className="status-strip"><span className="info-symbol" aria-hidden="true">i</span><span>המסך הזה אינו שומר מידע בדפדפן. כל נתון פיננסי זמין רק בחיבור מקוון מאומת.</span></Card>
       </main>
     </div>

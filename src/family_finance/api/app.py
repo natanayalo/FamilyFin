@@ -574,8 +574,10 @@ def create_app(
     app.include_router(public_router)
     app.include_router(auth_router)
     # Feature routes are registered after the shared API primitives are fully
-    # initialized. The feature owns its schemas and service adapters.
+    # initialized so their routers can use authentication and error helpers.
+    from family_finance.api.routers.dashboard import router as dashboard_router
     from family_finance.api.routers.data_quality import router as data_quality_router
 
+    app.include_router(dashboard_router)
     app.include_router(data_quality_router)
     return app
