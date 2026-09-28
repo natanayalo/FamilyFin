@@ -44,7 +44,7 @@ DecimalString = Annotated[Decimal, BeforeValidator(_decimal_string)]
 
 
 class PlanningItemBody(BaseModel):
-    """Planning item input plus the source fields needed to preserve provenance."""
+    """Editable planning fields plus a reference to an existing source item."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -56,15 +56,7 @@ class PlanningItemBody(BaseModel):
     start_month: MonthDate | None = None
     end_month: MonthDate | None = None
     occurrence_month: MonthDate | None = None
-    id: str = Field(default="", max_length=200)
-    origin: str = Field(default="manual", max_length=64)
-    source_range: str | None = Field(default=None, max_length=500)
-    source_row: int | None = Field(default=None, ge=1)
-    policy_version: str = Field(default="planning-v1", max_length=64)
-    completeness_codes: list[str] = Field(default_factory=list, max_length=100)
-    contributor_transaction_ids: list[int] = Field(default_factory=list, max_length=10000)
-    provenance: dict[str, Any] = Field(default_factory=dict)
-    notes: list[dict[str, Any]] = Field(default_factory=list)
+    source_item_id: str | None = Field(default=None, max_length=200)
 
     @field_validator("label")
     @classmethod
@@ -77,6 +69,12 @@ class PlanningItemBody(BaseModel):
     @field_validator("category")
     @classmethod
     def normalize_category(cls, value: str | None) -> str | None:
+        value = value.strip() if value is not None else None
+        return value or None
+
+    @field_validator("source_item_id")
+    @classmethod
+    def normalize_source_item_id(cls, value: str | None) -> str | None:
         value = value.strip() if value is not None else None
         return value or None
 
@@ -95,8 +93,8 @@ class PlanningItemBody(BaseModel):
             raise ValueError("One-time planning items cannot have a start or end month")
         return self
 
-    def service_payload(self) -> dict[str, Any]:
-        return self.model_dump(mode="python")
+    def editable_payload(self) -> dict[str, Any]:
+        return self.model_dump(mode="python", exclude={"source_item_id"})
 
 
 class ScenarioCreateBody(BaseModel):

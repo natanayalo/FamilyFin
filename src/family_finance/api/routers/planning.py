@@ -26,6 +26,7 @@ from family_finance.api.schemas.planning import (
     RevisionBody,
     ScenarioCreateBody,
 )
+from family_finance.models import PlanningItem, PlanningItemInput, PlanningRevision
 from family_finance.planning import (
     DuplicateSeedError,
     PlanningPreviewStaleError,
@@ -116,8 +117,32 @@ def _run(
     return _envelope(request, result)
 
 
-def _items(items: list[PlanningItemBody]) -> list[dict[str, Any]]:
-    return [item.service_payload() for item in items]
+def _items(items: list[PlanningItemBody]) -> list[PlanningItemInput]:
+    return [PlanningItemInput.model_validate(item.editable_payload()) for item in items]
+
+
+def _revision_items(
+    base_revision: PlanningRevision, requested_items: list[PlanningItemBody]
+) -> list[PlanningItemInput | PlanningItem]:
+    base_items = {item.id: item for item in base_revision.items}
+    used_source_ids: set[str] = set()
+    resolved: list[PlanningItemInput | PlanningItem] = []
+    for requested in requested_items:
+        source_item_id = requested.source_item_id
+        if source_item_id is None:
+            resolved.append(PlanningItemInput.model_validate(requested.editable_payload()))
+            continue
+        if source_item_id not in base_items:
+            raise ValueError(
+                "source_item_id must reference an item in expected_revision_number"
+            )
+        if source_item_id in used_source_ids:
+            raise ValueError("Each source item may be referenced only once per revision")
+        used_source_ids.add(source_item_id)
+        item_data = base_items[source_item_id].model_dump(mode="python")
+        item_data.update(requested.editable_payload())
+        resolved.append(PlanningItem.model_validate(item_data))
+    return resolved
 
 
 def _require_current_provisional_ack(service: PlanningService, scenario_id: str, acknowledged: bool) -> None:
@@ -139,6 +164,8 @@ def list_scenarios(request: Request, include_archived: bool = False):
 @router.post("/scenarios", status_code=201)
 def create_scenario(body: ScenarioCreateBody, request: Request):
     service = _service(request)
+    if any(item.source_item_id is not None for item in body.items):
+        raise ApiError(422, "VALIDATION_ERROR", "New manual planning items cannot reference a source item.")
     return _run(
         request,
         service.create_manual_scenario,
@@ -186,12 +213,36 @@ def project_draft(scenario_id: str, body: ProjectionBody, request: Request):
 @router.post("/scenarios/{scenario_id}/revisions", status_code=201)
 def save_revision(scenario_id: str, body: RevisionBody, request: Request):
     service = _service(request)
+
+    def save_from_expected_revision(
+        scenario_id: str,
+        expected_revision_number: int,
+        requested_items: list[PlanningItemBody],
+        *,
+        notes: str,
+        acknowledge_provisional: bool,
+    ):
+        current = service.get_scenario(scenario_id)
+        if current.current_revision_number != expected_revision_number:
+            raise StaleRevisionError(
+                f"Scenario {scenario_id} is at revision {current.current_revision_number}; "
+                f"expected {expected_revision_number}"
+            )
+        base_revision = service.get_revision(scenario_id, expected_revision_number)
+        return service.save_revision(
+            scenario_id,
+            expected_revision_number,
+            _revision_items(base_revision, requested_items),
+            notes=notes,
+            acknowledge_provisional=acknowledge_provisional,
+        )
+
     return _run(
         request,
-        service.save_revision,
+        save_from_expected_revision,
         scenario_id,
         body.expected_revision_number,
-        _items(body.items),
+        body.items,
         notes=body.notes,
         acknowledge_provisional=body.acknowledge_provisional,
         audit=("planning.revision.create", "planning_scenario"),
