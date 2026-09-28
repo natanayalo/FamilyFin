@@ -215,6 +215,127 @@ def test_configured_manual_run_creates_verified_pre_import_backup(tmp_path):
             assert session.query(TransactionRow).count() == 1
 
 
+def test_attention_review_preflight_commit_is_pathless_and_two_user_safe(tmp_path, monkeypatch):
+    settings, database, _, app = make_api(
+        tmp_path, automation_backup_root=tmp_path / "automation-backups"
+    )
+    settings.ensure_directories()
+    source = settings.automation_needs_review_root / "private-source-name.xlsx"
+    source.write_bytes(make_workbook([[
+        "19/09/2026", -17.40, "merchant", "19/09/2026", "food",
+        "household", "ILS", "ILS", -17.40,
+    ]]))
+
+    with ApiTestClient(app, base_url=BASE_URL) as client:
+        assert client.get("/api/v1/automation/attention-files").status_code == 401
+        sam_csrf, _ = sign_in(client, "sam", "Long-test-password-One!")
+        listed = client.get("/api/v1/automation/attention-files")
+        assert listed.status_code == 200
+        assert len(listed.json()["data"]["items"]) == 1
+        file_id = listed.json()["data"]["items"][0]["id"]
+        assert "private-source-name" not in listed.text
+        assert str(tmp_path) not in listed.text
+        assert client.post(
+            "/api/v1/automation/attention-files/../../preflight",
+            headers=mutation_headers(sam_csrf),
+        ).status_code in {400, 404}
+
+        original_preflight = app.state.services.preflight_import
+
+        def reviewable_preflight(payload, filename):
+            return original_preflight(payload, filename).model_copy(
+                update={"action": "needs_review"}
+            )
+
+        monkeypatch.setattr(app.state.services, "preflight_import", reviewable_preflight)
+        preview = client.post(
+            f"/api/v1/automation/attention-files/{file_id}/preflight",
+            headers=mutation_headers(sam_csrf),
+        )
+        assert preview.status_code == 200
+        assert preview.json()["data"]["action"] == "needs_review"
+        assert "private-source-name" not in preview.text
+        digest = preview.json()["data"]["file_sha256"]
+
+        lee_csrf, _ = sign_in(client, "lee", "Long-test-password-Two!")
+        original_payload = source.read_bytes()
+        source.write_bytes(b"changed after preflight")
+        stale = client.post(
+            f"/api/v1/automation/attention-files/{file_id}/commit",
+            json={"expected_sha256": digest, "confirm": True},
+            headers=mutation_headers(lee_csrf),
+        )
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "ATTENTION_FILE_STALE"
+        assert source.is_file()
+        with database.session() as session:
+            assert session.query(TransactionRow).count() == 0
+        source.write_bytes(original_payload)
+
+        committed = client.post(
+            f"/api/v1/automation/attention-files/{file_id}/commit",
+            json={"expected_sha256": digest, "confirm": True},
+            headers=mutation_headers(lee_csrf),
+        )
+        assert committed.status_code == 200
+        assert not source.exists()
+        assert "private-source-name" not in committed.text
+        from family_finance.backup import BackupService
+
+        backups = list(settings.automation_backup_root.iterdir())
+        assert len(backups) == 2
+        assert all(BackupService(database, settings).verify(item).passed for item in backups)
+        with database.session() as session:
+            assert session.query(TransactionRow).count() == 1
+            events = session.execute(select(ActorAuditEventRow).where(
+                ActorAuditEventRow.event_type == "automation.attention_commit"
+            )).scalars().all()
+            assert events[-1].outcome == "success"
+
+
+def test_attention_commit_blocks_without_readiness_or_fresh_backup(tmp_path, monkeypatch):
+    settings, database, _, app = make_api(tmp_path)
+    settings.ensure_directories()
+    source = settings.automation_needs_review_root / "pending.xlsx"
+    source.write_bytes(b"workbook bytes")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    with ApiTestClient(app, base_url=BASE_URL) as client:
+        csrf, _ = sign_in(client, "sam", "Long-test-password-One!")
+        file_id = client.get("/api/v1/automation/attention-files").json()["data"]["items"][0]["id"]
+        blocked = client.post(
+            f"/api/v1/automation/attention-files/{file_id}/commit",
+            json={"expected_sha256": digest, "confirm": True},
+            headers=mutation_headers(csrf),
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "AUTOMATION_NOT_READY"
+        assert source.is_file()
+        with database.session() as session:
+            assert session.query(TransactionRow).count() == 0
+
+    settings, database, _, app = make_api(
+        tmp_path / "configured", automation_backup_root=tmp_path / "automation-backups"
+    )
+    settings.ensure_directories()
+    source = settings.automation_needs_review_root / "pending.xlsx"
+    source.write_bytes(b"workbook bytes")
+    digest = hashlib.sha256(source.read_bytes()).hexdigest()
+    monkeypatch.setattr(AutomationService, "_create_backup", lambda _service: (_ for _ in ()).throw(OSError("failed")))
+    with ApiTestClient(app, base_url=BASE_URL) as client:
+        csrf, _ = sign_in(client, "lee", "Long-test-password-Two!")
+        file_id = client.get("/api/v1/automation/attention-files").json()["data"]["items"][0]["id"]
+        blocked = client.post(
+            f"/api/v1/automation/attention-files/{file_id}/commit",
+            json={"expected_sha256": digest, "confirm": True},
+            headers=mutation_headers(csrf),
+        )
+        assert blocked.status_code == 409
+        assert blocked.json()["error"]["code"] == "ATTENTION_COMMIT_BLOCKED"
+        assert source.is_file()
+        with database.session() as session:
+            assert session.query(TransactionRow).count() == 0
+
+
 def test_insights_two_user_permissions_preferences_review_and_sessions(tmp_path):
     _settings, database, _, app = make_api(tmp_path)
     now = datetime.now(UTC).isoformat()

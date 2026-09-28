@@ -1,5 +1,7 @@
 """Bounded request shapes for operational and user preference routes."""
 
+from typing import Literal
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
@@ -7,6 +9,13 @@ class AutomationRunBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     dry_run: bool
+
+
+class AttentionCommitBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    expected_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    confirm: Literal[True]
 
 
 class AppPreferencesBody(BaseModel):

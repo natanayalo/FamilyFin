@@ -12,6 +12,7 @@ vi.mock("@/features/insight-preferences/insight-preferences-feature", () => ({
 }));
 vi.mock("@/features/operations/api", () => ({
   getAutomationStatus: vi.fn(), getAutomationRuns: vi.fn(), startAutomation: vi.fn(),
+  getAttentionFiles: vi.fn(), preflightAttentionFile: vi.fn(), commitAttentionFile: vi.fn(),
 }));
 vi.mock("@/features/settings/api", () => ({
   getSettings: vi.fn(), getSessions: vi.fn(), saveAppPreferences: vi.fn(), revokeSession: vi.fn(),
@@ -48,6 +49,17 @@ describe("Operations and settings workflows", () => {
       latest_run: null,
     } });
     vi.mocked(operationsApi.getAutomationRuns).mockResolvedValue({ data: { items: [] } });
+    vi.mocked(operationsApi.getAttentionFiles).mockResolvedValue({ data: { items: [] } });
+    vi.mocked(operationsApi.preflightAttentionFile).mockResolvedValue({ data: {
+      file_id: "f".repeat(64), file_sha256: "a".repeat(64), action: "needs_review",
+      duplicate_file: false, ambiguous_count: 1, reconciliation_count: 1,
+      candidate_count: 2, warning_count: 1, rejected_count: 0,
+      issue_counts: {}, predicted_statistics: { inserted: 0, updated: 0, unchanged: 0 },
+    } });
+    vi.mocked(operationsApi.commitAttentionFile).mockResolvedValue({ data: {
+      batch_id: "batch-1", status: "needs_review",
+      statistics: { inserted: 0, updated: 0, unchanged: 0 },
+    } });
     vi.mocked(operationsApi.startAutomation).mockResolvedValue({ data: {
       id: "run-1", status: "dry_run", started_at: "2026-09-28T12:00:00Z", finished_at: "2026-09-28T12:00:01Z",
       dry_run: true, audit_passed: true, backup_created: false, counts: { ready: 2 }, issue_codes: [], items: [],
@@ -90,6 +102,26 @@ describe("Operations and settings workflows", () => {
     fireEvent.click(runNow);
     await screen.findByText(/לאחר יצירת גיבוי מאומת/);
     expect(operationsApi.startAutomation).toHaveBeenCalledWith(false);
+  });
+
+  it("requires a preflight and explicit confirmation before attention commit", async () => {
+    vi.mocked(operationsApi.getAttentionFiles).mockResolvedValue({ data: { items: [
+      { id: "f".repeat(64), size_bytes: 2048, modified_at: "2026-09-28T12:00:00Z" },
+    ] } });
+    vi.mocked(operationsApi.getAutomationStatus).mockResolvedValue({ data: {
+      inbox: { inbox_file_count: 0, review_file_count: 1 },
+      operations: { ...blockedOperations, backup: { configured: true, status: "verified", last_verified_at: null }, run_now_allowed: true, run_now_block_reason: null, warnings: [] },
+      latest_run: null,
+    } });
+    render(<OperationsFeature />);
+    fireEvent.click(await screen.findByRole("button", { name: "בדיקה מוקדמת" }));
+    const commit = await screen.findByRole("button", { name: "אישור קובץ לבדיקה" });
+    expect(commit).toBeDisabled();
+    fireEvent.click(screen.getByRole("checkbox", { name: /אני מאשר\/ת/ }));
+    expect(commit).toBeEnabled();
+    fireEvent.click(commit);
+    await waitFor(() => expect(operationsApi.commitAttentionFile).toHaveBeenCalledWith("f".repeat(64), "a".repeat(64)));
+    expect(screen.getByText(/הטיפול בקובץ הושלם/)).toBeVisible();
   });
 
   it("saves per-account display preferences and revokes only another session", async () => {

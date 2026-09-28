@@ -28,6 +28,25 @@ export type AutomationStatus = {
 export type AutomationResult = AutomationRun & {
   items: { status: string; reason_code: string | null }[];
 };
+export type AttentionFile = { id: string; size_bytes: number; modified_at: string };
+export type AttentionPreflight = {
+  file_id: string;
+  file_sha256: string;
+  action: string;
+  duplicate_file: boolean;
+  ambiguous_count: number;
+  reconciliation_count: number;
+  candidate_count: number;
+  warning_count: number;
+  rejected_count: number;
+  issue_counts: Record<string, number>;
+  predicted_statistics: { inserted: number; updated: number; unchanged: number } | null;
+};
+export type AttentionCommitResult = {
+  batch_id: string;
+  status: string;
+  statistics: { inserted: number; updated: number; unchanged: number };
+};
 
 export function getAutomationStatus() {
   return apiRequest<AutomationStatus>("/automation/status");
@@ -41,5 +60,22 @@ export function startAutomation(dryRun: boolean) {
   return apiRequest<AutomationResult>("/automation/runs", {
     method: "POST",
     body: JSON.stringify({ dry_run: dryRun }),
+  });
+}
+
+export function getAttentionFiles() {
+  return apiRequest<{ items: AttentionFile[] }>("/automation/attention-files");
+}
+
+export function preflightAttentionFile(fileId: string) {
+  return apiRequest<AttentionPreflight>(`/automation/attention-files/${fileId}/preflight`, {
+    method: "POST",
+  });
+}
+
+export function commitAttentionFile(fileId: string, expectedSha256: string) {
+  return apiRequest<AttentionCommitResult>(`/automation/attention-files/${fileId}/commit`, {
+    method: "POST",
+    body: JSON.stringify({ expected_sha256: expectedSha256, confirm: true }),
   });
 }
