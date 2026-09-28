@@ -604,9 +604,9 @@ def create_app(
     app.include_router(settings_router)
     # Keep each financial adapter feature-owned. The import is local to avoid
     # coupling the transport foundation to feature schema modules at import time.
+    from family_finance.api.routers.forecasts import router as forecasts_router
     from family_finance.api.routers.net_worth import router as net_worth_router
     from family_finance.api.routers.planning import router as planning_router
-    from family_finance.api.routers.forecasts import router as forecasts_router
 
     app.include_router(net_worth_router)
     app.include_router(planning_router)

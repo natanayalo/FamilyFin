@@ -7,7 +7,7 @@ from datetime import date
 from decimal import Decimal, InvalidOperation
 from typing import Annotated
 
-from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator
 
 from family_finance.models import (
     ForecastAdjustmentInput,
@@ -36,7 +36,7 @@ def _iso_date(value: object) -> date:
 
 def _decimal_string(value: object) -> Decimal:
     if not isinstance(value, str):
-        raise ValueError("Amounts and rates must be decimal strings")
+        raise ValueError("Amounts and rates must be decimal strings")  # noqa: TRY004 - Pydantic maps ValueError to a request validation error.
     try:
         number = Decimal(value)
     except InvalidOperation as exc:
