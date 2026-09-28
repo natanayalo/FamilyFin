@@ -70,12 +70,18 @@ def test_restore_activation_uses_the_canonical_writable_data_root() -> None:
     assert "ReadWritePaths=/var/lib/familyfin/data" in api_service
     assert "EnvironmentFile=/etc/familyfin/api.env" in api_service
     assert "FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data" in api_env
+    assert "rsync" in deployment.split("## Host layout and installation", 1)[1].split("## Tailnet policy", 1)[0]
     assert "ReadWritePaths=/var/lib/familyfin/data /mnt/familyfin-backup" in backup_service
     assert "EnvironmentFile=/etc/familyfin/api.env" in backup_service
     assert "familyfin-backup.timer familyfin-backup.service" in restore
     assert "familyfin-web.service familyfin-api.service caddy.service" in restore
     assert "FAMILY_FINANCE_DATABASE_URL=sqlite:////var/lib/familyfin/recovery-staging-" in restore
     assert "FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/recovery-staging-" in restore
+    assert '"$MATCHING_RELEASE/.venv/bin/family-finance" verify-backup "$BACKUP_DIR"' in restore
+    assert '"$MATCHING_RELEASE/.venv/bin/family-finance" verify-backup "$STAGING_ROOT"' in restore
+    assert '/opt/familyfin/current/.venv/bin/family-finance verify-backup "$STAGING_ROOT"' not in restore
+    assert restore.index('verify-backup "$STAGING_ROOT"') < restore.index("/opt/familyfin/current/.venv/bin/alembic upgrade head")
+    assert restore.index("/opt/familyfin/current/.venv/bin/alembic upgrade head") < restore.index("/opt/familyfin/current/.venv/bin/family-finance audit")
     assert 'sudo mv -- "$STAGING_ROOT" "$CANONICAL_ROOT"' in restore
     assert 'sudo mv -- "$CANONICAL_ROOT" "$PRESERVED_ROOT"' in restore
     assert "sudo systemctl start familyfin-api.service familyfin-web.service caddy.service" in restore

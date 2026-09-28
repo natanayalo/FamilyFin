@@ -15,7 +15,7 @@ Only the app/API uses the Tailscale network path. The application does not send 
 
 ## Host layout and installation
 
-Use a supported Linux host with systemd, Python 3.12, uv, Caddy v2, and the exact Node version pinned in [`.nvmrc`](../../.nvmrc) (currently `22.14.0`). Keep application code root-owned and read-only to service users. Create separate non-login accounts for the API and Next server so a web process cannot read the financial data root:
+Use a supported Linux host with systemd, Python 3.12, uv, rsync, Caddy v2, and the exact Node version pinned in [`.nvmrc`](../../.nvmrc) (currently `22.14.0`). Keep application code root-owned and read-only to service users. Create separate non-login accounts for the API and Next server so a web process cannot read the financial data root:
 
 ```sh
 sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin familyfin-api
@@ -179,22 +179,33 @@ For an actual recovery, keep it manual and operator-controlled:
    ```
 
    Confirm those units are stopped and no CLI or Streamlit process is using the data root.
-2. Select a complete snapshot from the protected volume. Verify it with `family-finance verify-backup` using the matching release; stop if any hash, schema, database, invariant, or archive-coverage check fails.
+2. Select a complete snapshot from the protected volume. Set `MATCHING_RELEASE` to the retained application release whose schema matches this snapshot; the path is specific to the host's release layout. Verify the snapshot with that release, and stop if any hash, schema, database, invariant, or archive-coverage check fails:
+
+   ```sh
+   BACKUP_DIR=/mnt/familyfin-backup/familyfin-YYYYMMDDTHHMMSSZ-PID
+   MATCHING_RELEASE=/path/to/matching-release
+   sudo -u familyfin-api env \
+     FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data \
+     PATH="$MATCHING_RELEASE/.venv/bin:/usr/bin:/bin" \
+     "$MATCHING_RELEASE/.venv/bin/family-finance" verify-backup "$BACKUP_DIR"
+   ```
+
 3. Create a unique staging directory beside the canonical data root, on the same filesystem. This rename procedure requires `/var/lib/familyfin/data` to be a directory on the `/var/lib/familyfin` filesystem, not a separate mountpoint. Copy the verified snapshot as one matched set, then verify the staged copy before changing it. For example:
 
    ```sh
    BACKUP_DIR=/mnt/familyfin-backup/familyfin-YYYYMMDDTHHMMSSZ-PID
+   MATCHING_RELEASE=/path/to/matching-release
    STAGING_ROOT=/var/lib/familyfin/recovery-staging-20260925T021500Z
    sudo install -d -o familyfin-api -g familyfin-api -m 0700 "$STAGING_ROOT"
    sudo -u familyfin-api rsync -a -- "$BACKUP_DIR"/ "$STAGING_ROOT"/
    sudo -u familyfin-api env \
      FAMILY_FINANCE_DATA_ROOT=/var/lib/familyfin/data \
-     PATH=/opt/familyfin/current/.venv/bin:/usr/bin:/bin \
-     /opt/familyfin/current/.venv/bin/family-finance verify-backup "$STAGING_ROOT"
+     PATH="$MATCHING_RELEASE/.venv/bin:/usr/bin:/bin" \
+     "$MATCHING_RELEASE/.venv/bin/family-finance" verify-backup "$STAGING_ROOT"
    ```
 
-   Stop if either verification fails. Do not mix a database and archive directories from different snapshots.
-4. Apply migrations to the staged database with `FAMILY_FINANCE_DATABASE_URL` set to its `family_finance.sqlite3` path, then run `family-finance audit` with `FAMILY_FINANCE_DATA_ROOT` set to the staging root. For the staging root above, run:
+   Use the same matching release for both pre-migration verifications. Stop if either verification fails. Do not mix a database and archive directories from different snapshots. The current release must not run `verify-backup` on this older-schema snapshot before migration because it rejects historical schema revisions.
+4. Apply migrations to the staged database with the current release's Alembic, then run the current release's `family-finance audit` with `FAMILY_FINANCE_DATA_ROOT` set to the staging root. For the staging root above, run:
 
    ```sh
    sudo -u familyfin-api env \
