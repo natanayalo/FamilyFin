@@ -69,10 +69,19 @@ class ApiTestClient:
         return getattr(self.client, name)
 
 
-def make_api(tmp_path, *, maximum_bytes=1024, maximum_compressed_bytes=25 * 1024 * 1024):
+def make_api(
+    tmp_path,
+    *,
+    maximum_bytes=1024,
+    maximum_compressed_bytes=25 * 1024 * 1024,
+    automation_backup_root=None,
+    automation_stability_delay_seconds=0.05,
+):
     settings = Settings(
         data_root=tmp_path,
         max_compressed_bytes=maximum_compressed_bytes,
+        automation_backup_root=automation_backup_root,
+        automation_stability_delay_seconds=automation_stability_delay_seconds,
         api_session_hours=1,
         api_max_request_bytes=maximum_bytes,
         api_public_origin="https://testserver",

@@ -38,7 +38,7 @@ class DashboardFilterQuery(BaseModel):
 
     start_month: str | None = None
     end_month: str | None = None
-    currency: str = "ILS"
+    currency: str | None = None
 
     @field_validator("start_month", "end_month", mode="before")
     @classmethod
@@ -52,7 +52,9 @@ class DashboardFilterQuery(BaseModel):
 
     @field_validator("currency")
     @classmethod
-    def normalize_currency(cls, value: str) -> str:
+    def normalize_currency(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = value.strip().upper()
         if not value or len(value) > 12:
             raise ValueError("Currency must be a non-empty short code")

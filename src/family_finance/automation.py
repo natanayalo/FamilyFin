@@ -75,13 +75,20 @@ class AutomationService:
                         run_id, started, status, dry_run, audit_passed, backup_path,
                         files, counts, issue_codes,
                     )
-                if self.settings.automation_backup_root is None:
-                    issue_codes.append("AUTOMATION_BACKUP_NOT_CONFIGURED")
-
                 paths = self._inbox_files()
-                # A backup is a run-level precondition for the first mutation.
-                # Dry runs do not mutate the database and therefore do not need one.
-                if paths and not dry_run and self.settings.automation_backup_root is not None:
+                # Any inbox pass can import financial data or move an input to
+                # processed/review. Fail closed before either outcome unless
+                # this run can create and verify its own pre-import backup.
+                # The CLI/scheduled runner and API share this method, so the
+                # safety gate cannot be bypassed by choosing another entrypoint.
+                if paths and not dry_run and self.settings.automation_backup_root is None:
+                    issue_codes.append("AUTOMATION_BACKUP_NOT_CONFIGURED")
+                    status = "blocked_backup"
+                    return self._finish(
+                        run_id, started, status, dry_run, audit_passed, backup_path,
+                        files, counts, issue_codes,
+                    )
+                if paths and not dry_run:
                     try:
                         backup_path = str(self._create_backup())
                     except Exception:  # noqa: BLE001
@@ -116,12 +123,9 @@ class AutomationService:
                 if dry_run:
                     status = "dry_run"
                 elif status != "failed_audit":
-                    non_configuration_issues = set(issue_codes) - {
-                        "AUTOMATION_BACKUP_NOT_CONFIGURED"
-                    }
                     status = (
                         "completed_with_warnings"
-                        if non_configuration_issues
+                        if issue_codes
                         else "completed"
                     )
                 # Attention files are a successful, non-mutating outcome of an
@@ -289,7 +293,11 @@ class AutomationService:
         root = self.settings.automation_backup_root
         if root is None:
             raise RuntimeError("Automation backup root is not configured")
+        if root.is_symlink():
+            raise RuntimeError("Automation backup destination is unavailable")
         root.mkdir(parents=True, exist_ok=True)
+        if not root.is_dir():
+            raise RuntimeError("Automation backup destination is unavailable")
         target = root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         target = target if not target.exists() else root / f"{target.name}-{uuid.uuid4().hex[:8]}"
         return BackupService(self.database, self.settings).create(target) and target

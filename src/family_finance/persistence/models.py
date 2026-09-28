@@ -87,6 +87,19 @@ class ActorAuditEventRow(Base):
     created_at: Mapped[str] = mapped_column(Text)
 
 
+class UserAppPreferencesRow(Base):
+    """Non-financial display defaults scoped to one household login."""
+
+    __tablename__ = "user_app_preferences"
+
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("api_users.user_id", ondelete="CASCADE"), primary_key=True
+    )
+    default_currency: Mapped[str] = mapped_column(Text, default="ILS")
+    default_months: Mapped[int] = mapped_column(Integer, default=12)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
 class AccountRow(Base):
     __tablename__ = "accounts"
 
@@ -863,4 +876,5 @@ __all__ = [
     "TransactionModel",
     "TransactionRow",
     "TransactionSourceRow",
+    "UserAppPreferencesRow",
 ]

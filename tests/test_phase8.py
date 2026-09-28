@@ -9,7 +9,11 @@ from family_finance.automation import AutomationService
 from family_finance.backup import BackupService
 from family_finance.config import Settings
 from family_finance.models import ImportStatus
-from family_finance.persistence.models import AutomationFileOutcomeRow, AutomationRunRow
+from family_finance.persistence.models import (
+    AutomationFileOutcomeRow,
+    AutomationRunRow,
+    TransactionRow,
+)
 from family_finance.services import ImportService
 
 
@@ -99,7 +103,10 @@ def test_verified_backup_copies_unstable_managed_files_without_hash(tmp_path):
 
 
 def test_reviewable_file_does_not_suppress_insight_refresh(tmp_path, monkeypatch):
-    settings = Settings(data_root=tmp_path / "local")
+    settings = Settings(
+        data_root=tmp_path / "local",
+        automation_backup_root=tmp_path / "automation-backups",
+    )
     app = ImportService(settings)
     refreshed: list[str] = []
     monkeypatch.setattr(
@@ -120,6 +127,49 @@ def test_reviewable_file_does_not_suppress_insight_refresh(tmp_path, monkeypatch
 
     assert result.status == "completed_with_warnings"
     assert refreshed == ["alerts", "summary"]
+
+
+def test_inbox_processing_fails_closed_when_backup_is_not_configured(tmp_path):
+    settings = Settings(data_root=tmp_path / "local")
+    app = ImportService(settings)
+    inbox_file = settings.automation_inbox_root / "invalid.xlsx"
+    inbox_file.write_bytes(b"not a workbook")
+
+    result = AutomationService(
+        settings=settings, database=app.database, import_service=app
+    ).run()
+
+    assert result.status == "blocked_backup"
+    assert result.issue_codes == ["AUTOMATION_BACKUP_NOT_CONFIGURED"]
+    assert inbox_file.is_file()
+    with app.database.session() as session:
+        assert session.query(AutomationRunRow).one().status == "blocked_backup"
+        assert session.query(AutomationFileOutcomeRow).count() == 0
+
+
+def test_failed_per_run_backup_blocks_before_financial_or_file_mutation(tmp_path, monkeypatch):
+    settings = Settings(
+        data_root=tmp_path / "local",
+        automation_backup_root=tmp_path / "automation-backups",
+    )
+    app = ImportService(settings)
+    inbox_file = settings.automation_inbox_root / "invalid.xlsx"
+    inbox_file.write_bytes(b"not a workbook")
+    automation = AutomationService(settings=settings, database=app.database, import_service=app)
+    def fail_backup():
+        raise OSError("disk error")
+
+    monkeypatch.setattr(automation, "_create_backup", fail_backup)
+
+    result = automation.run()
+
+    assert result.status == "blocked_backup"
+    assert result.issue_codes == ["AUTOMATION_BACKUP_FAILED"]
+    assert inbox_file.is_file()
+    with app.database.session() as session:
+        assert session.query(AutomationRunRow).one().status == "blocked_backup"
+        assert session.query(AutomationFileOutcomeRow).count() == 0
+        assert session.query(TransactionRow).count() == 0
 
 
 def test_dry_run_does_not_persist_automation_records(tmp_path):

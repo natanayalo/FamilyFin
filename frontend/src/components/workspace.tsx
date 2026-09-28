@@ -21,13 +21,14 @@ export const sections = [
   { id: "savings-forecast", href: "/savings-forecast", label: "תחזית חיסכון", icon: "⌇", title: "תחזית חיסכון", note: "תחזיות לפי תרחיש תכנון וגרסה נבחרת." },
   { id: "apartment-plan", href: "/apartment-plan", label: "תכנון דירה", icon: "⌂", title: "תכנון רכישת דירה", note: "חלופות רכישה, מקורות מימון ומשכנתה." },
   { id: "automation-insights", href: "/automation-insights", label: "תובנות ואוטומציה", icon: "✳", title: "תובנות ואוטומציה", note: "מצב תהליכים, התראות וסיכומים שמורים." },
+  { id: "settings", href: "/settings", label: "הגדרות", icon: "⚙", title: "הגדרות", note: "העדפות תצוגה, עדכניות נתונים, התראות וחיבורים." },
 ];
 
 const mobilePrimaryIds = new Set(["dashboard", "expenses", "planning", "net-worth"]);
 const mobileMoreGroups = [
   { label: "בדיקה וסיווג", items: ["data-quality", "classification"] },
   { label: "תכנון מתקדם", items: ["savings-forecast", "apartment-plan"] },
-  { label: "ניהול", items: ["automation-insights"] },
+  { label: "ניהול", items: ["automation-insights", "settings"] },
 ];
 
 function SectionLink({ id, mobile = false }: { id: string; mobile?: boolean }) {
