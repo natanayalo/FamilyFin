@@ -9,6 +9,20 @@ import type {
   ScenarioComparison,
 } from "./types";
 
+function editableItem(item: PlanningItem, includeSourceReference = false) {
+  return {
+    ...(includeSourceReference && item.id ? { source_item_id: item.id } : {}),
+    kind: item.kind,
+    label: item.label,
+    category: item.category,
+    amount: item.amount,
+    frequency: item.frequency,
+    start_month: item.start_month,
+    end_month: item.end_month,
+    occurrence_month: item.occurrence_month,
+  };
+}
+
 export function getScenarios(includeArchived = true) {
   return apiRequest<PlanningScenario[]>(`/planning/scenarios?include_archived=${includeArchived}`);
 }
@@ -45,13 +59,16 @@ export function createScenario(body: {
   items: PlanningItem[];
   notes: string;
 }) {
-  return apiRequest<PlanningScenario>("/planning/scenarios", { method: "POST", body: JSON.stringify(body) });
+  return apiRequest<PlanningScenario>("/planning/scenarios", {
+    method: "POST",
+    body: JSON.stringify({ ...body, items: body.items.map((item) => editableItem(item)) }),
+  });
 }
 
 export function postProjection(scenarioId: string, expectedRevisionNumber: number, items: PlanningItem[]) {
   return apiRequest<PlanningProjection>(`/planning/scenarios/${encodeURIComponent(scenarioId)}/projections`, {
     method: "POST",
-    body: JSON.stringify({ expected_revision_number: expectedRevisionNumber, items }),
+    body: JSON.stringify({ expected_revision_number: expectedRevisionNumber, items: items.map((item) => editableItem(item)) }),
   });
 }
 
@@ -63,7 +80,10 @@ export function saveRevision(scenarioId: string, body: {
 }) {
   return apiRequest<PlanningRevision>(`/planning/scenarios/${encodeURIComponent(scenarioId)}/revisions`, {
     method: "POST",
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      ...body,
+      items: body.items.map((item) => editableItem(item, true)),
+    }),
   });
 }
 
