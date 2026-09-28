@@ -212,7 +212,7 @@ test("mobile navigation keeps four primary links and groups secondary pages unde
     await moreButton.press("Enter");
     await expect(moreButton).toHaveAttribute("aria-expanded", "true");
     const menu = page.locator("#mobile-more-panel");
-    await expect(menu.getByRole("link")).toHaveCount(5);
+    await expect(menu.getByRole("link")).toHaveCount(6);
     await expect(menu.getByRole("heading", { name: "בדיקה וסיווג" })).toBeVisible();
     await page.keyboard.press("Escape");
     await expect(moreButton).toHaveAttribute("aria-expanded", "false");

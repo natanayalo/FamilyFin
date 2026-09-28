@@ -105,6 +105,7 @@ describe("Operations and settings workflows", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "ביטול חיבור" }));
     await waitFor(() => expect(settingsApi.revokeSession).toHaveBeenCalledWith("private-other-session-id"));
-    expect(screen.getByText("נוצר: 28.9.2026, 15:00:00")).toBeVisible();
+    expect(screen.getByText("המכשיר הנוכחי")).toBeVisible();
+    expect(screen.getByText("חיבור פעיל")).toBeVisible();
   });
 });
