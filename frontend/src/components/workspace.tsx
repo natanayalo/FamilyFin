@@ -79,7 +79,6 @@ export function Workspace({ sectionId = "dashboard", children }: { sectionId?: s
       {signOutError && <div className="offline-banner" role="alert">{signOutError}</div>}
       <main className="content">
         <div className="page-heading"><div><div className="eyebrow">FamilyFin · מרחב משפחתי</div><h1>{section.title}</h1><p>{section.note}</p></div></div>
-        {auth.status === "signed-out" ? <EmptyState title="החיבור לחשבון הסתיים" description="התחברו מחדש כדי להמשיך לצפות בנתונים." action={<Link className="secondary-button" href="/">חזרה להתחברות</Link>} /> : children ?? (!online || auth.status === "offline" ? <ReconnectState /> : <Card className="module-card"><div className="module-placeholder"><div><strong>המסך מוכן לחיבור לשירות</strong>{section.note}<br />הנתונים יוצגו כאן לאחר חיבור מודול ה‑API המתאים.</div></div></Card>)}
         {auth.status === "signed-out" ? <EmptyState title="החיבור לחשבון הסתיים" description="התחברו מחדש כדי להמשיך לצפות בנתונים." action={<Link className="secondary-button" href="/">חזרה להתחברות</Link>} /> : !online || auth.status === "offline" ? <ReconnectState /> : children ?? <Card className="module-card"><div className="module-placeholder"><div><strong>המסך מוכן לחיבור לשירות</strong>{section.note}<br />הנתונים יוצגו כאן לאחר חיבור מודול ה‑API המתאים.</div></div></Card>}
         <Card className="status-strip"><span className="info-symbol" aria-hidden="true">i</span><span>המסך הזה אינו שומר מידע בדפדפן. כל נתון פיננסי זמין רק בחיבור מקוון מאומת.</span></Card>
       </main>

@@ -279,11 +279,14 @@ test("the in-app offline banner appears on disconnect and clears after reconnect
   const banner = page.locator(".offline-banner");
   await expect(banner).toContainText("החיבור נותק");
   await expect(page.getByText("מנותק", { exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "נדרש חיבור מאומת מחדש" })).toBeVisible();
+  await expect(page.locator(".dashboard-feature")).toHaveCount(0);
   await expect.poll(() => banner.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe("rgb(252, 245, 231)");
 
   await context.setOffline(false);
   await expect(page.getByText("מחובר", { exact: true })).toBeVisible();
   await expect(banner).toBeHidden();
+  await expect(page.locator(".dashboard-feature")).toBeVisible();
 });
 
 test("the offline shell and service worker cache only static assets", async ({ page, context }) => {
