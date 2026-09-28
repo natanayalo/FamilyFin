@@ -1921,7 +1921,6 @@ def main() -> None:
         st.Page(classification_page, title="Classification", icon="🏷️"),
         st.Page(planning_page, title="Planning", icon="📅"),
         st.Page(net_worth_page, title="Net Worth", icon="💎"),
-        st.Page(savings_forecast_page, title="Savings Forecast", icon="📈"),
         st.Page(apartment_plan_page, title="Apartment Plan", icon="🏠"),
         st.Page(automation_insights_page, title="Automation & Insights", icon="⚙️"),
     ]

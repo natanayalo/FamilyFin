@@ -1160,6 +1160,10 @@ class SavingsForecastService:
                     raise ForecastValidationError(
                         f"Forecast pool {pool.name!r} valuation provenance does not match the linked revision"
                     )
+                if pool.source_stale != balance.stale:
+                    raise ForecastValidationError(
+                        f"Forecast pool {pool.name!r} stale quality does not match the linked revision"
+                    )
         for case in snapshot.cases:
             self.engine.project(
                 revision,

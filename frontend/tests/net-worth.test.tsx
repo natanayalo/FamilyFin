@@ -2,6 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError, apiRequest } from "@/lib/api";
 import { getAccountHistory, getAccounts, getRevisions, getSummary, getSnapshots, getTrend } from "@/features/net-worth/api";
+import { compareForecastActual, getForecastRevisions, getForecasts } from "@/features/forecasts/api";
 import { NetWorthPage } from "@/features/net-worth/net-worth-page";
 
 vi.mock("@/lib/api", () => ({
@@ -25,6 +26,12 @@ vi.mock("@/features/net-worth/api", () => ({
   getSnapshots: vi.fn(),
   getTrend: vi.fn(),
   postCsvPreview: vi.fn(),
+}));
+
+vi.mock("@/features/forecasts/api", () => ({
+  compareForecastActual: vi.fn(),
+  getForecastRevisions: vi.fn(),
+  getForecasts: vi.fn(),
 }));
 
 const account = {
@@ -73,18 +80,52 @@ describe("Net Worth feature", () => {
       total_liabilities: "0", net_worth: "9007199254740993.12345", liquid_assets: "9007199254740993.12345",
       restricted_assets: "0", illiquid_assets: "0",
     }]);
+    vi.mocked(getForecasts).mockResolvedValue([]);
+    vi.mocked(getForecastRevisions).mockResolvedValue([]);
     vi.mocked(getAccountHistory).mockResolvedValue([]);
     vi.mocked(apiRequest).mockResolvedValue({ data: {} });
   });
 
-  it("shows service totals, observed trend, and defers the forecast chooser", async () => {
+  it("shows service totals, observed trend, and the forecast comparison section", async () => {
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
     expect(document.body.textContent).toContain("9,007,199,254,740,993.12345 ₪");
     expect(screen.getByRole("heading", { name: "רשימת חשבונות" })).toBeVisible();
     expect(screen.getByText("מגמת הון שנמדד")).toBeVisible();
-    expect(screen.getByText(/נקודת הקצה בצד השרת זמינה/)).toBeVisible();
-    expect(screen.getByText("ממתין למודול התחזית")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "השוואה לתחזית חיסכון" })).toBeVisible();
+    expect(screen.getByText("אין תחזיות שמורות להשוואה")).toBeVisible();
+  });
+
+  it("compares an exact observed and forecast revision and displays the service result", async () => {
+    vi.mocked(getForecasts).mockResolvedValue([{
+      forecast_id: "forecast-id", name: "תחזית", scenario_id: "scenario-id", source_revision_id: "plan-rev-id",
+      source_revision_number: 1, currency: "ILS", horizon_months: 36, current_revision_number: 2,
+      archived: false, clone_of_forecast_id: null, created_at: null, updated_at: null,
+    }]);
+    vi.mocked(getForecastRevisions).mockResolvedValue([
+      { revision_id: "forecast-rev-1", forecast_id: "forecast-id", revision_number: 1, source_revision_id: "plan-rev-id", source_revision_number: 1, policy_version: "v1", assumption_hash: "hash-1", created_at: null, notes: "" },
+      { revision_id: "forecast-rev-2", forecast_id: "forecast-id", revision_number: 2, source_revision_id: "plan-rev-id", source_revision_number: 1, policy_version: "v1", assumption_hash: "hash-2", created_at: null, notes: "" },
+    ]);
+    vi.mocked(compareForecastActual).mockResolvedValue({
+      forecast_id: "forecast-id", forecast_revision_id: "forecast-rev-1", forecast_revision_number: 1,
+      role: "baseline", observed_snapshot_revision_id: "revision-id", observed_snapshot_date: "2026-08-31",
+      projected_month: "2026-08-01", account_deltas: { cash: "300.25" }, projected_by_account: { cash: "900.25" },
+      observed_by_account: { cash: "1200.50" }, projected_total: "900.25", observed_total: "1200.50",
+      aggregate_delta: "300.25", timing_warning: null, valuation_date_warning: null,
+    });
+
+    render(<NetWorthPage />);
+    await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    await waitFor(() => expect(getForecastRevisions).toHaveBeenCalledWith("forecast-id"));
+    fireEvent.change(screen.getByLabelText("גרסה להשוואה"), { target: { value: "1" } });
+    fireEvent.click(screen.getByRole("button", { name: "השוואה לתחזית" }));
+
+    await waitFor(() => expect(compareForecastActual).toHaveBeenCalledWith("forecast-id", {
+      observed_snapshot_revision_id: "revision-id", forecast_revision_number: 1, role: "baseline",
+    }));
+    expect(screen.getByText("פער כולל (נמדד פחות צפוי)")).toBeVisible();
+    expect(screen.getAllByText(/300\.25/)[0]).toBeVisible();
+    expect(screen.getAllByText("מזומן").at(-1)).toBeVisible();
   });
 
   it("sends snapshot amounts as exact decimal strings with the current expected revision", async () => {
