@@ -1,6 +1,6 @@
 # FamilyFin PWA workspace
 
-This Next.js workspace owns the Hebrew-first browser shell and the same-origin API client. It is configured on Tailwind CSS 4 and the shadcn base-nova component conventions, with RTL generation, FamilyFin semantic color tokens, and system/light/dark theme support. It currently contains sign-in/session UX and route shells for the nine existing Streamlit sections. Feature modules will connect these routes to their matching `/api/v1` contracts in later work.
+This Next.js workspace owns the Hebrew-first browser shell and the same-origin API client. It is configured on Tailwind CSS 4 and the shadcn base-nova component conventions, with RTL generation, FamilyFin semantic color tokens, and system/light/dark theme support. It contains sign-in/session UX, route shells for the financial sections, and the API-connected Data Quality, FamilyBiz import, and reconciliation module.
 
 ## Local development
 
