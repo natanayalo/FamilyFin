@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
 from fastapi import Query, Request
@@ -11,8 +14,8 @@ from sqlalchemy import select
 from family_finance.api.app import ApiError, _envelope, authenticated_router
 from family_finance.api.audit import record_actor_audit
 from family_finance.api.routers.operations import operations_snapshot
-from family_finance.api.schemas.operations import AutomationRunBody
-from family_finance.automation import AutomationService
+from family_finance.api.schemas.operations import AttentionCommitBody, AutomationRunBody
+from family_finance.automation import AutomationBusyError, AutomationService
 from family_finance.persistence.models import AutomationRunRow
 
 router = authenticated_router(prefix="/automation")
@@ -64,6 +67,43 @@ def _inbox_summary(settings) -> dict[str, int]:
     }
 
 
+def _attention_service(request: Request) -> AutomationService:
+    return AutomationService(
+        settings=request.app.state.services.settings,
+        database=request.app.state.database,
+        import_service=request.app.state.services,
+    )
+
+
+def _attention_id(path: Path, review_root: Path) -> str:
+    # The API never accepts or returns a server filesystem path.
+    relative = path.relative_to(review_root).as_posix()
+    return hashlib.sha256(relative.encode("utf-8")).hexdigest()
+
+
+def _attention_path(request: Request, file_id: str) -> Path:
+    if len(file_id) != 64 or any(char not in "0123456789abcdef" for char in file_id):
+        raise ApiError(404, "ATTENTION_FILE_NOT_FOUND", "The attention file is unavailable")
+    service = _attention_service(request)
+    for path in service.list_attention_files():
+        if _attention_id(path, service.settings.automation_needs_review_root) == file_id:
+            return path
+    raise ApiError(404, "ATTENTION_FILE_NOT_FOUND", "The attention file is unavailable")
+
+
+def _record_attention_event(request: Request, outcome: str) -> None:
+    actor = request.state.authenticated_user
+    with request.app.state.database.api_write_unit_of_work() as session:
+        record_actor_audit(
+            session,
+            actor_id=actor.user_id,
+            event_type="automation.attention_commit",
+            target_type="automation_attention_file",
+            outcome=outcome,
+            request_id=request.state.request_id,
+        )
+
+
 @router.get("/status")
 def get_status(request: Request):
     database = request.app.state.database
@@ -87,6 +127,92 @@ def get_inbox_summary(request: Request):
     return _envelope(
         _inbox_summary(request.app.state.services.settings), request.state.request_id
     )
+
+
+@router.get("/attention-files")
+def list_attention_files(request: Request):
+    service = _attention_service(request)
+    root = service.settings.automation_needs_review_root
+    items = []
+    for path in service.list_attention_files():
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        items.append({
+            "id": _attention_id(path, root),
+            "size_bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, UTC).isoformat(),
+        })
+    return _envelope({"items": items}, request.state.request_id)
+
+
+@router.post("/attention-files/{file_id}/preflight")
+def preflight_attention_file(file_id: str, request: Request):
+    path = _attention_path(request, file_id)
+    try:
+        preview = _attention_service(request).preflight_attention(path)
+    except (OSError, ValueError):
+        raise ApiError(
+            422, "ATTENTION_PREFLIGHT_FAILED", "The attention file could not be previewed"
+        ) from None
+    return _envelope({
+        "file_id": file_id,
+        "file_sha256": preview.file_sha256,
+        "action": preview.action,
+        "duplicate_file": preview.duplicate_file,
+        "ambiguous_count": preview.ambiguous_count,
+        "reconciliation_count": preview.reconciliation_count,
+        "candidate_count": preview.candidate_count,
+        "warning_count": preview.warning_count,
+        "rejected_count": preview.rejected_count,
+        "issue_counts": preview.issue_counts,
+        "predicted_statistics": (
+            preview.predicted_statistics.model_dump(mode="json")
+            if preview.predicted_statistics else None
+        ),
+    }, request.state.request_id)
+
+
+@router.post("/attention-files/{file_id}/commit")
+def commit_attention_file(file_id: str, body: AttentionCommitBody, request: Request):
+    path = _attention_path(request, file_id)
+    snapshot = operations_snapshot(
+        request.app.state.database, request.app.state.services.settings
+    )
+    if not snapshot["run_now_allowed"]:
+        _record_attention_event(request, "blocked")
+        raise ApiError(
+            409, "AUTOMATION_NOT_READY",
+            "Attention-file commit requires a passing audit and ready backup destination",
+            fields={"reason": [snapshot["run_now_block_reason"] or "NOT_READY"]},
+        )
+    _record_attention_event(request, "requested")
+    try:
+        result = _attention_service(request).commit_attention(
+            path, expected_sha256=body.expected_sha256
+        )
+    except AutomationBusyError:
+        _record_attention_event(request, "blocked")
+        raise ApiError(409, "AUTOMATION_BUSY", "Another automation action is active") from None
+    except ValueError:
+        _record_attention_event(request, "blocked")
+        raise ApiError(
+            409, "ATTENTION_FILE_STALE",
+            "The file changed or is no longer eligible; preview it again",
+        ) from None
+    except (RuntimeError, OSError):
+        _record_attention_event(request, "blocked")
+        raise ApiError(
+            409, "ATTENTION_COMMIT_BLOCKED",
+            "The audit or verified pre-commit backup did not succeed",
+        ) from None
+    _record_attention_event(request, "success")
+    return _envelope({
+        "batch_id": result.batch_id,
+        "status": result.status.value,
+        "statistics": result.statistics.model_dump(mode="json"),
+    }, request.state.request_id)
 
 
 @router.get("/runs")

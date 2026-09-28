@@ -168,7 +168,9 @@ class AutomationService:
         target = self._safe_inbox_or_review_path(path)
         return self.import_service.preflight_import(target.read_bytes(), target.name)
 
-    def commit_attention(self, path: str | Path) -> object:
+    def commit_attention(
+        self, path: str | Path, *, expected_sha256: str | None = None
+    ) -> object:
         """Commit an attention file only after audit and a verified fresh backup."""
         with self._process_lock():
             try:
@@ -196,6 +198,8 @@ class AutomationService:
             target = self._safe_inbox_or_review_path(path)
             payload = target.read_bytes()
             digest = hashlib.sha256(payload).hexdigest()
+            if expected_sha256 is not None and digest != expected_sha256:
+                raise ValueError("Attention file changed after preflight")
             preview = self.import_service.preflight_import(payload, target.name)
             if preview.action == "needs_review" and preview.duplicate_file is False:
                 result = self.import_service.commit_import(

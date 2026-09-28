@@ -3,7 +3,11 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ApiRequestError } from "@/lib/api";
-import { getAutomationRuns, getAutomationStatus, startAutomation, type AutomationRun, type AutomationStatus } from "./api";
+import {
+  commitAttentionFile, getAttentionFiles, getAutomationRuns, getAutomationStatus,
+  preflightAttentionFile, startAutomation, type AttentionFile, type AttentionPreflight,
+  type AutomationRun, type AutomationStatus,
+} from "./api";
 import { InsightPreferencesFeature } from "@/features/insight-preferences/insight-preferences-feature";
 import "./operations.css";
 
@@ -50,6 +54,86 @@ function RunRow({ run }: { run: AutomationRun }) {
     <span>{total} קבצים</span>
     {run.issue_codes.length > 0 && <span className="operations-issue-list">{run.issue_codes.map(issueLabel).join(" · ")}</span>}
   </li>;
+}
+
+function AttentionReview({ ready }: { ready: boolean }) {
+  const [files, setFiles] = useState<AttentionFile[]>([]);
+  const [selected, setSelected] = useState<string | null>(null);
+  const [preview, setPreview] = useState<AttentionPreflight | null>(null);
+  const [confirmed, setConfirmed] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [message, setMessage] = useState("");
+
+  const refresh = useCallback(async () => {
+    try {
+      const response = await getAttentionFiles();
+      setFiles(response.data.items);
+    } catch (reason) {
+      setError(reason instanceof ApiRequestError ? reason.message : "לא ניתן לטעון קבצים לבדיקה.");
+    }
+  }, []);
+  useEffect(() => { void refresh(); }, [refresh]);
+
+  const inspect = async (fileId: string) => {
+    setBusy(true);
+    setSelected(fileId);
+    setPreview(null);
+    setConfirmed(false);
+    setMessage("");
+    setError("");
+    try {
+      const response = await preflightAttentionFile(fileId);
+      setPreview(response.data);
+    } catch (reason) {
+      setError(reason instanceof ApiRequestError ? reason.message : "בדיקת הקובץ נכשלה.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const commit = async () => {
+    if (!selected || !preview || !confirmed || !ready) return;
+    setBusy(true);
+    setError("");
+    setMessage("");
+    try {
+      const response = await commitAttentionFile(selected, preview.file_sha256);
+      setMessage(`הטיפול בקובץ הושלם. מצב הייבוא: ${response.data.status}. בדקו מקרי התאמה פתוחים לפני אישורם.`);
+      setPreview(null);
+      setSelected(null);
+      setConfirmed(false);
+      await refresh();
+    } catch (reason) {
+      setPreview(null);
+      setConfirmed(false);
+      const detail = reason instanceof ApiRequestError ? `${reason.message} ` : "";
+      setError(`${detail}רעננו את הרשימה ובדקו את ההיסטוריה לפני ניסיון נוסף; ייתכן שהאישור הושלם.`);
+      await refresh();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return <section className="surface operations-panel" aria-labelledby="attention-heading">
+    <div className="operations-heading"><div><h2 id="attention-heading">קבצים לבדיקה</h2><p>בדיקה מוקדמת אינה משנה נתונים. אישור מפעיל את שירות Python לאחר ביקורת וגיבוי מאומת חדש.</p></div><Button variant="outline" disabled={busy} onClick={() => void refresh()}>רענון קבצים</Button></div>
+    {files.length === 0 ? <p className="operations-muted">אין קבצים שממתינים לבדיקה.</p> : <ul className="operations-attention-list">{files.map((file, index) => <li key={file.id}>
+      <div><strong>קובץ לבדיקה {index + 1}</strong><span>{Math.ceil(file.size_bytes / 1024)} KB · {timeLabel(file.modified_at)}</span></div>
+      <Button variant="outline" disabled={busy} onClick={() => void inspect(file.id)}>בדיקה מוקדמת</Button>
+    </li>)}</ul>}
+    {preview && selected && <div className="operations-attention-preview">
+      <h3>תוצאות בדיקה מוקדמת</h3>
+      <p>רשומות מועמדות: {preview.candidate_count} · התאמות לבדיקה: {preview.reconciliation_count} · אזהרות: {preview.warning_count} · נדחו: {preview.rejected_count}</p>
+      <p>{preview.duplicate_file ? "הקובץ כבר יובא. אישור יתעד כפילות ללא ייבוא חוזר." : "אישור ישמור את הקובץ ויפתח מקרי התאמה לבדיקה."}</p>
+      {preview.predicted_statistics && <p>חדשות: {preview.predicted_statistics.inserted} · עדכונים: {preview.predicted_statistics.updated} · ללא שינוי: {preview.predicted_statistics.unchanged}</p>}
+      {Object.keys(preview.issue_counts).length > 0 && <p>סוגי בעיות: {Object.entries(preview.issue_counts).map(([code, count]) => `${issueLabel(code)} (${count})`).join(" · ")}</p>}
+      <label><input type="checkbox" checked={confirmed} onChange={(event) => setConfirmed(event.target.checked)} /> אני מאשר/ת את תוצאות הבדיקה ואת יצירת הגיבוי לפני הייבוא.</label>
+      <Button disabled={busy || !ready || !confirmed || !["needs_review", "duplicate"].includes(preview.action)} onClick={() => void commit()}>אישור קובץ לבדיקה</Button>
+      {!ready && <p className="operations-note">האישור חסום עד שהביקורת ויעד הגיבוי יהיו מוכנים.</p>}
+    </div>}
+    {error && <p className="operations-error" role="alert">{error}</p>}
+    {message && <p className="operations-success" role="status">{message}</p>}
+  </section>;
 }
 
 export function OperationsFeature() {
@@ -126,6 +210,8 @@ export function OperationsFeature() {
         </details>
       </>}
     </section>
+
+    <AttentionReview ready={Boolean(status?.operations.run_now_allowed)} />
 
     <section className="surface operations-panel" aria-labelledby="automation-history-heading">
       <div className="operations-heading"><div><h2 id="automation-history-heading">היסטוריית ריצות</h2><p>היסטוריה מציגה סטטוסים, ספירות וקודי בעיה בלבד.</p></div></div>
