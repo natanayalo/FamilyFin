@@ -153,6 +153,49 @@ test("desktop navigation exposes the nine destinations in labeled groups", async
   await expect(navigation.getByText("בדיקה וניהול")).toBeVisible();
 });
 
+test("merged feature navigation mounts each module and gates it from the shared offline shell", async ({ page, context }) => {
+  await mockSession(page);
+  const envelope = (data: unknown) => ({ data, meta: { request_id: "merged-navigation" } });
+  await page.route("**/api/v1/dashboard/quality", (route) => route.fulfill({ status: 200, json: envelope({
+    accepted_rows: 0, freshness_date: null, covered_start: null, covered_end: null,
+    currencies: {}, issue_counts: {}, incomplete_months: [], open_reconciliation_cases: 0,
+    unclassified_transaction_count: 0, unclassified_absolute_amount: "0", source_coverage: "unknown", latest_import: null,
+  }) }));
+  await page.route("**/api/v1/imports/history**", (route) => route.fulfill({ status: 200, json: envelope({ items: [] }) }));
+  await page.route("**/api/v1/reconciliation/cases**", (route) => route.fulfill({ status: 200, json: envelope({ items: [] }) }));
+  await page.route("**/api/v1/classification/**", (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const data = path.endsWith("/coverage") ? {
+      month: null, currency: "ILS", total_accepted: 0, classified_count: 0, unclassified_count: 0,
+      review_required_count: 0, classification_coverage_percent: null, by_economic_class: {}, by_source: {}, issue_counts: {},
+    } : [];
+    return route.fulfill({ status: 200, json: envelope(data) });
+  });
+  await page.route("**/api/v1/net-worth/**", (route) => route.fulfill({ status: 200, json: envelope([]) }));
+
+  await page.goto("/dashboard");
+  const navigation = page.getByRole("navigation", { name: "ניווט ראשי", exact: true });
+  for (const [label, title, moduleHeading] of [
+    ["סקירה", "סקירה כללית", ""],
+    ["איכות נתונים", "איכות נתונים וייבוא", "העלאת קובץ FamilyBiz"],
+    ["סיווג", "סיווג עסקאות", "תור בדיקה"],
+    ["הון משפחתי", "הון משפחתי", "הון משפחתי"],
+  ]) {
+    await navigation.getByRole("link", { name: label, exact: true }).click();
+    await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+    const featureLocator = label === "סקירה" ? page.locator(".dashboard-feature") : page.getByRole("heading", { level: 2, name: moduleHeading });
+    await expect(featureLocator).toBeVisible();
+    await context.setOffline(true);
+    await expect(page.getByRole("heading", { name: "נדרש חיבור מאומת מחדש" })).toBeVisible();
+    await expect(featureLocator).toHaveCount(0);
+    await context.setOffline(false);
+    await expect(featureLocator).toBeVisible();
+  }
+  await page.getByRole("button", { name: "יציאה" }).click();
+  await expect(page.getByRole("heading", { name: "התחברות ל‑FamilyFin" })).toBeVisible();
+  await expect(page.getByRole("heading", { level: 2, name: "הון משפחתי" })).toHaveCount(0);
+});
+
 test("mobile navigation keeps four primary links and groups secondary pages under More", async ({ browser }) => {
   const context = await browser.newContext({ viewport: { width: 390, height: 844 }, deviceScaleFactor: 2, isMobile: true, hasTouch: true });
   try {
