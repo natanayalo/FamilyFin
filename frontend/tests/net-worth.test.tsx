@@ -1,6 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { apiRequest } from "@/lib/api";
+import { ApiRequestError, apiRequest } from "@/lib/api";
 import { getAccountHistory, getAccounts, getRevisions, getSummary, getSnapshots, getTrend } from "@/features/net-worth/api";
 import { NetWorthPage } from "@/features/net-worth/net-worth-page";
 
@@ -36,6 +36,7 @@ const snapshot = {
   snapshot_id: "snapshot-id", snapshot_date: "2026-08-31", current_revision_number: 1,
   archived: false, created_at: null, updated_at: null,
 };
+const latestSnapshot = { ...snapshot, current_revision_number: 2 };
 const revision = {
   snapshot_id: "snapshot-id", revision_id: "revision-id", revision_number: 1, snapshot_date: "2026-08-31",
   origin: "manual" as const, notes: "", quality_issues: [], quality_acknowledged: false, content_hash: "hash-1",
@@ -46,6 +47,12 @@ const revision = {
     owner_label: null, stale_after_days: 45, snapshot_date: "2026-08-31", stale: false,
   }],
   created_at: null, stale_account_keys: [], complete: true,
+};
+const latestRevision = {
+  ...revision,
+  revision_id: "revision-id-2",
+  revision_number: 2,
+  balances: revision.balances.map((balance) => ({ ...balance, amount_ils: "1200" })),
 };
 
 describe("Net Worth feature", () => {
@@ -97,6 +104,44 @@ describe("Net Worth feature", () => {
     expect(body.expected_revision_number).toBe(1);
     expect(body.balances[0].amount_ils).toBe("12345678901234567890.123456");
     expect(typeof body.balances[0].amount_ils).toBe("string");
+  });
+
+  it("keeps a revision draft blocked after STALE_REVISION and refresh until explicitly reopened", async () => {
+    render(<NetWorthPage />);
+    await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת גרסה חדשה" }));
+    fireEvent.change(await screen.findByLabelText("יתרה: מזומן"), { target: { value: "950" } });
+
+    vi.mocked(getSnapshots).mockResolvedValue([latestSnapshot]);
+    vi.mocked(getRevisions).mockResolvedValue([revision, latestRevision]);
+    vi.mocked(apiRequest).mockRejectedValueOnce(new ApiRequestError(
+      "stale revision",
+      409,
+      { code: "STALE_REVISION", message: "The snapshot changed" },
+    ));
+    fireEvent.click(screen.getAllByRole("button", { name: "שמירת גרסה חדשה" }).at(-1)!);
+
+    const oldDraftSave = screen.getAllByRole("button", { name: "שמירת גרסה חדשה" }).at(-1)!;
+    await screen.findByText("The snapshot changed");
+    expect(oldDraftSave).toBeDisabled();
+    expect(apiRequest).toHaveBeenCalledTimes(1);
+    const firstBody = JSON.parse(vi.mocked(apiRequest).mock.calls[0][1]?.body as string);
+    expect(firstBody.expected_revision_number).toBe(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "רענון נתונים" }));
+    const reopen = await screen.findByRole("button", { name: "פתיחת עורך על בסיס גרסה 2" });
+    expect(screen.getAllByRole("button", { name: "שמירת גרסה חדשה" }).at(-1)).toBeDisabled();
+    fireEvent.click(oldDraftSave);
+    expect(apiRequest).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(reopen);
+    const rebasedAmount = await screen.findByLabelText("יתרה: מזומן");
+    expect(rebasedAmount).toHaveValue("1200");
+    fireEvent.change(rebasedAmount, { target: { value: "1300" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "שמירת גרסה חדשה" }).at(-1)!);
+    await waitFor(() => expect(apiRequest).toHaveBeenCalledTimes(2));
+    const secondBody = JSON.parse(vi.mocked(apiRequest).mock.calls[1][1]?.body as string);
+    expect(secondBody.expected_revision_number).toBe(2);
   });
 
   it("sends the account version from the loaded row when editing account metadata", async () => {
