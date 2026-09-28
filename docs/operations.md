@@ -13,10 +13,14 @@ Place manually exported FamilyBiz `.xlsx` files in
     family-finance automate --dry-run
     family-finance automate
 
-Set `FAMILY_FINANCE_AUTOMATION_BACKUP_ROOT` to require a verified backup before
-the first commit in a run. Safe files move to `automation/processed/YYYY-MM/`;
-invalid, unstable, or ambiguous files move to `automation/needs-review/YYYY-MM/`.
-The runner never resolves reconciliation or classification questions.
+Set `FAMILY_FINANCE_AUTOMATION_BACKUP_ROOT` before processing any inbox files.
+For every non-dry run with inbox files, the runner first passes the read-only
+audit and creates and verifies that run's backup. If the destination is missing
+or backup creation/verification fails, the run stops before importing or moving
+any file. The CLI, scheduled runner, and authenticated PWA action share this
+same gate. Safe files move to `automation/processed/YYYY-MM/`; invalid,
+unstable, or ambiguous files move to `automation/needs-review/YYYY-MM/`. The
+runner never resolves reconciliation or classification questions.
 
 ## Audit and backup
 

@@ -73,6 +73,14 @@ class SessionCredentials:
     user: AuthenticatedUser
 
 
+@dataclass(frozen=True)
+class ActiveSession:
+    session_id: str
+    created_at: str
+    expires_at: str
+    current: bool
+
+
 def _now() -> datetime:
     return datetime.now(UTC)
 
@@ -368,6 +376,66 @@ class AuthService:
                 event_type="auth.sign_out",
                 request_id=request_id,
                 target_type=None,
+                outcome="success",
+            )
+
+    def list_sessions(self, *, user_id: str, current_token: str) -> list[ActiveSession]:
+        """List active sessions for one login without exposing other members' sessions."""
+
+        current_hash = _token_hash(current_token)
+        now = _now().isoformat()
+        with self.database.session() as session:
+            rows = session.execute(
+                select(ApiSessionRow)
+                .where(
+                    ApiSessionRow.user_id == user_id,
+                    ApiSessionRow.revoked_at.is_(None),
+                    ApiSessionRow.expires_at > now,
+                )
+                .order_by(ApiSessionRow.created_at.desc())
+            ).scalars().all()
+        return [
+            ActiveSession(
+                session_id=row.token_hash,
+                created_at=row.created_at,
+                expires_at=row.expires_at,
+                current=hmac.compare_digest(row.token_hash, current_hash),
+            )
+            for row in rows
+        ]
+
+    def revoke_session(
+        self,
+        *,
+        session_id: str,
+        user_id: str,
+        current_token: str,
+        request_id: str,
+    ) -> None:
+        """Revoke another active session belonging to the authenticated user."""
+
+        current_hash = _token_hash(current_token)
+        if not re.fullmatch(r"[a-f0-9]{64}", session_id):
+            raise ValueError("Session was not found")
+        if hmac.compare_digest(session_id, current_hash):
+            raise ValueError("Sign out to end the current session")
+        now = utc_now()
+        with self.database.write_session() as session:
+            row = session.get(ApiSessionRow, session_id)
+            if (
+                row is None
+                or row.user_id != user_id
+                or row.revoked_at is not None
+                or row.expires_at <= now
+            ):
+                raise ValueError("Session was not found")
+            row.revoked_at = now
+            self._audit(
+                session,
+                actor_id=user_id,
+                event_type="auth.session_revoke",
+                request_id=request_id,
+                target_type="session",
                 outcome="success",
             )
 

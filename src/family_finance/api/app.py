@@ -575,13 +575,21 @@ def create_app(
     app.include_router(auth_router)
     # Feature routes are registered after shared API primitives are initialized
     # so they can use the common authentication and error contracts.
+    from family_finance.api.routers.automation import router as automation_router
     from family_finance.api.routers.classification import router as classification_router
     from family_finance.api.routers.dashboard import router as dashboard_router
     from family_finance.api.routers.data_quality import router as data_quality_router
+    from family_finance.api.routers.insights import router as insights_router
+    from family_finance.api.routers.operations import router as operations_router
+    from family_finance.api.routers.settings import router as settings_router
 
     app.include_router(dashboard_router)
     app.include_router(data_quality_router)
     app.include_router(classification_router)
+    app.include_router(automation_router)
+    app.include_router(insights_router)
+    app.include_router(operations_router)
+    app.include_router(settings_router)
     # Keep each financial adapter feature-owned. The import is local to avoid
     # coupling the transport foundation to feature schema modules at import time.
     from family_finance.api.routers.net_worth import router as net_worth_router

@@ -9,6 +9,8 @@ import { ExpensesFeature } from "@/features/dashboard/expenses";
 import { OverviewFeature } from "@/features/dashboard/overview";
 import { ClassificationFeature } from "@/features/classification/ClassificationFeature";
 import { PlanningPage } from "@/features/planning/planning-page";
+import { OperationsFeature } from "@/features/operations/operations-feature";
+import { SettingsFeature } from "@/features/settings/settings-feature";
 
 export default function SectionPage() {
   const params = useParams<{ section: string }>();
@@ -24,7 +26,11 @@ export default function SectionPage() {
           ? <ClassificationFeature />
           : params.section === "planning"
             ? <PlanningPage />
-          : undefined;
+            : params.section === "automation-insights"
+              ? <OperationsFeature />
+              : params.section === "settings"
+                ? <SettingsFeature />
+                : undefined;
     return <Workspace sectionId={params.section}>{feature}</Workspace>;
   }
   if (auth.status === "offline") return <main className="reconnect-screen"><ReconnectState /></main>;

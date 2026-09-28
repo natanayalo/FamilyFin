@@ -19,14 +19,23 @@ from family_finance.api.schemas.dashboard import (
 )
 from family_finance.dashboard import DashboardService
 from family_finance.models import DashboardFilters
-from family_finance.persistence.models import TransactionRow
+from family_finance.persistence.models import TransactionRow, UserAppPreferencesRow
 
 router = authenticated_router(prefix="/dashboard")
 
 
-def _filter_model(query: DashboardFilterQuery, dashboard: DashboardService) -> DashboardFilters:
+def _filter_model(
+    query: DashboardFilterQuery,
+    dashboard: DashboardService,
+    request: Request,
+) -> DashboardFilters:
+    user_id = request.state.authenticated_user.user_id
+    with request.app.state.database.session() as session:
+        preferences = session.get(UserAppPreferencesRow, user_id)
+    currency = query.currency or (preferences.default_currency if preferences else "ILS")
+    months = preferences.default_months if preferences else 12
     if query.start_month is None and query.end_month is None:
-        return dashboard.default_filters(currency=query.currency)
+        return dashboard.default_filters(currency=currency, months=months)
     if query.start_month is None or query.end_month is None:
         raise ApiError(
             422,
@@ -46,7 +55,7 @@ def _filter_model(query: DashboardFilterQuery, dashboard: DashboardService) -> D
     return DashboardFilters(
         start_month=start_month,
         end_month=end_month,
-        currency=query.currency,
+        currency=currency,
     )
 
 
@@ -66,7 +75,7 @@ def overview(
     query: Annotated[DashboardFilterQuery, Depends()],
 ) -> dict:
     dashboard = _dashboard(request)
-    result = dashboard.overview(_filter_model(query, dashboard))
+    result = dashboard.overview(_filter_model(query, dashboard, request))
     return _envelope(result.model_dump(mode="json"), request)
 
 
@@ -76,7 +85,7 @@ def expenses(
     query: Annotated[DashboardFilterQuery, Depends()],
 ) -> dict:
     dashboard = _dashboard(request)
-    result = dashboard.expenses(_filter_model(query, dashboard))
+    result = dashboard.expenses(_filter_model(query, dashboard, request))
     return _envelope(result.model_dump(mode="json"), request)
 
 

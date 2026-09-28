@@ -55,11 +55,13 @@ class DashboardService:
             database, classifier=self.classifier, metrics=self.metrics
         )
 
-    def default_filters(self, currency: str = "ILS") -> DashboardFilters:
+    def default_filters(self, currency: str = "ILS", months: int = 12) -> DashboardFilters:
         dates = self.repository.all_accepted_booking_dates()
         end = max(dates).replace(day=1) if dates else datetime.now(UTC).date().replace(day=1)
         return DashboardFilters(
-            start_month=_month_shift(end, -11), end_month=end, currency=currency
+            start_month=_month_shift(end, -(max(1, min(60, months)) - 1)),
+            end_month=end,
+            currency=currency,
         )
 
     @staticmethod

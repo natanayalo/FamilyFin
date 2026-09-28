@@ -365,13 +365,18 @@ class InsightsService:
         return self.generate_monthly_summary(_previous_month(datetime.now(UTC).date()))
 
     def list_summary_revisions(
-        self, *, month: date | str | None = None, currency: str = "ILS"
+        self, *, month: date | str | None = None, currency: str = "ILS",
+        limit: int | None = None,
     ) -> list[MonthlySummaryRevision]:
         statement = select(MonthlySummaryRevisionRow).where(
             MonthlySummaryRevisionRow.currency == currency.upper()
         ).order_by(MonthlySummaryRevisionRow.month.desc(), MonthlySummaryRevisionRow.revision_number.desc())
         if month:
             statement = statement.where(MonthlySummaryRevisionRow.month == _month_start(month).isoformat())
+        if limit is not None:
+            if not 1 <= limit <= 100:
+                raise ValueError("Summary revision limit must be between 1 and 100")
+            statement = statement.limit(limit)
         with self.database.session() as session:
             rows = session.execute(statement).scalars().all()
         return [_summary_model(row) for row in rows]
