@@ -8,6 +8,7 @@ import { LoadingState, ReconnectState } from "@/components/ui/async-state";
 import { ExpensesFeature } from "@/features/dashboard/expenses";
 import { OverviewFeature } from "@/features/dashboard/overview";
 import { ClassificationFeature } from "@/features/classification/ClassificationFeature";
+import { PlanningPage } from "@/features/planning/planning-page";
 
 export default function SectionPage() {
   const params = useParams<{ section: string }>();
@@ -21,6 +22,8 @@ export default function SectionPage() {
         ? <ExpensesFeature />
         : params.section === "classification"
           ? <ClassificationFeature />
+          : params.section === "planning"
+            ? <PlanningPage />
           : undefined;
     return <Workspace sectionId={params.section}>{feature}</Workspace>;
   }
