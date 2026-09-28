@@ -123,6 +123,8 @@ export function NetWorthPage() {
   const [balanceDraft, setBalanceDraft] = useState<BalanceDraft>({});
   const [snapshotNotes, setSnapshotNotes] = useState("");
   const [qualityAcknowledged, setQualityAcknowledged] = useState(false);
+  const [composerBaseRevisionNumber, setComposerBaseRevisionNumber] = useState<number | null>(null);
+  const [composerStale, setComposerStale] = useState(false);
   const [needsReconcile, setNeedsReconcile] = useState(false);
   const [csvFile, setCsvFile] = useState<File | null>(null);
   const [csvPreview, setCsvPreview] = useState<CsvPreview | null>(null);
@@ -132,8 +134,11 @@ export function NetWorthPage() {
 
   const selectedSnapshot = snapshots.find((item) => item.snapshot_id === selectedSnapshotId) ?? null;
   const selectedRevision = revisions.find((item) => item.revision_id === selectedRevisionId) ?? revisions.at(-1) ?? null;
+  const composerHeadAdvanced = composerBaseRevisionNumber !== null
+    && selectedSnapshot !== null
+    && selectedSnapshot.current_revision_number !== composerBaseRevisionNumber;
 
-  async function loadData(): Promise<boolean> {
+  async function loadData(checkRevisionDraft = true): Promise<boolean> {
     setLoading(true);
     setPageError(null);
     try {
@@ -158,6 +163,15 @@ export function NetWorthPage() {
         setRevisions(nextRevisions);
         setSelectedRevisionId(nextRevisions.at(-1)?.revision_id ?? "");
         setSummary(nextSummary);
+        if (
+          checkRevisionDraft
+          && composer === "revision"
+          && composerBaseRevisionNumber !== null
+          && chosen.current_revision_number !== composerBaseRevisionNumber
+        ) {
+          setComposerStale(true);
+          setActionError({ message: "נשמרה גרסה חדשה בזמן שהטיוטה הייתה פתוחה. הטיוטה הישנה נעולה; פתחו אותה מחדש על בסיס הגרסה העדכנית." });
+        }
       } else {
         setRevisions([]);
         setSelectedRevisionId("");
@@ -173,7 +187,8 @@ export function NetWorthPage() {
     }
   }
 
-  useEffect(() => { void loadData(); }, []);
+  // The initial load has no open editor to compare; refreshes use the current render's callback.
+  useEffect(() => { void loadData(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (composer !== "new") return;
@@ -192,6 +207,8 @@ export function NetWorthPage() {
     selectedSnapshotRef.current = snapshotId;
     setSelectedSnapshotId(snapshotId);
     setComposer(null);
+    setComposerBaseRevisionNumber(null);
+    setComposerStale(false);
     setActionError(null);
     try {
       const [nextRevisions, nextSummary] = await Promise.all([
@@ -212,10 +229,15 @@ export function NetWorthPage() {
       await operation();
       setNotice(success);
       setComposer(null);
+      setComposerBaseRevisionNumber(null);
+      setComposerStale(false);
       setCsvPreview(null);
-      await loadData();
+      await loadData(false);
     } catch (error) {
       const parsed = displayError(error);
+      if (error instanceof ApiRequestError && error.apiError?.code === "STALE_REVISION" && composer === "revision") {
+        setComposerStale(true);
+      }
       if (error instanceof ApiRequestError && (error.status === 0 || error.status === 408 || error.status >= 500)) {
         setNeedsReconcile(true);
         setCsvPreview(null);
@@ -265,6 +287,8 @@ export function NetWorthPage() {
 
   function startNewSnapshot() {
     setComposer("new");
+    setComposerBaseRevisionNumber(null);
+    setComposerStale(false);
     setCaptureDate(todayIso());
     setBalanceDraft({});
     setSnapshotNotes("");
@@ -273,8 +297,10 @@ export function NetWorthPage() {
   }
 
   function startRevision() {
-    if (!selectedRevision) return;
+    if (!selectedRevision || !selectedSnapshot) return;
     setComposer("revision");
+    setComposerBaseRevisionNumber(selectedSnapshot.current_revision_number);
+    setComposerStale(false);
     setCaptureDate(selectedRevision.snapshot_date);
     setEditorAccounts(selectedRevision.balances.map((item) => ({
       account_key: item.account_key, display_name: item.account_name, side: item.side,
@@ -289,6 +315,7 @@ export function NetWorthPage() {
 
   async function saveSnapshot(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (composer === "revision" && (composerStale || composerBaseRevisionNumber === null)) return;
     const missing = editorAccounts.filter((account) => !balanceDraft[account.account_key]?.amount_ils.trim());
     if (missing.length) {
       setActionError({ message: `יש להזין סכום לכל חשבון: ${missing.map((item) => item.display_name).join(", ")}` });
@@ -306,10 +333,10 @@ export function NetWorthPage() {
       }), "תמונת המצב נשמרה כגרסה ראשונה.");
       return;
     }
-    if (!selectedSnapshot) return;
+    if (!selectedSnapshot || composerBaseRevisionNumber === null) return;
     await runMutation(() => apiRequest(`/net-worth/snapshots/${encodeURIComponent(selectedSnapshot.snapshot_id)}/revisions`, {
       method: "POST", body: JSON.stringify({
-        balances, expected_revision_number: selectedSnapshot.current_revision_number,
+        balances, expected_revision_number: composerBaseRevisionNumber,
         notes: snapshotNotes, quality_acknowledged: qualityAcknowledged,
       }),
     }), "נשמרה גרסה חדשה. הגרסאות הקודמות נשארו ללא שינוי.");
@@ -459,7 +486,7 @@ export function NetWorthPage() {
         </div>
         {selectedSnapshot && <div className={styles.snapshotDetail}>
           <div className={styles.detailHeader}><div><h4>{selectedSnapshot.snapshot_date}</h4><p>{selectedRevision ? `גרסה ${selectedRevision.revision_number} · ${selectedRevision.origin === "csv" ? "ייבוא CSV" : selectedRevision.origin === "restored" ? "שחזור" : "ידנית"}` : "טוענים גרסאות…"}</p></div>
-            <div className={styles.inlineActions}><Button size="sm" onClick={startRevision} disabled={saving || needsReconcile || selectedSnapshot.archived || !selectedRevision}>שמירת גרסה חדשה</Button><Button size="sm" variant="outline" disabled={saving || needsReconcile} onClick={() => void setArchived(selectedSnapshot)}>{selectedSnapshot.archived ? "החזרה לארכיון הפעיל" : "העברה לארכיון"}</Button></div>
+            <div className={styles.inlineActions}><Button size="sm" onClick={startRevision} disabled={saving || needsReconcile || selectedSnapshot.archived || !selectedRevision || (composerStale && !composerHeadAdvanced)}>שמירת גרסה חדשה</Button><Button size="sm" variant="outline" disabled={saving || needsReconcile} onClick={() => void setArchived(selectedSnapshot)}>{selectedSnapshot.archived ? "החזרה לארכיון הפעיל" : "העברה לארכיון"}</Button></div>
           </div>
           {selectedRevision && <>
             <div className={styles.revisionMeta}><span>גיבוב תוכן</span><code dir="ltr">{selectedRevision.content_hash}</code></div>
@@ -475,7 +502,11 @@ export function NetWorthPage() {
       </div>}
 
       {composer && <form className={styles.formCard} onSubmit={(event) => void saveSnapshot(event)}>
-        <div className={styles.formHeading}><h4>{composer === "new" ? "תמונת מצב חדשה" : `גרסה חדשה ל־${captureDate}`}</h4><button type="button" onClick={() => setComposer(null)}>סגירה</button></div>
+        <div className={styles.formHeading}><h4>{composer === "new" ? "תמונת מצב חדשה" : `גרסה חדשה ל־${captureDate}`}</h4><button type="button" onClick={() => { setComposer(null); setComposerBaseRevisionNumber(null); setComposerStale(false); }}>סגירה</button></div>
+        {composer === "revision" && composerStale && <div className={styles.warning} role="alert">
+          <p>הטיוטה מבוססת על גרסה קודמת ונעולה לשמירה. רעננו נתונים לפני פתיחת טיוטה חדשה.</p>
+          {composerHeadAdvanced && <Button type="button" variant="outline" onClick={startRevision}>פתיחת עורך על בסיס גרסה {selectedSnapshot?.current_revision_number}</Button>}
+        </div>}
         {composer === "new" && <Field label="תאריך התמונה"><input required type="date" value={captureDate} onChange={(event) => setCaptureDate(event.target.value)} /></Field>}
         {editorAccounts.length === 0 ? <p className={styles.muted}>אין חשבונות פעילים לתאריך הזה. עדכנו את תאריכי הפעילות ברשימת החשבונות.</p> : <div className={styles.tableWrap}><table><thead><tr><th>חשבון</th><th>יתרה בש״ח</th><th>תאריך הערכת שווי</th><th>הערה</th></tr></thead><tbody>
           {editorAccounts.map((account) => <tr key={account.account_key}><td>{account.display_name}<small>{account.side === "asset" ? "נכס" : "התחייבות"} · {categoryLabels[account.category] ?? account.category}</small></td>
@@ -486,7 +517,7 @@ export function NetWorthPage() {
         </tbody></table></div>}
         <Field label="הערות לתמונה"><textarea rows={2} maxLength={2000} value={snapshotNotes} onChange={(event) => setSnapshotNotes(event.target.value)} /></Field>
         <label className={styles.check}><input type="checkbox" checked={qualityAcknowledged} onChange={(event) => setQualityAcknowledged(event.target.checked)} /> אני מאשר/ת את אזהרות איכות הנתונים והערכת השווי, אם קיימות.</label>
-        <div className={styles.formActions}><Button type="submit" disabled={saving || needsReconcile || editorAccounts.length === 0}>{saving ? "שומר…" : composer === "new" ? "שמירת תמונת מצב" : "שמירת גרסה חדשה"}</Button><Button type="button" variant="outline" onClick={() => setComposer(null)}>ביטול</Button></div>
+        <div className={styles.formActions}><Button type="submit" disabled={saving || needsReconcile || composerStale || editorAccounts.length === 0}>{saving ? "שומר…" : composer === "new" ? "שמירת תמונת מצב" : "שמירת גרסה חדשה"}</Button><Button type="button" variant="outline" onClick={() => { setComposer(null); setComposerBaseRevisionNumber(null); setComposerStale(false); }}>ביטול</Button></div>
       </form>}
     </section>
 
