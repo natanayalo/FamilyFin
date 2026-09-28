@@ -1834,11 +1834,12 @@ def main() -> None:
         cols[1].metric("Last run", latest_run.status if latest_run else "Never")
         cols[2].metric("Inbox", len(automation._inbox_files()))
         st.caption(
-            "Backup: configured"
+            "Backup: configured (every mutation requires a fresh verified backup)"
             if service.settings.automation_backup_root is not None
-            else "Backup: not configured (commits remain local-only)"
+            else "Backup: not configured (automation and attention-file commits are blocked)"
         )
-        if st.button("Run now", type="primary", disabled=not audit.passed):
+        backup_configured = service.settings.automation_backup_root is not None
+        if st.button("Run now", type="primary", disabled=not audit.passed or not backup_configured):
             result = automation.run()
             st.session_state["automation_last_result"] = result.model_dump(mode="json")
             st.rerun()

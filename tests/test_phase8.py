@@ -4,6 +4,8 @@ import hashlib
 from datetime import UTC, datetime
 from types import SimpleNamespace
 
+import pytest
+
 from family_finance.audit import AuditService
 from family_finance.automation import AutomationService
 from family_finance.backup import BackupService
@@ -12,13 +14,44 @@ from family_finance.models import ImportStatus
 from family_finance.persistence.models import (
     AutomationFileOutcomeRow,
     AutomationRunRow,
+    ImportBatchRow,
+    SourceFileRow,
     TransactionRow,
 )
 from family_finance.services import ImportService
 
 
+def _attention_database_snapshot(database):
+    tables = (
+        AutomationRunRow.__table__,
+        AutomationFileOutcomeRow.__table__,
+        ImportBatchRow.__table__,
+        SourceFileRow.__table__,
+        TransactionRow.__table__,
+    )
+    with database.engine.connect() as connection:
+        return {
+            table.name: tuple(
+                tuple(row)
+                for row in connection.execute(
+                    table.select().order_by(*table.primary_key.columns)
+                ).all()
+            )
+            for table in tables
+        }
+
+
+def _attention_file(settings):
+    path = settings.automation_needs_review_root / "pending.xlsx"
+    path.write_bytes(b"attention workbook bytes")
+    return path
+
+
 def test_reviewing_attention_file_keeps_future_audits_passing(tmp_path):
-    settings = Settings(data_root=tmp_path / "local")
+    settings = Settings(
+        data_root=tmp_path / "local",
+        automation_backup_root=tmp_path / "automation-backups",
+    )
     app = ImportService(settings)
 
     class ReviewImportService:
@@ -32,6 +65,9 @@ def test_reviewing_attention_file_keeps_future_audits_passing(tmp_path):
 
         @staticmethod
         def commit_import(_payload, _token, _filename):
+            backups = list(settings.automation_backup_root.iterdir())
+            assert len(backups) == 1
+            assert BackupService(app.database, settings).verify(backups[0]).passed
             return SimpleNamespace(status=ImportStatus.NEEDS_REVIEW, batch_id=None)
 
     automation = AutomationService(
@@ -71,6 +107,87 @@ def test_reviewing_attention_file_keeps_future_audits_passing(tmp_path):
     assert stored.managed_path == str(
         next(settings.automation_processed_root.rglob("review.xlsx"))
     )
+
+
+def test_attention_commit_without_backup_configuration_leaves_file_and_database_untouched(tmp_path):
+    settings = Settings(data_root=tmp_path / "local")
+    app = ImportService(settings)
+    attention_path = _attention_file(settings)
+    before = _attention_database_snapshot(app.database)
+    automation = AutomationService(settings=settings, database=app.database, import_service=app)
+
+    with pytest.raises(RuntimeError, match="no backup destination is configured"):
+        automation.commit_attention(attention_path)
+
+    assert attention_path.read_bytes() == b"attention workbook bytes"
+    assert _attention_database_snapshot(app.database) == before
+
+
+def test_attention_commit_audit_failure_leaves_file_and_database_untouched(
+    tmp_path, monkeypatch
+):
+    settings = Settings(
+        data_root=tmp_path / "local",
+        automation_backup_root=tmp_path / "automation-backups",
+    )
+    app = ImportService(settings)
+    attention_path = _attention_file(settings)
+    before = _attention_database_snapshot(app.database)
+    monkeypatch.setattr(AuditService, "run", lambda _service: SimpleNamespace(passed=False))
+    automation = AutomationService(settings=settings, database=app.database, import_service=app)
+
+    with pytest.raises(RuntimeError, match="database/archive audit failed"):
+        automation.commit_attention(attention_path)
+
+    assert attention_path.read_bytes() == b"attention workbook bytes"
+    assert not settings.automation_backup_root.exists()
+    assert _attention_database_snapshot(app.database) == before
+
+
+def test_attention_commit_backup_creation_failure_leaves_file_and_database_untouched(
+    tmp_path, monkeypatch
+):
+    settings = Settings(
+        data_root=tmp_path / "local",
+        automation_backup_root=tmp_path / "automation-backups",
+    )
+    app = ImportService(settings)
+    attention_path = _attention_file(settings)
+    before = _attention_database_snapshot(app.database)
+
+    def fail_create(_service, _destination):
+        raise OSError("backup disk unavailable")
+
+    monkeypatch.setattr(BackupService, "create", fail_create)
+    automation = AutomationService(settings=settings, database=app.database, import_service=app)
+
+    with pytest.raises(RuntimeError, match="fresh pre-commit backup"):
+        automation.commit_attention(attention_path)
+
+    assert attention_path.read_bytes() == b"attention workbook bytes"
+    assert _attention_database_snapshot(app.database) == before
+
+
+def test_attention_commit_backup_verification_failure_leaves_file_and_database_untouched(
+    tmp_path, monkeypatch
+):
+    settings = Settings(
+        data_root=tmp_path / "local",
+        automation_backup_root=tmp_path / "automation-backups",
+    )
+    app = ImportService(settings)
+    attention_path = _attention_file(settings)
+    before = _attention_database_snapshot(app.database)
+    monkeypatch.setattr(
+        BackupService, "verify", lambda _service, _directory: SimpleNamespace(passed=False)
+    )
+    automation = AutomationService(settings=settings, database=app.database, import_service=app)
+
+    with pytest.raises(RuntimeError, match="fresh pre-commit backup"):
+        automation.commit_attention(attention_path)
+
+    assert attention_path.read_bytes() == b"attention workbook bytes"
+    assert _attention_database_snapshot(app.database) == before
 
 
 def test_verified_backup_copies_unstable_managed_files_without_hash(tmp_path):

@@ -169,27 +169,50 @@ class AutomationService:
         return self.import_service.preflight_import(target.read_bytes(), target.name)
 
     def commit_attention(self, path: str | Path) -> object:
-        """Explicitly commit an attention file, allowing reconciliation cases."""
-        target = self._safe_inbox_or_review_path(path)
-        payload = target.read_bytes()
-        digest = hashlib.sha256(payload).hexdigest()
-        preview = self.import_service.preflight_import(payload, target.name)
-        if preview.action == "needs_review" and preview.duplicate_file is False:
-            result = self.import_service.commit_import(
-                payload, preview.preview_token, target.name
-            )
-            if result.status.value in {"committed", "duplicate", "needs_review"}:
+        """Commit an attention file only after audit and a verified fresh backup."""
+        with self._process_lock():
+            try:
+                audit = AuditService(self.database, self.settings).run()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Attention-file commit blocked because the database/archive audit could not run."
+                ) from exc
+            if not audit.passed:
+                raise RuntimeError(
+                    "Attention-file commit blocked because the database/archive audit failed."
+                )
+            if self.settings.automation_backup_root is None:
+                raise RuntimeError(
+                    "Attention-file commit blocked because no backup destination is configured."
+                )
+            try:
+                self._create_backup()
+            except Exception as exc:
+                raise RuntimeError(
+                    "Attention-file commit blocked because the fresh pre-commit backup "
+                    "could not be created and verified."
+                ) from exc
+
+            target = self._safe_inbox_or_review_path(path)
+            payload = target.read_bytes()
+            digest = hashlib.sha256(payload).hexdigest()
+            preview = self.import_service.preflight_import(payload, target.name)
+            if preview.action == "needs_review" and preview.duplicate_file is False:
+                result = self.import_service.commit_import(
+                    payload, preview.preview_token, target.name
+                )
+                if result.status.value in {"committed", "duplicate", "needs_review"}:
+                    managed = self._move_managed(target, "processed", result.batch_id)
+                    self._update_attention_outcome(target, managed, digest, result)
+                return result
+            if preview.action == "duplicate":
+                result = self.import_service.commit_import(
+                    payload, preview.preview_token, target.name
+                )
                 managed = self._move_managed(target, "processed", result.batch_id)
                 self._update_attention_outcome(target, managed, digest, result)
-            return result
-        if preview.action == "duplicate":
-            result = self.import_service.commit_import(
-                payload, preview.preview_token, target.name
-            )
-            managed = self._move_managed(target, "processed", result.batch_id)
-            self._update_attention_outcome(target, managed, digest, result)
-            return result
-        raise ValueError("Only valid attention files can be committed for reconciliation")
+                return result
+            raise ValueError("Only valid attention files can be committed for reconciliation")
 
     def list_attention_files(self) -> list[Path]:
         return sorted(
@@ -300,7 +323,15 @@ class AutomationService:
             raise RuntimeError("Automation backup destination is unavailable")
         target = root / datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
         target = target if not target.exists() else root / f"{target.name}-{uuid.uuid4().hex[:8]}"
-        return BackupService(self.database, self.settings).create(target) and target
+        backup_service = BackupService(self.database, self.settings)
+        backup_service.create(target)
+        # create() verifies its temporary snapshot before the atomic rename.
+        # Verify the published destination too, so callers cross the mutation
+        # boundary only after the final backup path has been checked.
+        verification = backup_service.verify(target)
+        if not verification.passed:
+            raise RuntimeError("Automation backup verification failed")
+        return target
 
     def _move_attention(
         self,
@@ -368,9 +399,12 @@ class AutomationService:
                 outcome.import_batch_id = result.batch_id
 
     def _safe_inbox_or_review_path(self, value: str | Path) -> Path:
-        target = Path(value).expanduser().resolve()
+        candidate = Path(value).expanduser()
+        if candidate.is_symlink():
+            raise ValueError("Attention file is outside the automation file trees")
+        target = candidate.resolve()
         roots = [self.settings.automation_inbox_root.resolve(), self.settings.automation_needs_review_root.resolve()]
-        if not any(_under_root(target, root) for root in roots) or not target.is_file() or target.is_symlink():
+        if not any(_under_root(target, root) for root in roots) or not target.is_file():
             raise ValueError("Attention file is outside the automation file trees")
         return target
 
