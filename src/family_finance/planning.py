@@ -595,6 +595,7 @@ class PlanningService:
         issue_codes: Sequence[str] | None = None,
         completeness_snapshot: Sequence[dict[str, Any]] | None = None,
         expense_notes: Sequence[dict[str, Any]] | None = None,
+        acknowledge_provisional: bool | None = None,
     ) -> PlanningRevision:
         parsed = [self._coerce_item(item) for item in items]
         # Item rows belong to one immutable revision.  A new revision always
@@ -617,6 +618,10 @@ class PlanningService:
                     PlanningScenarioRevisionRow.revision_number == scenario.current_revision_number,
                 )
             ).scalar_one()
+            if current_revision.provisional and acknowledge_provisional is False:
+                raise PlanningValidationError(
+                    "Acknowledge the provisional planning source before saving this revision"
+                )
             revision_number = scenario.current_revision_number + 1
             revision_id = str(uuid.uuid4())
             session.add(
@@ -657,10 +662,19 @@ class PlanningService:
         *,
         expected_revision_number: int | None = None,
         notes: str = "Restored older revision",
+        acknowledge_provisional: bool | None = None,
     ) -> PlanningRevision:
-        old = self.get_revision(scenario_id, revision_number)
         current = self.get_scenario(scenario_id)
         expected = current.current_revision_number if expected_revision_number is None else expected_revision_number
+        if current.current_revision_number != expected:
+            raise StaleRevisionError(
+                f"Scenario {scenario_id} is at revision {current.current_revision_number}; expected {expected}"
+            )
+        old = self.get_revision(scenario_id, revision_number)
+        if old.provisional and acknowledge_provisional is False:
+            raise PlanningValidationError(
+                "Acknowledge the provisional planning source before restoring this revision"
+            )
         return self.save_revision(
             scenario_id,
             expected,
@@ -670,11 +684,22 @@ class PlanningService:
             issue_codes=old.issue_codes,
             completeness_snapshot=old.completeness_snapshot,
             expense_notes=old.expense_notes,
+            acknowledge_provisional=acknowledge_provisional,
         )
 
-    def clone_scenario(self, scenario_id: str, *, name: str | None = None) -> PlanningScenarioSummary:
+    def clone_scenario(
+        self,
+        scenario_id: str,
+        *,
+        name: str | None = None,
+        acknowledge_provisional: bool | None = None,
+    ) -> PlanningScenarioSummary:
         source = self.get_scenario(scenario_id)
         revision = self.get_revision(scenario_id)
+        if revision.provisional and acknowledge_provisional is False:
+            raise PlanningValidationError(
+                "Acknowledge the provisional planning source before cloning this scenario"
+            )
         return self._create_scenario(
             name=name or f"{source.name} (copy)",
             start_month=source.start_month,
@@ -971,12 +996,21 @@ class PlanningService:
 
     preview_historical_seed = preview_history_seed
 
-    def commit_history_seed(self, preview_token: str) -> PlanningScenarioSummary:
+    def commit_history_seed(
+        self,
+        preview_token: str,
+        *,
+        acknowledge_provisional: bool | None = None,
+    ) -> PlanningScenarioSummary:
         payload = self._decode_token(preview_token)
         if payload.get("origin") != PlanningSeedOrigin.HISTORICAL.value:
             raise PlanningPreviewStaleError("Preview origin does not match historical seed commit")
         if payload.get("baseline_batch_id") != self.database.latest_committed_batch_id():
             raise PlanningPreviewStaleError("Imported history changed after preview; preview again")
+        if payload.get("provisional") and acknowledge_provisional is False:
+            raise PlanningValidationError(
+                "Acknowledge the provisional historical source before committing this seed"
+            )
         items = [PlanningItem.model_validate(item) for item in payload["items"]]
         return self._create_scenario(
             name=payload["name"],
@@ -1089,7 +1123,6 @@ class PlanningService:
             "sha256": parsed["sha256"],
             "filename": filename,
             "parser_version": self.settings.planning_parser_version,
-            "parsed": parsed,
             "provisional": not all(check["passed"] for check in control_checks.values()),
             "issue_codes": issue_codes,
             "warnings": warnings,
@@ -1125,6 +1158,7 @@ class PlanningService:
         preview_token: str,
         *,
         mappings: dict[str, str] | None = None,
+        acknowledge_provisional: bool | None = None,
     ) -> PlanningScenarioSummary:
         payload = self._decode_token(preview_token)
         parsed = self.csv_parser.parse(file_bytes, filename=payload.get("filename"))
@@ -1163,6 +1197,10 @@ class PlanningService:
             for item in items
             if item.kind == PlanningItemKind.EXPENSE and item.category is None
         ]
+        if (payload.get("provisional") or unmapped_expenses) and acknowledge_provisional is False:
+            raise PlanningValidationError(
+                "Acknowledge the provisional CSV source and control gaps before committing this seed"
+            )
         final_issue_codes = sorted(
             {
                 code
