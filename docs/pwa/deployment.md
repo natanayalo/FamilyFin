@@ -21,21 +21,31 @@ Use a supported Linux host with systemd, Python 3.12, uv, rsync, Caddy v2, and t
 sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin familyfin-api
 sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin familyfin-web
 sudo install -d -o familyfin-api -g familyfin-api -m 0700 /var/lib/familyfin/data
-sudo install -d -o root -g root -m 0755 /opt/familyfin
+sudo install -d -o root -g root -m 0755 /opt/familyfin /opt/familyfin/releases
 ```
 
-Install a checked-out release at `/opt/familyfin/current`, owned by `root:root` and not writable by either service account. Build from the lockfiles in that release:
+Keep each checkout in `/opt/familyfin/releases/<commit-sha>` and make `/opt/familyfin/current` a symlink to the selected release. Keep releases root-owned and read-only to both service accounts. For the first release, clone the approved merged commit and build from its lockfiles:
 
 ```sh
-uv sync --locked --no-dev
-/opt/node-v22.14.0/bin/npm ci --prefix frontend
-/opt/node-v22.14.0/bin/npm run build --prefix frontend
+RELEASE_ID=<merged-commit-sha>
+RELEASE=/opt/familyfin/releases/$RELEASE_ID
+sudo git clone --no-checkout https://github.com/natanayalo/FamilyFin.git "$RELEASE"
+sudo git -C "$RELEASE" checkout --detach "$RELEASE_ID"
+cd "$RELEASE"
+sudo uv sync --locked --no-dev
+sudo /opt/node-v22.14.0/bin/npm ci --prefix "$RELEASE/frontend"
+sudo /opt/node-v22.14.0/bin/npm run build --prefix "$RELEASE/frontend"
+sudo chown -R root:root "$RELEASE"
+sudo chmod -R a-w "$RELEASE"
+sudo ln -s "$RELEASE" /opt/familyfin/current
 ```
 
-After the build, make only the Next runtime cache writable by `familyfin-web`:
+After the build, make only the Next runtime cache writable by `familyfin-web`, including files already created by the build:
 
 ```sh
 sudo install -d -o familyfin-web -g familyfin-web -m 0750 /opt/familyfin/current/frontend/.next/cache
+sudo chown -R familyfin-web:familyfin-web /opt/familyfin/current/frontend/.next/cache
+sudo chmod -R u+rwX,go-rwx /opt/familyfin/current/frontend/.next/cache
 ```
 
 Install the sample environment file with owner-only-by-group access, then replace the example MagicDNS hostname everywhere it appears:
@@ -59,7 +69,11 @@ It creates two equal-permission accounts and `api-secret.key` with mode `0600`. 
 
 Install the included systemd units under `/etc/systemd/system/`. They run one API worker, bind the Next server to `127.0.0.1:3000`, use restricted service accounts, and give only the API account write access to `/var/lib/familyfin/data`. The Next process can read the built app but cannot read that data directory.
 
+The API unit does not become ready until its database migration has completed and `/api/v1/health` can query the database and return `private, no-store`. The PWA unit waits for an HTTP 200 from Next. Each check has a 60-second deadline; a failed check fails the unit and lets systemd retry the process. Inspect service output through journald, for example `sudo journalctl -u familyfin-api.service -u familyfin-web.service --since today`. Uvicorn and Caddy request logging remain disabled; never enable request, cookie, upload, or financial-value logging.
+
 Add the Caddy site from [`familyfin.Caddyfile`](../../deploy/caddy/familyfin.Caddyfile) to the host's Caddy configuration. It binds only to `127.0.0.1:8080`, preserves the request host and origin through proxying, sends `/api/` to FastAPI, and sends all other paths to Next. Caddy's reverse proxy passes incoming headers, including `Host`, through by default; see the [Caddy reverse proxy reference](https://caddyserver.com/docs/caddyfile/directives/reverse_proxy). The sample does not enable access logging. Validate the full host Caddy configuration before reloading it:
+
+Caddy sends one-year HSTS to the browser over Tailscale Serve HTTPS, sets `Cache-Control: private, no-store` on every response, and removes the upstream `Server` header. Next also sets private no-store on its responses when run directly. The API sets a restrictive CSP on JSON responses. Next applies a CSP that allows same-origin resources and the inline scripts and styles required by the current Next runtime and theme initialization; it blocks external origins, plugins, framing, and unsafe script evaluation. Recheck the policy when the frontend runtime or asset sources change.
 
 ```sh
 sudo caddy validate --config /etc/caddy/Caddyfile
@@ -68,6 +82,44 @@ sudo systemctl enable --now familyfin-api.service familyfin-web.service caddy.se
 ```
 
 Do not bind FastAPI, Next, or Caddy to a LAN/public interface. Firewall host interfaces so only the tailnet entry point reaches the app. Do not configure shared proxy caching, request-body logging, or cookie/header logging.
+
+## Updates and rollback
+
+Keep application code in versioned release directories and keep the data root and encrypted backup volume outside those directories. Never build a release by copying a live data directory or backup into the checkout. Before each update, run the active application audit and create and verify a fresh backup on the mounted encrypted volume. Keep the current and previous release directories until the new release passes its checks.
+
+Build the new merged commit in a fresh `/opt/familyfin/releases/<commit-sha>` directory using the locked Python and Node dependencies shown above. Save `PREVIOUS_RELEASE=$(readlink -f /opt/familyfin/current)` before changing the link. If systemd units change, install the new unit files into `/etc/systemd/system/`; if the Caddy site changes, merge it into the full Caddyfile and validate it before continuing. Stop the backup timer and all app entry points, then atomically switch the release symlink while the app is down:
+
+```sh
+sudo systemctl stop familyfin-backup.timer familyfin-backup.service \
+  familyfin-web.service familyfin-api.service caddy.service
+sudo ln -s "$RELEASE" /opt/familyfin/current.next
+sudo mv -Tf /opt/familyfin/current.next /opt/familyfin/current
+sudo systemctl daemon-reload
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl start familyfin-api.service familyfin-web.service caddy.service
+```
+
+The API applies forward migrations before it passes its readiness check. Run the deployment health, login, upload-limit, and audit checks against the new release. Create and verify a second backup with the new release, then resume the timer:
+
+```sh
+sudo systemctl start familyfin-backup.service
+sudo systemctl show familyfin-backup.service -p Result
+# Continue only when Result=success and the new snapshot verifies.
+sudo systemctl start familyfin-backup.timer
+```
+
+Keep the verified pre-update backup and previous code release until the next restore drill succeeds.
+
+Use a code-only rollback only when you confirm that the API migration did not begin. Stop the services, restore the old symlink, and start the previous release:
+
+```sh
+sudo systemctl stop familyfin-web.service familyfin-api.service caddy.service
+sudo ln -s "$PREVIOUS_RELEASE" /opt/familyfin/current.rollback
+sudo mv -Tf /opt/familyfin/current.rollback /opt/familyfin/current
+sudo systemctl start familyfin-api.service familyfin-web.service caddy.service
+```
+
+Once a migration has completed, a code-only symlink rollback may not match the database schema. Restore the verified pre-update snapshot using the previous release as both the matching verifier and the selected `current` release, following [Restore practice and incident recovery](#restore-practice-and-incident-recovery). The restore procedure keeps the failed data tree and source backup intact until the old release passes its audit and health checks. Do not attempt an Alembic downgrade.
 
 ## Tailnet policy and Serve
 
@@ -115,7 +167,7 @@ After host activation, record results in the household's protected operations re
 
 1. `systemctl is-active familyfin-api familyfin-web caddy` reports all three active. `ss -ltnp` shows only loopback listeners for `127.0.0.1:3000`, `127.0.0.1:8000`, and `127.0.0.1:8080`.
 2. `tailscale serve status --json` maps the HTTPS service to `http://127.0.0.1:8080`; `tailscale funnel status --json` has no active endpoint. Inspect this after Tailscale restart and host reboot.
-3. From an approved tailnet device, load `https://HOST.ts.net` and call `https://HOST.ts.net/api/v1/health`. The health body reports availability only, and the API response includes `Cache-Control: private, no-store`. There must be no certificate warning or external runtime asset request.
+3. From an approved tailnet device, load `https://HOST.ts.net` and call `https://HOST.ts.net/api/v1/health`. The health body reports availability only, and both page and API responses include `Cache-Control: private, no-store`. The API and frontend responses include CSP; the HTTPS response includes one-year HSTS. There must be no certificate warning or external runtime asset request.
 4. From a tailnet device/user outside the grant, confirm port 443 is denied. From a non-tailnet device with no route into the tailnet, confirm the URL cannot connect. Also try the host's LAN address against ports 3000, 8000, and 8080; none should answer.
 5. Sign in as each household account on separate clients. Confirm both can use the same actions; sign out one session and verify it is rejected. Confirm a cross-origin write and a write without the session's CSRF token are rejected. Confirm the browser does not retain API responses, HTML, upload content, or financial drafts in persistent caches.
 6. Reboot the host, repeat the listener/Serve/Funnel/HTTPS checks, then check `family-finance audit` and the latest backup verification.
