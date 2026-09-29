@@ -76,6 +76,14 @@ def test_deployment_docs_require_tailnet_only_access_and_no_funnel() -> None:
     assert cache_chmod in update
     assert update.index(cache_chmod) < update.index(release_switch)
 
+    assert "T04 reconciliation-case resolution has atomic idempotent replay safety" in deployment
+    assert "Other financial mutations remain outcome-unknown after a transport failure" in deployment
+    assert "unless their route contract explicitly defines replay or recovery behavior" in deployment
+    assert "each run with inbox files creates and verifies a fresh pre-import backup" in deployment
+    assert "compares the current file's SHA-256 with the hash supplied by preflight" in deployment
+    assert "No financial mutation route currently claims automatic retry safety" not in deployment
+    assert "attention-file commits remain blocked" not in deployment
+
 
 def test_restore_activation_uses_the_canonical_writable_data_root() -> None:
     api_service = _read("deploy/systemd/familyfin-api.service")
