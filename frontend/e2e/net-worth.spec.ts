@@ -29,6 +29,19 @@ test("authenticated Net Worth route shows observed account history and exact ser
 
   await page.route("**/api/v1/net-worth/**", async (route) => {
     const path = new URL(route.request().url()).pathname;
+    if (path === "/api/v1/net-worth/forecast-comparisons") {
+      const body = route.request().postDataJSON() as Record<string, unknown>;
+      expect(body).toMatchObject({ forecast_id: "forecast-1", forecast_revision_number: 1, role: "baseline", observed_snapshot_revision_id: "revision-1" });
+      await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data: {
+        forecast_id: "forecast-1", forecast_revision_id: "forecast-revision-1", forecast_revision_number: 1,
+        role: "baseline", observed_snapshot_revision_id: "revision-1", observed_snapshot_date: "2026-08-31",
+        projected_month: "2026-08-01", account_deltas: { cash: "300.25" },
+        projected_by_account: { cash: "900.25" }, observed_by_account: { cash: "1200.50" },
+        projected_total: "900.25", observed_total: "1200.50", aggregate_delta: "300.25",
+        timing_warning: null, valuation_date_warning: null,
+      }, meta: { request_id: "fixture-request" } }) });
+      return;
+    }
     const responses: Record<string, unknown> = {
       "/api/v1/net-worth/accounts": [{
         id: "account-1", account_key: "cash", display_name: "מזומן", side: "asset", category: "cash",
@@ -65,11 +78,21 @@ test("authenticated Net Worth route shows observed account history and exact ser
       body: JSON.stringify({ data: responses[path] ?? [], meta: { request_id: "fixture-request" } }),
     });
   });
+  await page.route("**/api/v1/forecasts**", async (route) => {
+    const path = new URL(route.request().url()).pathname;
+    const data = path === "/api/v1/forecasts"
+      ? [{ forecast_id: "forecast-1", name: "תחזית משפחתית", scenario_id: "scenario-1", source_revision_id: "plan-revision-1", source_revision_number: 1, currency: "ILS", horizon_months: 36, current_revision_number: 2, archived: false, clone_of_forecast_id: null, created_at: null, updated_at: null }]
+      : [{ revision_id: "forecast-revision-1", forecast_id: "forecast-1", revision_number: 1, source_revision_id: "plan-revision-1", source_revision_number: 1, policy_version: "savings-forecast-v1", assumption_hash: "hash-1", created_at: "2026-08-01T00:00:00Z", notes: "" }, { revision_id: "forecast-revision-2", forecast_id: "forecast-1", revision_number: 2, source_revision_id: "plan-revision-1", source_revision_number: 1, policy_version: "savings-forecast-v1", assumption_hash: "hash-2", created_at: "2026-08-31T00:00:00Z", notes: "" }];
+    await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify({ data, meta: { request_id: "fixture-request" } }) });
+  });
 
   await page.goto("/net-worth");
   await expect(page.getByRole("heading", { name: "תמונת מצב נבחרת" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "רשימת חשבונות" })).toBeVisible();
   await expect(page.getByText("מזומן", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/900\.25/).first()).toBeVisible();
-  await expect(page.getByText("ממתין למודול התחזית")).toBeVisible();
+  await page.getByLabel("גרסה להשוואה").selectOption("1");
+  await page.getByRole("button", { name: "השוואה לתחזית" }).click();
+  await expect(page.getByText(/300\.25/).first()).toBeVisible();
+  await expect(page.getByText("מזומן", { exact: true }).last()).toBeVisible();
 });

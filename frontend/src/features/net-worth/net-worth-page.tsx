@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from "react";
 import { ApiRequestError, apiRequest } from "@/lib/api";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/async-state";
 import { Button } from "@/components/ui/button";
+import { compareForecastActual, getForecastRevisions, getForecasts } from "@/features/forecasts/api";
+import type { ForecastActualComparison, ForecastRevisionSummary, ForecastRole, ForecastSummary } from "@/features/forecasts/types";
 import {
   getAccountHistory,
   getAccounts,
@@ -108,6 +110,14 @@ export function NetWorthPage() {
   const [selectedRevisionId, setSelectedRevisionId] = useState("");
   const [summary, setSummary] = useState<NetWorthSummary | null>(null);
   const [trend, setTrend] = useState<TrendPoint[]>([]);
+  const [forecastChoices, setForecastChoices] = useState<ForecastSummary[]>([]);
+  const [forecastRevisions, setForecastRevisions] = useState<ForecastRevisionSummary[]>([]);
+  const [comparisonForecastId, setComparisonForecastId] = useState("");
+  const [comparisonRevisionNumber, setComparisonRevisionNumber] = useState(0);
+  const [comparisonRole, setComparisonRole] = useState<ForecastRole>("baseline");
+  const [forecastComparison, setForecastComparison] = useState<ForecastActualComparison | null>(null);
+  const [comparisonLoading, setComparisonLoading] = useState(false);
+  const [comparisonError, setComparisonError] = useState("");
   const [historyAccount, setHistoryAccount] = useState("");
   const [history, setHistory] = useState<AccountHistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -134,6 +144,7 @@ export function NetWorthPage() {
 
   const selectedSnapshot = snapshots.find((item) => item.snapshot_id === selectedSnapshotId) ?? null;
   const selectedRevision = revisions.find((item) => item.revision_id === selectedRevisionId) ?? revisions.at(-1) ?? null;
+  const selectedComparisonForecast = forecastChoices.find((item) => item.forecast_id === comparisonForecastId) ?? null;
   const composerHeadAdvanced = composerBaseRevisionNumber !== null
     && selectedSnapshot !== null
     && selectedSnapshot.current_revision_number !== composerBaseRevisionNumber;
@@ -191,6 +202,28 @@ export function NetWorthPage() {
   useEffect(() => { void loadData(false); }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
+    let current = true;
+    async function loadForecastChoices() {
+      try {
+        const choices = await getForecasts(false);
+        if (!current) return;
+        setForecastChoices(choices);
+        const first = choices[0];
+        if (!first) return;
+        setComparisonForecastId(first.forecast_id);
+        const history = await getForecastRevisions(first.forecast_id);
+        if (!current) return;
+        setForecastRevisions(history);
+        setComparisonRevisionNumber(first.current_revision_number);
+      } catch (error) {
+        if (current) setComparisonError(displayError(error).message);
+      }
+    }
+    void loadForecastChoices();
+    return () => { current = false; };
+  }, []);
+
+  useEffect(() => {
     if (composer !== "new") return;
     let current = true;
     void getAccounts({ asOf: captureDate }).then((items) => {
@@ -210,6 +243,7 @@ export function NetWorthPage() {
     setComposerBaseRevisionNumber(null);
     setComposerStale(false);
     setActionError(null);
+    setForecastComparison(null);
     try {
       const [nextRevisions, nextSummary] = await Promise.all([
         getRevisions(snapshotId),
@@ -219,6 +253,36 @@ export function NetWorthPage() {
       setSelectedRevisionId(nextRevisions.at(-1)?.revision_id ?? "");
       setSummary(nextSummary);
     } catch (error) { setActionError(displayError(error)); }
+  }
+
+  async function chooseComparisonForecast(forecastId: string) {
+    setComparisonForecastId(forecastId);
+    setForecastComparison(null);
+    setComparisonError("");
+    setForecastRevisions([]);
+    setComparisonRevisionNumber(0);
+    if (!forecastId) return;
+    try {
+      const history = await getForecastRevisions(forecastId);
+      setForecastRevisions(history);
+      const forecast = forecastChoices.find((item) => item.forecast_id === forecastId);
+      setComparisonRevisionNumber(forecast?.current_revision_number ?? history.at(-1)?.revision_number ?? 0);
+    } catch (error) { setComparisonError(displayError(error).message); }
+  }
+
+  async function runForecastComparison() {
+    if (!selectedComparisonForecast || !selectedRevision || !comparisonRevisionNumber) return;
+    setComparisonLoading(true);
+    setComparisonError("");
+    setForecastComparison(null);
+    try {
+      setForecastComparison(await compareForecastActual(selectedComparisonForecast.forecast_id, {
+        observed_snapshot_revision_id: selectedRevision.revision_id,
+        forecast_revision_number: comparisonRevisionNumber,
+        role: comparisonRole,
+      }));
+    } catch (error) { setComparisonError(displayError(error).message); }
+    finally { setComparisonLoading(false); }
   }
 
   async function runMutation(operation: () => Promise<unknown>, success: string) {
@@ -493,7 +557,7 @@ export function NetWorthPage() {
             {selectedRevision.quality_issues.length > 0 && <div className={styles.warning}>איכות: {selectedRevision.quality_issues.join(" · ")}</div>}
             <div className={styles.tableWrap}><table><thead><tr><th>חשבון</th><th>יתרה</th><th>הערכת שווי</th><th>מצב</th></tr></thead><tbody>{selectedRevision.balances.map((balance) => <tr key={balance.account_key}><td>{balance.account_name}</td><td><bdi>{formatIls(balance.amount_ils)}</bdi></td><td>{balance.valuation_date}</td><td>{balance.stale ? "הערכה ישנה" : "עדכנית"}</td></tr>)}</tbody></table></div>
             <div className={styles.revisionList}><h5>היסטוריית גרסאות</h5>{revisions.map((revision) => <div className={styles.revisionRow} key={revision.revision_id}>
-              <button type="button" className={revision.revision_id === selectedRevisionId ? styles.revisionCurrent : ""} onClick={() => setSelectedRevisionId(revision.revision_id)}>גרסה {revision.revision_number} · {revision.origin === "csv" ? "CSV" : revision.origin === "restored" ? "שוחזרה" : "ידנית"}</button>
+              <button type="button" className={revision.revision_id === selectedRevisionId ? styles.revisionCurrent : ""} onClick={() => { setSelectedRevisionId(revision.revision_id); setForecastComparison(null); }}>גרסה {revision.revision_number} · {revision.origin === "csv" ? "CSV" : revision.origin === "restored" ? "שוחזרה" : "ידנית"}</button>
               <span>{revision.created_at?.slice(0, 10) ?? revision.snapshot_date}</span>
               {revision.revision_number < selectedSnapshot.current_revision_number && <button type="button" disabled={saving || needsReconcile || selectedSnapshot.archived} onClick={() => void restoreRevision(revision)}>שחזור כגרסה חדשה</button>}
             </div>)}</div>
@@ -543,9 +607,32 @@ export function NetWorthPage() {
       {trend.length === 0 ? <EmptyState title="אין עדיין מגמת מדידה" description="שמרו יותר מתמונת מצב אחת כדי לעקוב אחר השינוי לאורך זמן." /> : <div className={styles.tableWrap}><table><thead><tr><th>תאריך</th><th>נכסים</th><th>התחייבויות</th><th>שווי נקי</th><th>נכסים נזילים</th></tr></thead><tbody>{trend.map((point) => <tr key={point.revision_id}><td>{point.snapshot_date}</td><td><bdi>{formatIls(point.total_assets)}</bdi></td><td><bdi>{formatIls(point.total_liabilities)}</bdi></td><td><bdi>{formatIls(point.net_worth)}</bdi></td><td><bdi>{formatIls(point.liquid_assets)}</bdi></td></tr>)}</tbody></table></div>}
     </section>
 
-    <section className={`${styles.section} ${styles.deferred}`} aria-labelledby="forecast-comparison-heading">
-      <div><h3 id="forecast-comparison-heading">השוואה לתחזית חיסכון</h3><p>השוואת גרסה מדודה לגרסה ותפקיד בתחזית קיימת תלויה בחוזה הקריאה של מודול התחזית. נקודת הקצה בצד השרת זמינה; בחירת תחזית והצגת ההשוואה יתחברו עם מודול התחזית.</p></div>
-      <span className={styles.badge}>ממתין למודול התחזית</span>
+    <section className={styles.section} aria-labelledby="forecast-comparison-heading">
+      <div className={styles.sectionHeading}><div><h3 id="forecast-comparison-heading">השוואה לתחזית חיסכון</h3><p>השוו את היתרה שנמדדה מול גרסה ותפקיד מדויקים בתחזית. בחרו תמונה וגרסה באזור תמונות המצב למעלה.</p></div></div>
+      {comparisonError && <div className={styles.alert} role="alert">{comparisonError}</div>}
+      {forecastChoices.length === 0 ? <EmptyState title="אין תחזיות שמורות להשוואה" description="שמרו תחזית חיסכון כדי להשוות תוצאות צפויות ליתרות מדודות." /> : <>
+        <div className={styles.formGrid}>
+          <Field label="תחזית שמורה"><select aria-label="תחזית להשוואה" value={comparisonForecastId} onChange={(event) => void chooseComparisonForecast(event.target.value)}><option value="">בחירת תחזית</option>{forecastChoices.map((forecast) => <option key={forecast.forecast_id} value={forecast.forecast_id}>{forecast.name} · גרסה {forecast.current_revision_number}</option>)}</select></Field>
+          <Field label="גרסת תחזית"><select aria-label="גרסה להשוואה" value={comparisonRevisionNumber || ""} onChange={(event) => { setComparisonRevisionNumber(Number(event.target.value)); setForecastComparison(null); }}><option value="">בחירת גרסה</option>{forecastRevisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number} · {revision.created_at?.slice(0, 10) ?? "תאריך לא זמין"}</option>)}</select></Field>
+          <Field label="מקרה תחזית"><select aria-label="מקרה תחזית להשוואה" value={comparisonRole} onChange={(event) => { setComparisonRole(event.target.value as ForecastRole); setForecastComparison(null); }}><option value="conservative">שמרני</option><option value="baseline">בסיסי</option><option value="optimistic">אופטימי</option></select></Field>
+        </div>
+        <div className={styles.comparisonSource}>
+          {selectedRevision ? <span>מקור שנמדד: {selectedSnapshot?.snapshot_date} · גרסה {selectedRevision.revision_number} <code dir="ltr">{selectedRevision.revision_id}</code></span> : <span>בחרו תמונת מצב וגרסה לשימוש בהשוואה.</span>}
+          <Button onClick={() => void runForecastComparison()} disabled={comparisonLoading || !selectedComparisonForecast || !comparisonRevisionNumber || !selectedRevision}>{comparisonLoading ? "משווה…" : "השוואה לתחזית"}</Button>
+        </div>
+        {forecastComparison && <div className={styles.comparisonResult} role="status">
+          <div className={styles.comparisonHeading}><strong>תוצאה לחודש {forecastComparison.projected_month}</strong><span>תחזית {forecastComparison.forecast_revision_number} · {forecastComparison.role === "baseline" ? "בסיסי" : forecastComparison.role === "conservative" ? "שמרני" : "אופטימי"}</span></div>
+          <div className={styles.metrics}>
+            <Metric label="פער כולל (נמדד פחות צפוי)" value={formatIls(forecastComparison.aggregate_delta)} emphasis />
+            <Metric label="סה״כ צפוי לחשבונות המקושרים" value={formatIls(forecastComparison.projected_total)} />
+            <Metric label="סה״כ נמדד באותם חשבונות" value={formatIls(forecastComparison.observed_total)} />
+          </div>
+          {forecastComparison.timing_warning && <div className={styles.warning}>{forecastComparison.timing_warning}</div>}
+          {forecastComparison.valuation_date_warning && <div className={styles.warning}>{forecastComparison.valuation_date_warning}</div>}
+          <div className={styles.tableWrap}><table><thead><tr><th>חשבון</th><th>צפוי</th><th>נמדד</th><th>פער</th></tr></thead><tbody>{Object.keys(forecastComparison.projected_by_account).map((key) => <tr key={key}><td>{accounts.find((account) => account.account_key === key)?.display_name ?? key}</td><td><bdi>{formatIls(forecastComparison.projected_by_account[key])}</bdi></td><td><bdi>{formatIls(forecastComparison.observed_by_account[key])}</bdi></td><td><bdi>{formatIls(forecastComparison.account_deltas[key])}</bdi></td></tr>)}</tbody></table></div>
+          <small className={styles.muted}>התחזית היא הערכה; העמודה הנמדדת מגיעה מגרסת תמונת המצב שנבחרה.</small>
+        </div>}
+      </>}
     </section>
   </div>;
 }

@@ -42,6 +42,11 @@
 .formHeading{border-bottom:1px solid var(--border);padding-bottom:10px}
 .formHeading h4{margin:0;font-size:15px}
 .formGrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:13px}
+.comparisonSource{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:11px 12px;border:1px solid var(--border);border-radius:10px;background:var(--muted);font-size:11px;line-height:1.6}
+.comparisonSource code{overflow-wrap:anywhere;font-size:10px}
+.comparisonResult{display:grid;gap:12px;padding:14px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--card) 84%,var(--secondary))}
+.comparisonHeading{display:flex;justify-content:space-between;gap:10px;flex-wrap:wrap;font-size:12px}
+.comparisonHeading span,.muted{color:var(--muted-foreground);font-size:11px}
 .field{display:grid;gap:6px;min-width:0;color:var(--foreground);font-size:12px;font-weight:500}
 .field input,.field select,.field textarea,.tableInput{width:100%;min-height:40px;border:1px solid var(--border);border-radius:8px;padding:8px 10px;background:var(--background);color:var(--foreground);font:inherit;font-size:12px}
 .field textarea{resize:vertical}
