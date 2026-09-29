@@ -607,8 +607,10 @@ def create_app(
     from family_finance.api.routers.forecasts import router as forecasts_router
     from family_finance.api.routers.net_worth import router as net_worth_router
     from family_finance.api.routers.planning import router as planning_router
+    from family_finance.api.routers.apartment import router as apartment_router
 
     app.include_router(net_worth_router)
     app.include_router(planning_router)
     app.include_router(forecasts_router)
+    app.include_router(apartment_router)
     return app
