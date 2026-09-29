@@ -14,8 +14,10 @@ Environment=FAMILY_FINANCE_API_PORT=8000
 Environment=PYTHONUNBUFFERED=1
 UMask=0077
 ExecStart=/opt/familyfin/current/.venv/bin/family-finance-api
+ExecStartPost=/opt/familyfin/current/.venv/bin/python /opt/familyfin/current/deploy/bin/wait-for-http http://127.0.0.1:8000/api/v1/health --api-health --timeout-seconds 60
 Restart=on-failure
 RestartSec=3s
+TimeoutStartSec=180s
 TimeoutStopSec=30s
 
 NoNewPrivileges=true

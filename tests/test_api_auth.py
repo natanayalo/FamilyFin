@@ -113,6 +113,8 @@ def test_two_account_bootstrap_login_csrf_revocation_and_safe_headers(tmp_path):
         assert health.status_code == 200
         assert health.json()["data"] == {"status": "ok"}
         assert health.headers["cache-control"] == "private, no-store"
+        assert "default-src 'none'" in health.headers["content-security-policy"]
+        assert "frame-ancestors 'none'" in health.headers["content-security-policy"]
         assert health.headers["x-request-id"]
 
         missing_session = client.get("/api/v1/auth/session")
@@ -208,6 +210,7 @@ def test_login_throttle_host_rejection_request_limit_and_host_password_recovery(
         )
         assert too_large.status_code == 413
         assert too_large.json()["error"]["code"] == "REQUEST_TOO_LARGE"
+        assert "content-security-policy" in too_large.headers
 
         # The FamilyBiz route gets its parser limit plus bounded multipart
         # overhead; the identical path still has a small limit for JSON.

@@ -1,0 +1,60 @@
+#!/usr/bin/env python3
+"""Wait for a loopback FamilyFin service to pass its HTTP readiness check."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+import time
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import Request, urlopen
+
+
+def check(url: str, *, api_health: bool) -> bool:
+    request = Request(url, headers={"Accept": "application/json" if api_health else "*/*"})
+    try:
+        with urlopen(request, timeout=2) as response:
+            if response.status != 200:
+                return False
+            if not api_health:
+                return True
+            cache_control = response.headers.get("Cache-Control", "").casefold()
+            if "private" not in cache_control or "no-store" not in cache_control:
+                return False
+            payload = json.load(response)
+            return payload.get("data", {}).get("status") == "ok"
+    except (HTTPError, URLError, TimeoutError, OSError, ValueError, AttributeError):
+        return False
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("url", help="HTTP URL bound to localhost, 127.0.0.1, or ::1")
+    parser.add_argument("--timeout-seconds", type=int, default=60)
+    parser.add_argument(
+        "--api-health",
+        action="store_true",
+        help="require the FamilyFin no-store health envelope",
+    )
+    args = parser.parse_args()
+
+    parsed = urlsplit(args.url)
+    if parsed.scheme != "http" or parsed.hostname not in {"localhost", "127.0.0.1", "::1"}:
+        parser.error("readiness checks must use an HTTP loopback URL")
+    if not 1 <= args.timeout_seconds <= 300:
+        parser.error("--timeout-seconds must be between 1 and 300")
+
+    deadline = time.monotonic() + args.timeout_seconds
+    while True:
+        if check(args.url, api_health=args.api_health):
+            return 0
+        if time.monotonic() >= deadline:
+            print("Timed out waiting for local HTTP readiness", file=sys.stderr)
+            return 1
+        time.sleep(min(1.0, max(0.0, deadline - time.monotonic())))
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

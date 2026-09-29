@@ -29,6 +29,10 @@ from family_finance.persistence.db import Database
 from family_finance.services import ImportService
 
 MULTIPART_OVERHEAD_BYTES = 1 * 1024 * 1024
+API_CONTENT_SECURITY_POLICY = (
+    "default-src 'none'; base-uri 'none'; form-action 'none'; "
+    "frame-ancestors 'none'; object-src 'none'"
+)
 MULTIPART_UPLOAD_ROUTE_LIMITS = {
     ("POST", "/api/v1/imports/familybiz/previews"): "max_compressed_bytes",
     ("POST", "/api/v1/imports/familybiz/commits"): "max_compressed_bytes",
@@ -138,6 +142,7 @@ class RequestContextMiddleware:
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
                 "X-Frame-Options": "DENY",
+                "Content-Security-Policy": API_CONTENT_SECURITY_POLICY,
             },
         )
         await response(scope, receive, send)
@@ -213,6 +218,7 @@ class RequestContextMiddleware:
                             "X-Request-ID": request_id,
                             "Cache-Control": "private, no-store",
                             "Retry-After": "1",
+                            "Content-Security-Policy": API_CONTENT_SECURITY_POLICY,
                         },
                     )
                     await response(scope, receive, send)
@@ -226,7 +232,11 @@ class RequestContextMiddleware:
                         "The request could not be completed",
                     ),
                     status_code=500,
-                    headers={"X-Request-ID": request_id, "Cache-Control": "private, no-store"},
+                    headers={
+                        "X-Request-ID": request_id,
+                        "Cache-Control": "private, no-store",
+                        "Content-Security-Policy": API_CONTENT_SECURITY_POLICY,
+                    },
                 )
                 await response(scope, receive, send)
                 return
@@ -269,6 +279,7 @@ class RequestContextMiddleware:
                         (b"x-content-type-options", b"nosniff"),
                         (b"referrer-policy", b"no-referrer"),
                         (b"x-frame-options", b"DENY"),
+                        (b"content-security-policy", API_CONTENT_SECURITY_POLICY.encode("ascii")),
                     ]
                 )
                 message["headers"] = raw_headers
@@ -340,6 +351,7 @@ class RequestSizeLimitMiddleware:
                 "X-Content-Type-Options": "nosniff",
                 "Referrer-Policy": "no-referrer",
                 "X-Frame-Options": "DENY",
+                "Content-Security-Policy": API_CONTENT_SECURITY_POLICY,
             },
         )
         await response(scope, receive, send)

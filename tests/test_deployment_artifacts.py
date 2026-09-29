@@ -13,6 +13,8 @@ def test_runtime_services_and_proxy_bind_only_to_loopback() -> None:
     web_service = _read("deploy/systemd/familyfin-web.service")
     caddy = _read("deploy/caddy/familyfin.Caddyfile")
     package = _read("frontend/package.json")
+    next_config = _read("frontend/next.config.ts")
+    api_healthcheck = _read("deploy/bin/wait-for-http")
     api_cli = _read("src/family_finance/api/cli.py")
 
     assert "family-finance-api" in api_service
@@ -26,6 +28,15 @@ def test_runtime_services_and_proxy_bind_only_to_loopback() -> None:
     assert "bind 127.0.0.1" in caddy
     assert "reverse_proxy 127.0.0.1:8000" in caddy
     assert "reverse_proxy 127.0.0.1:3000" in caddy
+    assert 'header Strict-Transport-Security "max-age=31536000"' in caddy
+    assert 'header Cache-Control "private, no-store"' in caddy
+    assert "ExecStartPost=" in api_service and "--api-health" in api_service
+    assert "ExecStartPost=" in web_service
+    assert "default-src 'none'" in _read("src/family_finance/api/app.py")
+    assert "default-src 'self'" in next_config
+    assert "frame-ancestors 'none'" in next_config
+    assert '"no-store"' in api_healthcheck
+    assert "localhost" in api_healthcheck and "127.0.0.1" in api_healthcheck
     assert "access_log" not in api_service.casefold()
     assert "log {" not in caddy
 
@@ -55,6 +66,23 @@ def test_deployment_docs_require_tailnet_only_access_and_no_funnel() -> None:
     assert "Funnel status must show no active endpoint" in deployment
     assert "non-tailnet device" in deployment
     assert "Cache-Control: private, no-store" in deployment
+    assert "## Updates and rollback" in deployment
+    assert "Do not attempt an Alembic downgrade" in deployment
+    assert "chmod -R u+rwX,go-rwx" in deployment
+    update = deployment.split("## Updates and rollback", 1)[1].split("## Backups, retention, and restore", 1)[0]
+    cache_chmod = 'sudo chmod -R u+rwX,go-rwx "$RELEASE/frontend/.next/cache"'
+    release_switch = 'sudo mv -Tf /opt/familyfin/current.next /opt/familyfin/current'
+    assert "sudo chown -R familyfin-web:familyfin-web \"$RELEASE/frontend/.next/cache\"" in update
+    assert cache_chmod in update
+    assert update.index(cache_chmod) < update.index(release_switch)
+
+    assert "T04 reconciliation-case resolution has atomic idempotent replay safety" in deployment
+    assert "Other financial mutations remain outcome-unknown after a transport failure" in deployment
+    assert "unless their route contract explicitly defines replay or recovery behavior" in deployment
+    assert "each run with inbox files creates and verifies a fresh pre-import backup" in deployment
+    assert "compares the current file's SHA-256 with the hash supplied by preflight" in deployment
+    assert "No financial mutation route currently claims automatic retry safety" not in deployment
+    assert "attention-file commits remain blocked" not in deployment
 
 
 def test_restore_activation_uses_the_canonical_writable_data_root() -> None:

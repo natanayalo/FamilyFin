@@ -3,6 +3,11 @@
 # loopback listener; Caddy keeps the browser's Host and Origin headers intact.
 :8080 {
 	bind 127.0.0.1
+	# Tailscale Serve terminates browser HTTPS and proxies over loopback HTTP.
+	# HSTS is returned to the browser so the private origin stays HTTPS-only.
+	header Strict-Transport-Security "max-age=31536000"
+	header Cache-Control "private, no-store"
+	header -Server
 
 	@api path /api /api/*
 	handle @api {
