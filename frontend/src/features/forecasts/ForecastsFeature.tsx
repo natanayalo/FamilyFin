@@ -37,6 +37,7 @@ import type {
   ForecastRole,
   ForecastSummary,
 } from "./types";
+import { readUnknownForecastMutation, storeUnknownForecastMutation } from "./unknown-mutation";
 import styles from "./forecasts.module.css";
 
 const roles: ForecastRole[] = ["conservative", "baseline", "optimistic"];
@@ -155,6 +156,10 @@ function describeError(error: unknown) {
   return error.apiError?.message || "בדקו את הנתונים ונסו שוב.";
 }
 
+function hasUnknownMutationOutcome(error: unknown) {
+  return error instanceof ApiRequestError && (error.status === 0 || error.status >= 500);
+}
+
 function itemLabel(item: PlanningItem) {
   return `${item.label} · ${item.kind === "savings_contribution" ? "הפקדה" : "משיכה"}`;
 }
@@ -184,6 +189,7 @@ export function ForecastsFeature() {
   const [preview, setPreview] = useState<ForecastDraft | null>(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [unknownOperation, setUnknownOperation] = useState(readUnknownForecastMutation);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
   const [showArchived, setShowArchived] = useState(true);
@@ -196,7 +202,15 @@ export function ForecastsFeature() {
   const selectedScenario = scenarios.find((item) => item.scenario_id === editor?.scenarioId) ?? null;
   const savingItems = sourceItems(sourceRevision);
 
-  async function refreshAll(preferredForecastId?: string, preferredRevisionNumber?: number) {
+  function markUnknownOperationReconciled() {
+    if (!unknownOperation) return;
+    const reconciled = { ...unknownOperation, reconciled: true };
+    storeUnknownForecastMutation(reconciled);
+    setUnknownOperation(reconciled);
+    if (unknownOperation.kind === "create") closeEditor();
+  }
+
+  async function refreshAll(preferredForecastId?: string, preferredRevisionNumber?: number): Promise<boolean> {
     setLoading(true);
     setError("");
     try {
@@ -217,7 +231,8 @@ export function ForecastsFeature() {
         setRevisions([]);
         setSelectedRevisionNumber(0);
         setDetail(null);
-        return;
+        markUnknownOperationReconciled();
+        return true;
       }
       const nextRevisions = await getForecastRevisions(chosen.forecast_id);
       setRevisions(nextRevisions);
@@ -226,8 +241,11 @@ export function ForecastsFeature() {
         : chosen.current_revision_number;
       setSelectedRevisionNumber(revisionNumber);
       setDetail(await getForecastProjection(chosen.forecast_id, revisionNumber));
+      markUnknownOperationReconciled();
+      return true;
     } catch (cause) {
       setError(describeError(cause));
+      return false;
     } finally {
       setLoading(false);
     }
@@ -274,7 +292,7 @@ export function ForecastsFeature() {
   }
 
   async function startCreate() {
-    if (!scenarios.length) return;
+    if (!scenarios.length || unknownOperation) return;
     setBusy(true);
     setError("");
     setNotice("");
@@ -446,7 +464,7 @@ export function ForecastsFeature() {
   }
 
   async function saveEditor() {
-    if (!editor || !preview) return;
+    if (!editor || !preview || (unknownOperation && editor.mode === "create")) return;
     if (editor.cases.some((item) => !item.confirmed)) {
       setError("עברו על שלושת המקרים ואשרו את ההנחות בכל כרטיס לפני השמירה.");
       return;
@@ -458,6 +476,7 @@ export function ForecastsFeature() {
     setBusy(true);
     setError("");
     setNotice("");
+    let createRequestPending = false;
     try {
       const payload = editorPayload(editor);
       // Re-run the deterministic engine with the exact reviewed confirmation state.
@@ -465,7 +484,9 @@ export function ForecastsFeature() {
       await previewForecast(payload);
       let saved: ForecastSummary | { forecast_id?: string; revision_number: number };
       if (editor.mode === "create") {
+        createRequestPending = true;
         saved = await createForecast({ ...payload, name: editor.name });
+        createRequestPending = false;
         setNotice("התחזית נשמרה בגרסה 1. ההנחות והתוצאות ההיסטוריות נשמרות כגרסה בלתי־ניתנת לשינוי.");
         closeEditor();
         await refreshAll(saved.forecast_id, saved.current_revision_number);
@@ -481,20 +502,45 @@ export function ForecastsFeature() {
         closeEditor();
         await refreshAll(editor.forecastId, result.revision_number);
       }
-    } catch (cause) { setError(describeError(cause)); }
+    } catch (cause) {
+      if (createRequestPending && hasUnknownMutationOutcome(cause)) {
+        const uncertain = { kind: "create" as const, reconciled: false };
+        storeUnknownForecastMutation(uncertain);
+        setUnknownOperation(uncertain);
+        setError("");
+      } else setError(describeError(cause));
+    }
     finally { setBusy(false); }
   }
 
-  async function runAction(operation: () => Promise<unknown>, message: string) {
+  async function runAction(operation: () => Promise<unknown>, message: string, unknownKind?: "clone") {
+    if (unknownOperation && unknownKind) return;
     setBusy(true);
     setError("");
     setNotice("");
+    let operationPending = true;
     try {
       await operation();
+      operationPending = false;
       setNotice(message);
       await refreshAll(selectedForecastId);
-    } catch (cause) { setError(describeError(cause)); }
+    } catch (cause) {
+      if (operationPending && unknownKind && hasUnknownMutationOutcome(cause)) {
+        const uncertain = { kind: unknownKind, reconciled: false };
+        storeUnknownForecastMutation(uncertain);
+        setUnknownOperation(uncertain);
+        setError("");
+      } else setError(describeError(cause));
+    }
     finally { setBusy(false); }
+  }
+
+  function closeUnknownOperation() {
+    if (!unknownOperation?.reconciled) return;
+    closeEditor();
+    storeUnknownForecastMutation(null);
+    setUnknownOperation(null);
+    setNotice("הפעולה הלא ודאית נסגרה לאחר רענון התחזיות. אפשר להתחיל פעולה חדשה.");
   }
 
   async function restoreSelectedRevision() {
@@ -515,8 +561,17 @@ export function ForecastsFeature() {
   return <div className={styles.page}>
     <div className={styles.toolbar}>
       <div><span className={styles.eyebrow}>36 חודשים · תחזית, לא מדידה</span><h2>תחזיות חיסכון</h2><p>כל תחזית נעולה לגרסה מדויקת של תרחיש תכנון וליתרות פתיחה מפורשות.</p></div>
-      <div className={styles.toolbarActions}><Button variant="outline" disabled={busy} onClick={() => void refreshAll(selectedForecastId, selectedRevisionNumber || undefined)}>רענון</Button><Button disabled={busy || !scenarios.length} onClick={() => void startCreate()}>תחזית חדשה</Button></div>
+      <div className={styles.toolbarActions}><Button variant="outline" disabled={busy} onClick={() => void refreshAll(selectedForecastId, selectedRevisionNumber || undefined)}>{unknownOperation && !unknownOperation.reconciled ? "רענון ובדיקת מצב" : "רענון"}</Button><Button disabled={busy || !scenarios.length || Boolean(unknownOperation)} onClick={() => void startCreate()}>תחזית חדשה</Button></div>
     </div>
+    {unknownOperation && <section className={styles.warning} role="status" aria-live="polite">
+      <strong>{unknownOperation.kind === "create" ? "לא ידוע אם התחזית נוצרה." : "לא ידוע אם העותק נוצר."}</strong>
+      <p>{unknownOperation.reconciled
+        ? "התחזיות רועננו. בדקו ברשימה אם הפעולה הושלמה; יצירה ושכפול עדיין חסומים כדי למנוע כפילות."
+        : "רעננו את התחזיות כדי לבדוק אם הפעולה הושלמה. עד אז אי אפשר לשמור או לשכפל שוב."}</p>
+      {unknownOperation.reconciled
+        ? <Button size="sm" variant="outline" onClick={closeUnknownOperation}>בדקתי את התחזיות וסגירת הפעולה הלא ודאית</Button>
+        : <Button size="sm" variant="outline" disabled={busy} onClick={() => void refreshAll(selectedForecastId, selectedRevisionNumber || undefined)}>רענון ובדיקת מצב</Button>}
+    </section>}
     {error && <ErrorBanner message={error} />}
     {notice && <div className={styles.notice} role="status">{notice}</div>}
 
@@ -528,6 +583,7 @@ export function ForecastsFeature() {
       clearPreview={() => setPreview(null)}
       closeEditor={closeEditor}
       saveEditor={() => void saveEditor()}
+      saveBlocked={Boolean(unknownOperation && editor.mode === "create")}
       calculatePreview={() => void calculatePreview()}
       busy={busy}
       preview={preview}
@@ -562,11 +618,11 @@ export function ForecastsFeature() {
         </div>
       </section>}
 
-      {!selectedForecast || !detail ? <section className={styles.section}><EmptyState title="אין תחזית להצגה" description={scenarios.length ? "צרו תחזית חדשה ובחרו תרחיש תכנון ויתרות פתיחה." : "צרו תרחיש תכנון לפני בניית תחזית חיסכון."} action={scenarios.length ? <Button onClick={() => void startCreate()}>יצירת תחזית</Button> : undefined} /></section> : <>
+      {!selectedForecast || !detail ? <section className={styles.section}><EmptyState title="אין תחזית להצגה" description={scenarios.length ? "צרו תחזית חדשה ובחרו תרחיש תכנון ויתרות פתיחה." : "צרו תרחיש תכנון לפני בניית תחזית חיסכון."} action={scenarios.length && !unknownOperation ? <Button onClick={() => void startCreate()}>יצירת תחזית</Button> : undefined} /></section> : <>
         <section className={styles.section} aria-labelledby="forecast-detail-heading">
           <div className={styles.sectionHeading}><div><span className={styles.eyebrow}>תוצאות מחושבות · לא יתרות שנמדדו</span><h3 id="forecast-detail-heading">{selectedForecast.name}</h3><p>{detail.snapshot.currency} · 36 חודשים · גרסת תחזית {detail.snapshot.revision_number}</p></div><div className={styles.actionRow}>
             <Button size="sm" onClick={() => void startEdit()} disabled={busy || selectedForecast.archived}>עריכת הנחות</Button>
-            <Button size="sm" variant="outline" onClick={() => void runAction(() => cloneForecast(selectedForecast.forecast_id), "נוצר עותק חדש של התחזית.")} disabled={busy}>שכפול</Button>
+            <Button size="sm" variant="outline" onClick={() => void runAction(() => cloneForecast(selectedForecast.forecast_id), "נוצר עותק חדש של התחזית.", "clone")} disabled={busy || Boolean(unknownOperation)}>שכפול</Button>
             <Button size="sm" variant="outline" onClick={() => void runAction(() => setForecastArchived(selectedForecast.forecast_id, !selectedForecast.archived), selectedForecast.archived ? "התחזית הוחזרה מהארכיון." : "התחזית הועברה לארכיון.")} disabled={busy}>{selectedForecast.archived ? "החזרה מהארכיון" : "העברה לארכיון"}</Button>
           </div></div>
           <div className={styles.summaryMeta}>
@@ -607,6 +663,7 @@ type EditorProps = {
   clearPreview: () => void;
   closeEditor: () => void;
   saveEditor: () => void;
+  saveBlocked: boolean;
   calculatePreview: () => void;
   busy: boolean;
   preview: ForecastDraft | null;
@@ -634,7 +691,7 @@ type EditorProps = {
 
 function Editor(props: EditorProps) {
   const {
-    editor, updateEditor, clearPreview, closeEditor, saveEditor, calculatePreview, busy, preview,
+    editor, updateEditor, clearPreview, closeEditor, saveEditor, saveBlocked, calculatePreview, busy, preview,
     scenarios, selectedScenario, planningRevisions, sourceRevision, sourceItems, onScenarioChange,
     onSourceRevisionChange, snapshots, seedSnapshotId, seedRevision, seedRevisionSummaries,
     seedAccountKeys, seedPoolTypes, seedError, eligibleSeedBalances, onSeedSnapshotChange,
@@ -743,7 +800,7 @@ function Editor(props: EditorProps) {
         {sourceRevision.provisional && <div className={styles.warning}><strong>הגרסה הזמנית כוללת:</strong> {sourceRevision.issue_codes.join(" · ")}<label className={styles.check}><input type="checkbox" checked={editor.provisionalAcknowledged} onChange={(event) => updateEditor((current) => ({ ...current, provisionalAcknowledged: event.target.checked }), false)} /> אני מאשר/ת במפורש מקור תכנון זמני זה.</label></div>}
         <div className={styles.confirmations}><strong>אישור הנחות לפני שמירה</strong><p>שינוי בקלט מנקה את האישורים ומחייב חישוב תצוגה מקדימה נוסף.</p><div className={styles.confirmGrid}>{roles.map((role) => <label className={styles.check} key={role}><input type="checkbox" checked={editor.cases.find((item) => item.role === role)?.confirmed ?? false} onChange={(event) => patchCase(role, (item) => ({ ...item, confirmed: event.target.checked }), false)} /> בדקתי ואישרתי את המקרה {roleLabels[role]}.</label>)}</div></div>
         {stalePools.length > 0 && !stalePools.every((pool) => pool.source_quality_acknowledged) && <div className={styles.warning}>יש לאשר את אזהרות יתרות המקור הישנות לכל קופה לפני שמירה.</div>}
-        <div className={styles.formActions}><Button onClick={saveEditor} disabled={busy || !canSave}>{busy ? "שומר…" : editor.mode === "create" ? "שמירת תחזית" : "שמירת גרסה חדשה"}</Button>{editor.mode === "edit" && <span className={styles.muted}>השמירה תיצור גרסה {editor.expectedRevisionNumber! + 1} ותשאיר גרסאות קודמות ללא שינוי.</span>}</div>
+        <div className={styles.formActions}><Button onClick={saveEditor} disabled={busy || saveBlocked || !canSave}>{busy ? "שומר…" : editor.mode === "create" ? "שמירת תחזית" : "שמירת גרסה חדשה"}</Button>{editor.mode === "edit" && <span className={styles.muted}>השמירה תיצור גרסה {editor.expectedRevisionNumber! + 1} ותשאיר גרסאות קודמות ללא שינוי.</span>}</div>
       </>}
     </div>}
   </section>;

@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 
 const session = {
   data: { user: { id: "fixture-user", display_name: "משתמשת בדיקה" }, csrf_token: "fixture-csrf" },
@@ -34,11 +34,16 @@ function cases() {
   }));
 }
 
-function forecastSummary(revisionNumber: number) {
+function forecastSummary(
+  revisionNumber: number,
+  forecastId = "forecast-1",
+  name = "תכנון משפחתי · תחזית חיסכון",
+  cloneOfForecastId: string | null = null,
+) {
   return {
-    forecast_id: "forecast-1", name: "תכנון משפחתי · תחזית חיסכון", scenario_id: "scenario-1",
+    forecast_id: forecastId, name, scenario_id: "scenario-1",
     source_revision_id: "planning-revision-1", source_revision_number: 1, currency: "ILS", horizon_months: 36,
-    current_revision_number: revisionNumber, archived: false, clone_of_forecast_id: null,
+    current_revision_number: revisionNumber, archived: false, clone_of_forecast_id: cloneOfForecastId,
     created_at: "2026-09-28T09:00:00Z", updated_at: "2026-09-28T09:00:00Z",
   };
 }
@@ -100,8 +105,7 @@ function draft(opening: string) {
   };
 }
 
-test("mobile RTL forecast flow creates, saves, and restores immutable revisions", async ({ page }) => {
-  await page.setViewportSize({ width: 390, height: 844 });
+async function installCommonRoutes(page: Page) {
   await page.route("**/api/v1/auth/session", async (route) => {
     if (route.request().method() === "GET") await route.fulfill({ status: 200, json: session });
     else await route.fulfill({ status: 204 });
@@ -117,6 +121,74 @@ test("mobile RTL forecast flow creates, saves, and restores immutable revisions"
   await page.route("**/api/v1/net-worth/**", async (route) => {
     await route.fulfill({ status: 200, json: { data: [], meta: { request_id: "forecast-fixture" } } });
   });
+}
+
+async function installUnknownMutationRoutes(page: Page, lostMutation: "create" | "clone", initiallyCreated = false) {
+  const forecasts = initiallyCreated ? [forecastSummary(1)] : [];
+  let createRequests = 0;
+  let cloneRequests = 0;
+  const envelope = (data: unknown) => ({ data, meta: { request_id: "forecast-fixture" } });
+  const revisionSummaries = [{
+    revision_id: "forecast-revision-1", forecast_id: "forecast-1", revision_number: 1,
+    source_revision_id: "planning-revision-1", source_revision_number: 1, policy_version: "savings-forecast-v1",
+    assumption_hash: "hash-1", created_at: "2026-09-01T09:00:00Z", notes: "",
+  }];
+  const detail = {
+    snapshot: forecastSnapshot(1, "1000.00"), draft: draft("1000.00"),
+    source_verification: {
+      at_creation: { scenario_id: "scenario-1", revision_id: "planning-revision-1", revision_number: 1, provisional: false, issue_codes: [] },
+      current: { scenario_id: "scenario-1", revision_id: "planning-revision-1", revision_number: 1, provisional: false, issue_codes: [] },
+    },
+  };
+  await page.route("**/api/v1/forecasts**", async (route) => {
+    const request = route.request();
+    const path = new URL(request.url()).pathname;
+    const method = request.method();
+    if (path === "/api/v1/forecasts" && method === "GET") {
+      return route.fulfill({ status: 200, json: envelope(forecasts) });
+    }
+    if (path === "/api/v1/forecasts" && method === "POST") {
+      createRequests += 1;
+      forecasts.push(forecastSummary(1)); // Simulate the database commit before the response is lost.
+      if (lostMutation === "create" && createRequests === 1) return route.abort("failed");
+      return route.fulfill({ status: 201, json: envelope(forecastSummary(1)) });
+    }
+    if (path === "/api/v1/forecasts/previews" && method === "POST") {
+      const payload = request.postDataJSON() as { starting_pools: Array<{ opening_balance: string }> };
+      return route.fulfill({ status: 200, json: envelope(draft(payload.starting_pools[0].opening_balance)) });
+    }
+    const cloneMatch = path.match(/^\/api\/v1\/forecasts\/(forecast-1)\/clone$/);
+    if (cloneMatch && method === "POST") {
+      cloneRequests += 1;
+      forecasts.push(forecastSummary(1, "forecast-2", "עותק של תחזית החיסכון", "forecast-1"));
+      if (lostMutation === "clone" && cloneRequests === 1) return route.abort("failed");
+      return route.fulfill({ status: 201, json: envelope(forecastSummary(1, "forecast-2", "עותק של תחזית החיסכון", "forecast-1")) });
+    }
+    if (path === "/api/v1/forecasts/forecast-1/revisions" && method === "GET") {
+      return route.fulfill({ status: 200, json: envelope(revisionSummaries) });
+    }
+    const projectionMatch = path.match(/^\/api\/v1\/forecasts\/forecast-1\/revisions\/1\/projection$/);
+    if (projectionMatch && method === "GET") return route.fulfill({ status: 200, json: envelope(detail) });
+    return route.fulfill({ status: 200, json: envelope(forecastSummary(1)) });
+  });
+  return { get createRequests() { return createRequests; }, get cloneRequests() { return cloneRequests; } };
+}
+
+async function createForecastInEditor(page: Page) {
+  await page.getByRole("button", { name: "תחזית חדשה" }).click();
+  await page.getByRole("button", { name: "המשך ליתרות פתיחה" }).click();
+  await page.getByLabel("יתרת פתיחה קופה 1", { exact: true }).fill("1000.00");
+  await page.getByRole("button", { name: "המשך למקרי תחזית" }).click();
+  await page.getByRole("button", { name: "חישוב תצוגה מקדימה" }).click();
+  const confirmations = page.getByRole("checkbox", { name: /עברתי על ההנחות ואישרתי את המקרה/ });
+  await expect(confirmations).toHaveCount(3);
+  for (let index = 0; index < 3; index += 1) await confirmations.nth(index).check();
+  await page.getByRole("button", { name: "שמירת תחזית" }).click();
+}
+
+test("mobile RTL forecast flow creates, saves, and restores immutable revisions", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await installCommonRoutes(page);
 
   let currentRevision = 0;
   let secondOpening = "1250.00";
@@ -203,4 +275,54 @@ test("mobile RTL forecast flow creates, saves, and restores immutable revisions"
   await expect(revisionPicker).toHaveValue("3");
   await expect(page.getByText("גרסת תחזית 3")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
+});
+
+test("a committed create with a lost response stays locked after refresh", async ({ page }) => {
+  await installCommonRoutes(page);
+  const requests = await installUnknownMutationRoutes(page, "create");
+  await page.goto("/savings-forecast");
+  await createForecastInEditor(page);
+
+  await expect(page.getByRole("heading", { name: "נדרש חיבור מאומת מחדש" })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("familyfin.forecasts.unknown-mutation"))).toBe('{"kind":"create","reconciled":false}');
+  const sessionRetry = page.waitForResponse((response) => response.url().includes("/api/v1/auth/session") && response.request().method() === "GET");
+  await page.getByRole("button", { name: "לנסות שוב" }).click();
+  expect((await sessionRetry).status()).toBe(200);
+  await expect(page.getByText("לא ידוע אם התחזית נוצרה.")).toBeVisible();
+  await expect(page.getByText(/התחזיות רועננו/)).toBeVisible();
+  expect(requests.createRequests).toBe(1);
+  await page.getByRole("button", { name: "רענון" }).click();
+  await expect(page.getByRole("heading", { name: "תכנון משפחתי · תחזית חיסכון", exact: true })).toBeVisible();
+  await expect(page.getByRole("button", { name: "תחזית חדשה" })).toBeDisabled();
+  expect(requests.createRequests).toBe(1);
+
+  await page.getByRole("button", { name: "בדקתי את התחזיות וסגירת הפעולה הלא ודאית" }).click();
+  await expect(page.getByRole("button", { name: "תחזית חדשה" })).toBeEnabled();
+  expect(requests.createRequests).toBe(1);
+});
+
+test("a committed clone with a lost response stays locked after refresh", async ({ page }) => {
+  await installCommonRoutes(page);
+  const requests = await installUnknownMutationRoutes(page, "clone", true);
+  await page.goto("/savings-forecast");
+  await expect(page.getByRole("heading", { name: "תכנון משפחתי · תחזית חיסכון", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "שכפול" }).click();
+
+  await expect(page.getByRole("heading", { name: "נדרש חיבור מאומת מחדש" })).toBeVisible();
+  expect(await page.evaluate(() => sessionStorage.getItem("familyfin.forecasts.unknown-mutation"))).toBe('{"kind":"clone","reconciled":false}');
+  const sessionRetry = page.waitForResponse((response) => response.url().includes("/api/v1/auth/session") && response.request().method() === "GET");
+  await page.getByRole("button", { name: "לנסות שוב" }).click();
+  expect((await sessionRetry).status()).toBe(200);
+  await expect(page.getByText("לא ידוע אם העותק נוצר.")).toBeVisible();
+  await expect(page.getByText(/התחזיות רועננו/)).toBeVisible();
+  expect(requests.cloneRequests).toBe(1);
+  await page.getByRole("button", { name: "רענון" }).click();
+  await expect(page.getByRole("button", { name: /עותק של תחזית החיסכון/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "שכפול" })).toBeDisabled();
+  await expect(page.getByRole("button", { name: "תחזית חדשה" })).toBeDisabled();
+  expect(requests.cloneRequests).toBe(1);
+
+  await page.getByRole("button", { name: "בדקתי את התחזיות וסגירת הפעולה הלא ודאית" }).click();
+  await expect(page.getByRole("button", { name: "שכפול" })).toBeEnabled();
+  expect(requests.cloneRequests).toBe(1);
 });
