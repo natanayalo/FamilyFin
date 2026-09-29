@@ -87,7 +87,17 @@ Do not bind FastAPI, Next, or Caddy to a LAN/public interface. Firewall host int
 
 Keep application code in versioned release directories and keep the data root and encrypted backup volume outside those directories. Never build a release by copying a live data directory or backup into the checkout. Before each update, run the active application audit and create and verify a fresh backup on the mounted encrypted volume. Keep the current and previous release directories until the new release passes its checks.
 
-Build the new merged commit in a fresh `/opt/familyfin/releases/<commit-sha>` directory using the locked Python and Node dependencies shown above. Save `PREVIOUS_RELEASE=$(readlink -f /opt/familyfin/current)` before changing the link. If systemd units change, install the new unit files into `/etc/systemd/system/`; if the Caddy site changes, merge it into the full Caddyfile and validate it before continuing. Stop the backup timer and all app entry points, then atomically switch the release symlink while the app is down:
+Build the new merged commit in a fresh `/opt/familyfin/releases/<commit-sha>` directory using the locked Python and Node dependencies shown above. Save `PREVIOUS_RELEASE=$(readlink -f /opt/familyfin/current)` before changing the link. If systemd units change, install the new unit files into `/etc/systemd/system/`; if the Caddy site changes, merge it into the full Caddyfile and validate it before continuing. Prepare the replacement release as described below before changing the `current` link.
+
+Before switching to the new release, repeat the runtime-cache permission step for that release. The build may have created root-owned files under `.next/cache`, so apply these commands to `$RELEASE` after making the release read-only:
+
+```sh
+sudo install -d -o familyfin-web -g familyfin-web -m 0750 "$RELEASE/frontend/.next/cache"
+sudo chown -R familyfin-web:familyfin-web "$RELEASE/frontend/.next/cache"
+sudo chmod -R u+rwX,go-rwx "$RELEASE/frontend/.next/cache"
+```
+
+Then stop the backup timer and all app entry points, and atomically switch the release symlink while the app is down:
 
 ```sh
 sudo systemctl stop familyfin-backup.timer familyfin-backup.service \

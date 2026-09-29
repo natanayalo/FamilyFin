@@ -69,6 +69,12 @@ def test_deployment_docs_require_tailnet_only_access_and_no_funnel() -> None:
     assert "## Updates and rollback" in deployment
     assert "Do not attempt an Alembic downgrade" in deployment
     assert "chmod -R u+rwX,go-rwx" in deployment
+    update = deployment.split("## Updates and rollback", 1)[1].split("## Backups, retention, and restore", 1)[0]
+    cache_chmod = 'sudo chmod -R u+rwX,go-rwx "$RELEASE/frontend/.next/cache"'
+    release_switch = 'sudo mv -Tf /opt/familyfin/current.next /opt/familyfin/current'
+    assert "sudo chown -R familyfin-web:familyfin-web \"$RELEASE/frontend/.next/cache\"" in update
+    assert cache_chmod in update
+    assert update.index(cache_chmod) < update.index(release_switch)
 
 
 def test_restore_activation_uses_the_canonical_writable_data_root() -> None:
