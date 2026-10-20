@@ -294,7 +294,8 @@ def test_audit_and_backup_reject_deleted_forecast_pool_rows(tmp_path):
     audit_codes = {code for check in report.checks for code in check.issue_codes}
     assert "FORECAST_POOL_SET_INVALID" in audit_codes
 
-    backup_db = next(path for path in backup_root.iterdir() if path.name != "manifest.json")
+    backup_db = backup_root / app.database.path.name
+    assert backup_db.is_file()
     with sqlite3.connect(backup_db) as connection:
         connection.execute(
             "DELETE FROM savings_forecast_pools WHERE case_id IN "
@@ -376,7 +377,8 @@ def test_balance_snapshot_dates_are_hash_and_backup_protected(tmp_path):
     with pytest.raises(NetWorthValidationError, match="balance snapshot date"):
         service.get_revision(revision.snapshot_id)
 
-    backup_db = next(path for path in backup_root.iterdir() if path.name != "manifest.json")
+    backup_db = backup_root / app.database.path.name
+    assert backup_db.is_file()
     with sqlite3.connect(backup_db) as connection:
         connection.execute(
             "UPDATE net_worth_balances SET snapshot_date = ?, valuation_date = ? WHERE revision_id = ?",
