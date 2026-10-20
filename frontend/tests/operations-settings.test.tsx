@@ -6,6 +6,10 @@ import type { OperationsSnapshot } from "@/features/operations/api";
 import type { SettingsOverview } from "@/features/settings/api";
 import * as operationsApi from "@/features/operations/api";
 import * as settingsApi from "@/features/settings/api";
+import { rememberDashboardFilters, resetDashboardFilters } from "@/features/dashboard/filter-state";
+import { useDashboardReport } from "@/features/dashboard/shared";
+import type { DashboardFilters } from "@/features/dashboard/types";
+import { ApiRequestError } from "@/lib/api";
 
 vi.mock("@/features/insight-preferences/insight-preferences-feature", () => ({
   InsightPreferencesFeature: () => <section aria-label="תובנות" />,
@@ -43,6 +47,7 @@ const settingsValue: SettingsOverview = {
 
 describe("Operations and settings workflows", () => {
   beforeEach(() => {
+    resetDashboardFilters();
     vi.mocked(operationsApi.getAutomationStatus).mockResolvedValue({ data: {
       inbox: { inbox_file_count: 2, review_file_count: 1 },
       operations: blockedOperations,
@@ -75,6 +80,17 @@ describe("Operations and settings workflows", () => {
     vi.mocked(settingsApi.revokeSession).mockResolvedValue({ data: undefined });
   });
 
+  it("replaces failed Settings loading with a retry that can recover", async () => {
+    vi.mocked(settingsApi.getSettings).mockRejectedValueOnce(new Error("Unavailable"));
+    render(<SettingsFeature />);
+    expect(screen.getByText("טוענים הגדרות מהשרת…")).toBeVisible();
+    await screen.findByText("לא ניתן לטעון את ההגדרות.");
+    expect(screen.queryByText("טוענים הגדרות מהשרת…")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "לנסות שוב" }));
+    expect(await screen.findByLabelText("מטבע ברירת מחדל")).toHaveValue("ILS");
+    expect(screen.queryByText("לא ניתן לטעון את ההגדרות.")).not.toBeInTheDocument();
+  });
+
   it("keeps Run Now visibly blocked without a backup destination while allowing dry-run", async () => {
     render(<OperationsFeature />);
     await screen.findByText("ההפעלה חסומה עד להגדרת יעד גיבוי. הריצה תיעצר גם אם יצירת הגיבוי תיכשל.");
@@ -84,6 +100,94 @@ describe("Operations and settings workflows", () => {
     fireEvent.click(dryRun);
     await screen.findByText(/לא נשמרו נתונים ולא הועברו קבצים/);
     expect(operationsApi.startAutomation).toHaveBeenCalledWith(true);
+  });
+
+  it("keeps a rejected run visible through automatic/manual refresh and clears it only for a new explicit run", async () => {
+    vi.mocked(operationsApi.startAutomation).mockRejectedValueOnce(new Error("Lost response"));
+    render(<OperationsFeature />);
+    const dryRun = await screen.findByRole("button", { name: "בדיקת תיבה ללא שינויים" });
+    fireEvent.click(dryRun);
+    await waitFor(() => expect(operationsApi.getAutomationStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(dryRun).toBeEnabled());
+    expect(screen.getByRole("alert")).toHaveTextContent("לא ניתן לאשר את תוצאת הבדיקה");
+    expect(operationsApi.startAutomation).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: /^רענון$/ }));
+    await waitFor(() => expect(operationsApi.getAutomationStatus).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(dryRun).toBeEnabled());
+    expect(screen.getByRole("alert")).toHaveTextContent("בדקו את היסטוריית הריצות");
+    expect(screen.queryByText(/היסטוריית הריצות עשויה להיות לא מעודכנת/)).not.toBeInTheDocument();
+    expect(operationsApi.startAutomation).toHaveBeenCalledTimes(1);
+    fireEvent.click(dryRun);
+    await screen.findByText(/הבדיקה הסתיימה/);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(operationsApi.startAutomation).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    [400, "ההפעלה לא אושרה", false],
+    [500, "לא ניתן לאשר את תוצאת ההפעלה", true],
+  ] as const)("retains action feedback for HTTP %s while fresh status independently controls readiness", async (httpStatus, guidance, uncertain) => {
+    vi.mocked(operationsApi.getAutomationStatus).mockResolvedValue({ data: {
+      inbox: { inbox_file_count: 1, review_file_count: 0 }, operations: settingsValue.operations, latest_run: null,
+    } });
+    vi.mocked(operationsApi.startAutomation).mockRejectedValueOnce(new ApiRequestError("Synthetic run error", httpStatus));
+    render(<OperationsFeature />);
+    const runNow = await screen.findByRole("button", { name: "הפעלה עכשיו" });
+    fireEvent.click(runNow);
+    await waitFor(() => expect(operationsApi.getAutomationStatus).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(runNow).toBeEnabled());
+    expect(screen.getByRole("alert")).toHaveTextContent(guidance);
+    expect(screen.getByRole("alert").textContent?.includes("ייתכן שהפעולה הושלמה")).toBe(uncertain);
+    expect(operationsApi.startAutomation).toHaveBeenCalledExactlyOnceWith(false);
+    vi.mocked(operationsApi.getAutomationStatus).mockRejectedValueOnce(new Error("Read failed"));
+    fireEvent.click(screen.getByRole("button", { name: /^רענון$/ }));
+    await screen.findByText("לא ניתן לטעון את מצב התהליכים.");
+    expect(screen.getByText(new RegExp(guidance))).toBeVisible();
+    expect(runNow).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: /^רענון$/ }));
+    await waitFor(() => expect(runNow).toBeEnabled());
+    expect(screen.getByRole("alert")).toHaveTextContent(guidance);
+    expect(operationsApi.startAutomation).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not claim empty files or history before their initial requests finish", async () => {
+    let resolveFiles!: (value: Awaited<ReturnType<typeof operationsApi.getAttentionFiles>>) => void;
+    let resolveRuns!: (value: Awaited<ReturnType<typeof operationsApi.getAutomationRuns>>) => void;
+    vi.mocked(operationsApi.getAttentionFiles).mockReturnValueOnce(new Promise((resolve) => { resolveFiles = resolve; }));
+    vi.mocked(operationsApi.getAutomationRuns).mockReturnValueOnce(new Promise((resolve) => { resolveRuns = resolve; }));
+    render(<OperationsFeature />);
+    expect(screen.queryByText("אין קבצים שממתינים לבדיקה.")).not.toBeInTheDocument();
+    expect(screen.queryByText("אין ריצות שמורות.")).not.toBeInTheDocument();
+    resolveFiles({ data: { items: [] } });
+    resolveRuns({ data: { items: [] } });
+    expect(await screen.findByText("אין קבצים שממתינים לבדיקה.")).toBeVisible();
+    expect(await screen.findByText("אין ריצות שמורות.")).toBeVisible();
+  });
+
+  it("distinguishes initial failures from loading or empty results", async () => {
+    vi.mocked(operationsApi.getAutomationStatus).mockRejectedValueOnce(new Error("Unavailable"));
+    vi.mocked(operationsApi.getAttentionFiles).mockRejectedValueOnce(new Error("Unavailable"));
+    render(<OperationsFeature />);
+    await screen.findByText("לא ניתן לטעון את מצב התהליכים.");
+    expect(screen.queryByText("טוענים נתונים מהשרת…")).not.toBeInTheDocument();
+    expect(screen.queryByText("אין קבצים שממתינים לבדיקה.")).not.toBeInTheDocument();
+    expect(screen.queryByText("אין ריצות שמורות.")).not.toBeInTheDocument();
+    expect(screen.getByText("היסטוריית הריצות אינה זמינה. נסו לרענן את מצב התהליכים.")).toBeVisible();
+  });
+
+  it("labels prior empty snapshots as stale after refresh failure", async () => {
+    render(<OperationsFeature />);
+    await screen.findByText("אין ריצות שמורות.");
+    await screen.findByText("אין קבצים שממתינים לבדיקה.");
+    vi.mocked(operationsApi.getAutomationStatus).mockRejectedValueOnce(new Error("Unavailable"));
+    vi.mocked(operationsApi.getAttentionFiles).mockRejectedValueOnce(new Error("Unavailable"));
+    fireEvent.click(screen.getByRole("button", { name: /^רענון$/ }));
+    fireEvent.click(screen.getByRole("button", { name: "רענון קבצים" }));
+    await screen.findByText(/מוצגות תוצאות קודמות; היסטוריית הריצות/);
+    await screen.findByText(/מוצגות תוצאות קודמות; הרשימה/);
+    expect(screen.queryByText("אין ריצות שמורות.")).not.toBeInTheDocument();
+    expect(screen.queryByText("אין קבצים שממתינים לבדיקה.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "בדיקת תיבה ללא שינויים" })).toBeDisabled();
   });
 
   it("allows manual run only when status reports audit and backup readiness", async () => {
@@ -129,6 +233,8 @@ describe("Operations and settings workflows", () => {
     await screen.findByRole("heading", { name: "העדפות תצוגה" });
     expect(screen.getByText("החיבורים הפעילים שלך")).toBeVisible();
     expect(screen.queryByText("private-session-id")).not.toBeInTheDocument();
+    expect(screen.getByText((_, element) => element?.textContent === "תאריך עסקה אחרון: 19 בספטמבר 2026")).toBeVisible();
+    expect(screen.getAllByText((_, element) => element?.tagName === "SPAN" && Boolean(element.textContent?.startsWith("ייבוא: ")))[0].textContent).toMatch(/\d{1,2}:\d{2}/);
     fireEvent.change(screen.getByLabelText("מטבע ברירת מחדל"), { target: { value: "USD" } });
     fireEvent.change(screen.getByLabelText("תקופת ברירת מחדל"), { target: { value: "24" } });
     fireEvent.click(screen.getByRole("button", { name: "שמירת העדפות" }));
@@ -139,5 +245,30 @@ describe("Operations and settings workflows", () => {
     await waitFor(() => expect(settingsApi.revokeSession).toHaveBeenCalledWith("private-other-session-id"));
     expect(screen.getByText("המכשיר הנוכחי")).toBeVisible();
     expect(screen.getByText("חיבור פעיל")).toBeVisible();
+  });
+
+  it("uses the newly saved report currency after navigating away from settings", async () => {
+    rememberDashboardFilters({ start_month: "2026-08-01", end_month: "2026-09-01", currency: "ILS" });
+    vi.mocked(settingsApi.getSettings).mockResolvedValueOnce({ data: settingsValue }).mockResolvedValue({ data: { ...settingsValue, preferences: { ...settingsValue.preferences, default_currency: "USD" } } });
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = new URL(String(input), "https://testserver");
+      return new Response(JSON.stringify({ data: { filters: { start_month: "2026-01-01", end_month: "2026-09-01", currency: url.searchParams.get("currency") ?? "USD" } } }), { headers: { "Content-Type": "application/json" } });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const view = render(<SettingsFeature />);
+    fireEvent.change(await screen.findByLabelText("מטבע ברירת מחדל"), { target: { value: "USD" } });
+    fireEvent.click(screen.getByRole("button", { name: "שמירת העדפות" }));
+    await screen.findByText("העדפות התצוגה נשמרו לחשבון שלך.");
+    view.unmount();
+    function Report() {
+      const report = useDashboardReport<{ filters: DashboardFilters }>("/dashboard/expenses");
+      return <><p>{report.data?.filters.currency}</p><button disabled={report.loading || !report.draft.start_month} onClick={() => report.apply({ ...report.draft, start_month: "2026-01-01", end_month: "2026-09-01" })}>עדכון תקופה</button></>;
+    }
+    render(<Report />);
+    expect(await screen.findByText("USD")).toBeVisible();
+    expect(String(fetchMock.mock.calls[0][0])).not.toContain("currency=ILS");
+    await waitFor(() => expect(screen.getByRole("button", { name: "עדכון תקופה" })).toBeEnabled());
+    fireEvent.click(screen.getByRole("button", { name: "עדכון תקופה" }));
+    await waitFor(() => expect(fetchMock.mock.calls.some(([url]) => String(url).includes("currency=USD"))).toBe(true));
   });
 });

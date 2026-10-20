@@ -1,7 +1,9 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
+import { ChevronDown } from "lucide-react";
 import { ApiRequestError, apiRequest } from "@/lib/api";
+import { formatAmount, formatHebrewDate, formatHebrewDateTime, formatHebrewMonth, formatHebrewDaysAgo } from "@/lib/display";
 import { EmptyState, ErrorState, LoadingState } from "@/components/ui/async-state";
 import { Button } from "@/components/ui/button";
 import { compareForecastActual, getForecastRevisions, getForecasts } from "@/features/forecasts/api";
@@ -69,12 +71,7 @@ function todayIso() {
 }
 
 function formatIls(value: string | null | undefined) {
-  if (value == null) return "—";
-  const negative = value.startsWith("-");
-  const unsigned = negative ? value.slice(1) : value;
-  const [whole, fraction] = unsigned.split(".");
-  const grouped = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `${negative ? "−" : ""}${grouped}${fraction ? `.${fraction}` : ""} ₪`;
+  return formatAmount(value, "ILS");
 }
 
 function displayError(error: unknown) {
@@ -100,6 +97,10 @@ function mapBalanceDraft(balances: Array<Pick<SnapshotBalance, "account_key" | "
 
 function isEmptySummaryError(error: unknown) {
   return error instanceof ApiRequestError && (error.status === 404 || error.apiError?.code === "NOT_FOUND");
+}
+
+function snapshotOriginLabel(origin: SnapshotRevision["origin"]) {
+  return origin === "csv" ? "ייבוא CSV" : origin === "restored" ? "שחזור" : "ידנית";
 }
 
 export function NetWorthPage() {
@@ -141,8 +142,30 @@ export function NetWorthPage() {
   const [csvCreateRevision, setCsvCreateRevision] = useState(false);
   const [csvQualityAcknowledged, setCsvQualityAcknowledged] = useState(false);
   const selectedSnapshotRef = useRef("");
+  const [snapshotLoading, setSnapshotLoading] = useState(false);
+  const managementRef = useRef<HTMLDetailsElement>(null);
+  const accountFormRef = useRef<HTMLFormElement>(null);
+  const snapshotFormRef = useRef<HTMLFormElement>(null);
+  const focusRequested = useRef<"account" | "snapshot" | null>(null);
+  const noticeRef = useRef<HTMLDivElement>(null);
+
+  function revealManagement() { if (managementRef.current) managementRef.current.open = true; }
+  useEffect(() => {
+    const form = focusRequested.current === "account" ? accountFormRef.current : focusRequested.current === "snapshot" ? snapshotFormRef.current : null;
+    if (!form) return;
+    focusRequested.current = null;
+    form.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+    form.scrollIntoView?.({ block: "start" });
+  }, [accountDraft, composer]);
+  useEffect(() => {
+    if (!notice) return;
+    noticeRef.current?.focus({ preventScroll: true });
+    noticeRef.current?.scrollIntoView?.({ block: "start" });
+  }, [notice]);
 
   const selectedSnapshot = snapshots.find((item) => item.snapshot_id === selectedSnapshotId) ?? null;
+  const existingCapture = composer === "new" ? snapshots.find((item) => item.snapshot_date === captureDate) : undefined;
+  const summaryRevision = revisions.find((item) => item.revision_id === summary?.revision_id);
   const selectedRevision = revisions.find((item) => item.revision_id === selectedRevisionId) ?? revisions.at(-1) ?? null;
   const selectedComparisonForecast = forecastChoices.find((item) => item.forecast_id === comparisonForecastId) ?? null;
   const composerHeadAdvanced = composerBaseRevisionNumber !== null
@@ -159,7 +182,7 @@ export function NetWorthPage() {
       setAccounts(nextAccounts);
       setSnapshots(nextSnapshots);
       setTrend(nextTrend);
-      const chosen = nextSnapshots.find((item) => item.snapshot_id === selectedSnapshotRef.current) ?? nextSnapshots[0] ?? null;
+      const chosen = nextSnapshots.find((item) => item.snapshot_id === selectedSnapshotRef.current) ?? nextSnapshots.find((item) => !item.archived) ?? nextSnapshots[0] ?? null;
       const chosenId = chosen?.snapshot_id ?? "";
       selectedSnapshotRef.current = chosenId;
       setSelectedSnapshotId(chosenId);
@@ -239,6 +262,10 @@ export function NetWorthPage() {
   async function chooseSnapshot(snapshotId: string) {
     selectedSnapshotRef.current = snapshotId;
     setSelectedSnapshotId(snapshotId);
+    setSnapshotLoading(true);
+    setSummary(null);
+    setRevisions([]);
+    setSelectedRevisionId("");
     setComposer(null);
     setComposerBaseRevisionNumber(null);
     setComposerStale(false);
@@ -249,10 +276,13 @@ export function NetWorthPage() {
         getRevisions(snapshotId),
         getSummary(snapshotId).catch((error) => { if (isEmptySummaryError(error)) return null; throw error; }),
       ]);
+      if (selectedSnapshotRef.current !== snapshotId) return;
       setRevisions(nextRevisions);
       setSelectedRevisionId(nextRevisions.at(-1)?.revision_id ?? "");
       setSummary(nextSummary);
-    } catch (error) { setActionError(displayError(error)); }
+      return nextRevisions.at(-1);
+    } catch (error) { if (selectedSnapshotRef.current === snapshotId) setActionError(displayError(error)); }
+    finally { if (selectedSnapshotRef.current === snapshotId) setSnapshotLoading(false); }
   }
 
   async function chooseComparisonForecast(forecastId: string) {
@@ -333,6 +363,7 @@ export function NetWorthPage() {
   }
 
   function editAccount(account?: NetWorthAccount) {
+    revealManagement(); focusRequested.current = "account";
     if (!account) { setAccountDraft(emptyAccountDraft()); return; }
     setAccountDraft({
       mode: "edit", account_key: account.account_key, expected_updated_at: account.updated_at, display_name: account.display_name,
@@ -350,6 +381,7 @@ export function NetWorthPage() {
   }
 
   function startNewSnapshot() {
+    revealManagement(); focusRequested.current = "snapshot";
     setComposer("new");
     setComposerBaseRevisionNumber(null);
     setComposerStale(false);
@@ -362,19 +394,29 @@ export function NetWorthPage() {
 
   function startRevision() {
     if (!selectedRevision || !selectedSnapshot) return;
+    editRevision(selectedRevision, selectedSnapshot);
+  }
+
+  function editRevision(revision: SnapshotRevision, snapshot: SnapshotSummary) {
+    revealManagement(); focusRequested.current = "snapshot";
     setComposer("revision");
-    setComposerBaseRevisionNumber(selectedSnapshot.current_revision_number);
+    setComposerBaseRevisionNumber(snapshot.current_revision_number);
     setComposerStale(false);
-    setCaptureDate(selectedRevision.snapshot_date);
-    setEditorAccounts(selectedRevision.balances.map((item) => ({
+    setCaptureDate(revision.snapshot_date);
+    setEditorAccounts(revision.balances.map((item) => ({
       account_key: item.account_key, display_name: item.account_name, side: item.side,
       category: item.category, liquidity: item.liquidity, owner_label: item.owner_label,
       stale_after_days: item.stale_after_days,
     })));
-    setBalanceDraft(mapBalanceDraft(selectedRevision.balances));
-    setSnapshotNotes(selectedRevision.notes);
+    setBalanceDraft(mapBalanceDraft(revision.balances));
+    setSnapshotNotes(revision.notes);
     setQualityAcknowledged(false);
     setActionError(null);
+  }
+
+  async function editExistingCapture(snapshot: SnapshotSummary) {
+    const revision = await chooseSnapshot(snapshot.snapshot_id);
+    if (revision && selectedSnapshotRef.current === snapshot.snapshot_id) editRevision(revision, snapshot);
   }
 
   async function saveSnapshot(event: React.FormEvent<HTMLFormElement>) {
@@ -464,37 +506,65 @@ export function NetWorthPage() {
 
   return <div className={styles.page}>
     <div className={styles.toolbar}>
-      <div><span className={styles.eyebrow}>יתרות שנמדדו בפועל</span><h2>הון משפחתי</h2><p>רישום חשבונות, תמונות מצב מתוארכות והיסטוריית גרסאות.</p></div>
-      <Button variant="outline" disabled={loading || saving} onClick={() => void loadData()}>רענון נתונים</Button>
+      <p>הסיכום מבוסס על יתרות שנרשמו לתאריך המדידה.</p>
+      <div className={styles.formActions}>
+        {snapshots.length > 0 && <Button onClick={startNewSnapshot} disabled={loading || saving || needsReconcile}>רישום יתרות לתאריך חדש</Button>}
+        <Button variant="outline" disabled={loading || saving || snapshotLoading} onClick={() => void loadData()}>רענון נתונים</Button>
+      </div>
     </div>
     {actionError && <div className={styles.alert} role="alert"><span>{actionError.message}</span>{actionError.requestId && <small>מזהה פנייה: <bdi>{actionError.requestId}</bdi></small>}</div>}
     {needsReconcile && <div className={styles.warning} role="alert"><span>תוצאת הפעולה לא ידועה. טענו את מצב החשבונות והגרסאות העדכני לפני בחירת פעולה נוספת.</span><Button variant="outline" disabled={loading} onClick={async () => { if (await loadData()) { setNeedsReconcile(false); setActionError(null); setNotice("המידע נטען מחדש. בדקו את המצב לפני שליחה נוספת."); } }}>טעינת מצב עדכני</Button></div>}
     {pageError && loaded && <div className={styles.alert} role="alert">{pageError.message}</div>}
-    {notice && <div className={styles.notice} role="status">{notice}</div>}
+    {notice && <div className={styles.notice} role="status" tabIndex={-1} ref={noticeRef}>{notice}</div>}
 
-    <section className={styles.section} aria-labelledby="summary-heading">
-      <div className={styles.sectionHeading}><div><h3 id="summary-heading">תמונת מצב נבחרת</h3><p>{summary ? `${summary.snapshot_date} · גרסה ${summary.revision_number}` : "סיכום לפי תמונת המצב האחרונה"}</p></div></div>
-      {!summary ? <EmptyState title="עדיין אין תמונת מצב" description="הוסיפו חשבונות ורשמו את היתרות ליום מדידה מסוים." /> : <>
+    {snapshots.length === 0 ? <section className={`${styles.section} ${styles.setup}`} aria-labelledby="setup-heading">
+      <header><span className={styles.eyebrow}>מתחילים בתמונת מצב אחת</span><h2 id="setup-heading">כמה שווה ההון המשפחתי שלכם?</h2><p>רשמו את הנכסים והחובות, ואז את היתרות שלהם ליום מסוים. נציג מה יש למשפחה וכמה נשאר אחרי ההתחייבויות.</p></header>
+      <div className={styles.formActions}><Button disabled={saving || needsReconcile} onClick={() => accounts.length ? startNewSnapshot() : editAccount()}>{accounts.length ? "רישום היתרות הראשונות" : "הוספת החשבון הראשון"}</Button>{accounts.length > 0 && <Button variant="outline" disabled={saving || needsReconcile} onClick={() => editAccount()}>הוספת חשבון נוסף</Button>}</div>
+      <ol className={styles.setupSteps}>
+        <li data-current={accounts.length === 0} aria-current={accounts.length === 0 ? "step" : undefined}><strong>1. מוסיפים חשבונות</strong><span>בנק, חיסכון, השקעות, פנסיה, דירה או הלוואה.</span>{accounts.length > 0 && <small>{accounts.length === 1 ? "חשבון אחד נוסף" : `${accounts.length} חשבונות נוספו`}</small>}</li>
+        <li data-current={accounts.length > 0} aria-current={accounts.length > 0 ? "step" : undefined}><strong>2. רושמים יתרות ותאריך</strong><span>כמה יש או כמה חייבים בכל חשבון ביום המדידה.</span></li>
+        <li><strong>3. רואים את השווי הנקי</strong><span>סך הנכסים פחות יתרת ההתחייבויות.</span></li>
+      </ol>
+      <p className={styles.help}>אפשר להתחיל בתמונה אחת ולהוסיף מדידות בהמשך. היסטוריית העסקאות לבדה אינה מספקת יתרות חשבון.</p>
+    </section> : <section className={styles.section} aria-labelledby="summary-heading">
+      <div className={styles.sectionHeading}>
+        <div><h2 id="summary-heading">השווי הנקי לפי המדידה שנבחרה</h2><p>נכסים פחות התחייבויות, לפי היתרות שנשמרו.</p></div>
+        <Field label="תאריך המדידה"><select aria-label="תמונת מצב לסיכום" value={selectedSnapshotId} onChange={(event) => void chooseSnapshot(event.target.value)} disabled={loading || saving}>{snapshots.map((item) => <option value={item.snapshot_id} key={item.snapshot_id}>{formatHebrewDate(item.snapshot_date)}{item.archived ? " · בארכיון" : ""}</option>)}</select></Field>
+      </div>
+      {snapshotLoading ? <LoadingState label="טוענים את המדידה שנבחרה…" /> : !summary ? <EmptyState title="אין סיכום זמין למדידה הזו" description="בחרו מדידה אחרת או רעננו את הנתונים." /> : <>
         <div className={styles.metrics}>
           <Metric label="שווי נקי" value={formatIls(summary.net_worth)} emphasis />
           <Metric label="נכסים" value={formatIls(summary.total_assets)} />
           <Metric label="התחייבויות" value={formatIls(summary.total_liabilities)} />
-          <Metric label="נכסים נזילים" value={formatIls(summary.liquid_assets)} />
         </div>
         <div className={styles.summaryMeta}>
+          <span>נכסים נזילים: <bdi>{formatIls(summary.liquid_assets)}</bdi></span>
           <span>נזילות מוגבלת: <bdi>{formatIls(summary.restricted_assets)}</bdi></span>
           <span>נכסים לא נזילים: <bdi>{formatIls(summary.illiquid_assets)}</bdi></span>
-          <span>גיל תמונה: {summary.snapshot_freshness_days ?? "—"} ימים</span>
+          <span>{summary.snapshot_freshness_days == null ? "מועד המדידה אינו ידוע" : `נמדד ${formatHebrewDaysAgo(summary.snapshot_freshness_days)}`} · גרסה {summary.revision_number}</span>
         </div>
-        {summary.stale_account_keys.length > 0 && <div className={styles.warning} role="status">הערכת שווי ישנה בחשבונות: {summary.stale_account_keys.map((key) => accounts.find((account) => account.account_key === key)?.display_name ?? key).join(", ")}</div>}
-        <div className={styles.breakdowns}>
-          <Breakdown title="לפי סוג נכס או התחייבות" values={summary.by_category} />
-          <Breakdown title="לפי בעלות" values={summary.by_owner} />
-          <Breakdown title="לפי נזילות" values={summary.by_liquidity} />
-        </div>
+        {selectedSnapshot?.archived && <p className={styles.warning}>זו מדידה שנשמרה בארכיון. היא מוצגת לצפייה בהיסטוריה.</p>}
+        {summary.stale_account_keys.length > 0 && <div className={styles.warning} role="status"><strong>חלק מהיתרות מבוססות על הערכות ישנות</strong><p>{summary.stale_account_keys.map((key) => summaryRevision?.balances.find((balance) => balance.account_key === key)?.account_name ?? key).join(", ")}. תאריכי הערכת השווי מופיעים בפירוט החשבונות.</p></div>}
+        {summaryRevision && <div className={styles.balanceGroups}>
+          <BalanceGroup title="נכסים" side="asset" balances={summaryRevision.balances} />
+          <BalanceGroup title="התחייבויות" side="liability" balances={summaryRevision.balances} />
+        </div>}
+        <details className={styles.breakdownDetails}><summary>פילוח היתרות <ChevronDown size={18} aria-hidden="true" /></summary><div className={styles.breakdowns}>
+          <Breakdown title="נכסים והתחייבויות לפי קטגוריה" values={summary.by_category} />
+          <Breakdown title="יתרות לפי בעלות" description="סכום יתרות הנכסים והחובות יחד, לפני קיזוז התחייבויות." values={summary.by_owner} labels={{ Shared: "משותף" }} />
+          <Breakdown title="נכסים לפי נזילות" values={summary.by_liquidity} />
+        </div></details>
       </>}
-    </section>
+    </section>}
 
+    {trend.length > 0 && <section className={styles.section} aria-labelledby="trend-heading">
+      <div className={styles.sectionHeading}><div><h3 id="trend-heading">מגמת הון שנמדד</h3><p>כל נקודה משקפת את הגרסה הנוכחית של תמונת מצב פעילה.</p></div></div>
+      {trend.length === 0 ? <EmptyState title="אין עדיין מגמת מדידה" description="שמרו יותר מתמונת מצב אחת כדי לעקוב אחר השינוי לאורך זמן." /> : <div className={styles.tableWrap}><table><thead><tr><th>תאריך</th><th>נכסים</th><th>התחייבויות</th><th>שווי נקי</th><th>נכסים נזילים</th></tr></thead><tbody>{trend.map((point) => <tr key={point.revision_id}><td><bdi dir="auto">{formatHebrewDate(point.snapshot_date)}</bdi></td><td><bdi>{formatIls(point.total_assets)}</bdi></td><td><bdi>{formatIls(point.total_liabilities)}</bdi></td><td><bdi>{formatIls(point.net_worth)}</bdi></td><td><bdi>{formatIls(point.liquid_assets)}</bdi></td></tr>)}</tbody></table></div>}
+    </section>}
+
+    <details ref={managementRef} className={styles.management} aria-label="ניהול חשבונות ומדידות">
+      <summary><span><strong>ניהול חשבונות ומדידות</strong><small>חשבונות, גרסאות קודמות, ייבוא והשוואה לתחזית</small></span><ChevronDown size={20} aria-hidden="true" /></summary>
+      <div className={styles.managementContent}>
     <section className={styles.section} aria-labelledby="accounts-heading">
       <div className={styles.sectionHeading}><div><h3 id="accounts-heading">רשימת חשבונות</h3><p>פרטי החשבון נשמרים עם כל גרסת תמונת מצב כדי לשמור על היסטוריה מדויקת.</p></div><Button onClick={() => editAccount()} disabled={saving || needsReconcile}>הוספת חשבון</Button></div>
       {accounts.length === 0 ? <EmptyState title="אין חשבונות רשומים" description="הוסיפו חשבון נכס או התחייבות לפני שמירת תמונת מצב." /> : <div className={styles.tableWrap}>
@@ -503,7 +573,7 @@ export function NetWorthPage() {
             <td><strong>{account.display_name}</strong><small dir="ltr">{account.account_key}</small></td>
             <td>{account.side === "asset" ? "נכס" : "התחייבות"} · {categoryLabels[account.category] ?? account.category}</td>
             <td>{account.owner_label ?? "משותף"}{account.liquidity ? ` · ${categoryLabels[account.liquidity]}` : ""}</td>
-            <td>{account.active_to ? `נסגר ${account.active_to}` : `פעיל מ־${account.active_from}`}</td>
+            <td>{account.active_to ? <>נסגר <bdi dir="auto">{formatHebrewDate(account.active_to)}</bdi></> : <>פעיל מ־<bdi dir="auto">{formatHebrewDate(account.active_from)}</bdi></>}</td>
             <td className={styles.rowActions}>
               <button type="button" onClick={() => editAccount(account)}>עריכה</button>
               <button type="button" onClick={() => void loadAccountHistory(account.account_key)}>היסטוריה</button>
@@ -515,7 +585,7 @@ export function NetWorthPage() {
         </tbody></table>
       </div>}
 
-      {accountDraft && <form className={styles.formCard} onSubmit={(event) => void saveAccount(event)}>
+      {accountDraft && <form ref={accountFormRef} className={styles.formCard} onSubmit={(event) => void saveAccount(event)}>
         <div className={styles.formHeading}><h4>{accountDraft.mode === "create" ? "חשבון חדש" : `עריכת ${accountDraft.display_name}`}</h4><button type="button" onClick={() => setAccountDraft(null)}>סגירה</button></div>
         <div className={styles.formGrid}>
           <Field label="שם החשבון"><input required maxLength={200} value={accountDraft.display_name} onChange={(event) => setAccountDraft({ ...accountDraft, display_name: event.target.value })} /></Field>
@@ -537,7 +607,7 @@ export function NetWorthPage() {
 
     {historyAccount && <section className={styles.section} aria-labelledby="history-heading">
       <div className={styles.sectionHeading}><div><h3 id="history-heading">היסטוריית חשבון</h3><p>{accounts.find((item) => item.account_key === historyAccount)?.display_name ?? historyAccount}</p></div><button type="button" onClick={() => { setHistoryAccount(""); setHistory([]); }}>סגירה</button></div>
-      {history.length === 0 ? <p className={styles.muted}>אין יתרות היסטוריות לחשבון הזה.</p> : <div className={styles.tableWrap}><table><thead><tr><th>תאריך תמונה</th><th>גרסה</th><th>יתרה</th><th>תאריך הערכה</th></tr></thead><tbody>{history.map((item) => <tr key={`${item.revision_id}-${item.account_key}`}><td>{item.snapshot_date}</td><td>{item.revision_number}</td><td><bdi>{formatIls(item.amount_ils)}</bdi></td><td>{item.valuation_date}</td></tr>)}</tbody></table></div>}
+      {history.length === 0 ? <p className={styles.muted}>אין יתרות היסטוריות לחשבון הזה.</p> : <div className={styles.tableWrap}><table><thead><tr><th>תאריך תמונה</th><th>גרסה</th><th>יתרה</th><th>תאריך הערכה</th></tr></thead><tbody>{history.map((item) => <tr key={`${item.revision_id}-${item.account_key}`}><td><bdi dir="auto">{formatHebrewDate(item.snapshot_date)}</bdi></td><td>{item.revision_number}</td><td><bdi>{formatIls(item.amount_ils)}</bdi></td><td><bdi dir="auto">{formatHebrewDate(item.valuation_date)}</bdi></td></tr>)}</tbody></table></div>}
     </section>}
 
     <section className={styles.section} aria-labelledby="snapshots-heading">
@@ -545,43 +615,45 @@ export function NetWorthPage() {
       {snapshots.length === 0 ? <EmptyState title="אין תמונות מצב שמורות" description="בחרו תאריך ומלאו יתרה לכל חשבון שהיה פעיל באותו יום." /> : <div className={styles.snapshotLayout}>
         <div className={styles.snapshotList} aria-label="בחירת תמונת מצב">
           {snapshots.map((snapshot) => <button key={snapshot.snapshot_id} type="button" className={`${styles.snapshotButton}${snapshot.snapshot_id === selectedSnapshotId ? ` ${styles.snapshotSelected}` : ""}`} onClick={() => void chooseSnapshot(snapshot.snapshot_id)}>
-            <span>{snapshot.snapshot_date}{snapshot.archived && <em>ארכיון</em>}</span><small>גרסה {snapshot.current_revision_number}</small>
+            <span><bdi dir="auto">{formatHebrewDate(snapshot.snapshot_date)}</bdi>{snapshot.archived && <em>ארכיון</em>}</span><small>גרסה {snapshot.current_revision_number}</small>
           </button>)}
         </div>
         {selectedSnapshot && <div className={styles.snapshotDetail}>
-          <div className={styles.detailHeader}><div><h4>{selectedSnapshot.snapshot_date}</h4><p>{selectedRevision ? `גרסה ${selectedRevision.revision_number} · ${selectedRevision.origin === "csv" ? "ייבוא CSV" : selectedRevision.origin === "restored" ? "שחזור" : "ידנית"}` : "טוענים גרסאות…"}</p></div>
+          <div className={styles.detailHeader}><div><h4><bdi dir="auto">{formatHebrewDate(selectedSnapshot.snapshot_date)}</bdi></h4><p>{selectedRevision ? <>גרסה {selectedRevision.revision_number} · מקור: {snapshotOriginLabel(selectedRevision.origin)} · נשמרה <bdi dir="auto">{selectedRevision.created_at ? formatHebrewDateTime(selectedRevision.created_at) : formatHebrewDate(selectedRevision.snapshot_date)}</bdi></> : "טוענים גרסאות…"}</p></div>
             <div className={styles.inlineActions}><Button size="sm" onClick={startRevision} disabled={saving || needsReconcile || selectedSnapshot.archived || !selectedRevision || (composerStale && !composerHeadAdvanced)}>שמירת גרסה חדשה</Button><Button size="sm" variant="outline" disabled={saving || needsReconcile} onClick={() => void setArchived(selectedSnapshot)}>{selectedSnapshot.archived ? "החזרה לארכיון הפעיל" : "העברה לארכיון"}</Button></div>
           </div>
           {selectedRevision && <>
-            <div className={styles.revisionMeta}><span>גיבוב תוכן</span><code dir="ltr">{selectedRevision.content_hash}</code></div>
-            {selectedRevision.quality_issues.length > 0 && <div className={styles.warning}>איכות: {selectedRevision.quality_issues.join(" · ")}</div>}
-            <div className={styles.tableWrap}><table><thead><tr><th>חשבון</th><th>יתרה</th><th>הערכת שווי</th><th>מצב</th></tr></thead><tbody>{selectedRevision.balances.map((balance) => <tr key={balance.account_key}><td>{balance.account_name}</td><td><bdi>{formatIls(balance.amount_ils)}</bdi></td><td>{balance.valuation_date}</td><td>{balance.stale ? "הערכה ישנה" : "עדכנית"}</td></tr>)}</tbody></table></div>
+            <details className={styles.diagnosticDetails}><summary>פרטי זיהוי ואימות</summary><dl><div><dt>מזהה גרסה</dt><dd><code dir="ltr">{selectedRevision.revision_id}</code></dd></div><div><dt>גיבוב תוכן</dt><dd><code dir="ltr">{selectedRevision.content_hash}</code></dd></div></dl></details>
+            {selectedRevision.quality_issues.length > 0 && <div className={styles.warning}>{selectedRevision.quality_issues.map((issue) => issue.startsWith("STALE_VALUATION:") ? `הערכת שווי ישנה: ${selectedRevision.balances.find((balance) => balance.account_key === issue.slice("STALE_VALUATION:".length))?.account_name ?? "חשבון במדידה"}` : "נדרשת בדיקת איכות במדידה הזו").join(" · ")}</div>}
+            <div className={styles.tableWrap}><table><thead><tr><th>חשבון</th><th>יתרה</th><th>הערכת שווי</th><th>מצב</th></tr></thead><tbody>{selectedRevision.balances.map((balance) => <tr key={balance.account_key}><td>{balance.account_name}</td><td><bdi>{formatIls(balance.amount_ils)}</bdi></td><td><bdi dir="auto">{formatHebrewDate(balance.valuation_date)}</bdi></td><td>{balance.stale ? "הערכה ישנה" : "עדכנית"}</td></tr>)}</tbody></table></div>
             <div className={styles.revisionList}><h5>היסטוריית גרסאות</h5>{revisions.map((revision) => <div className={styles.revisionRow} key={revision.revision_id}>
               <button type="button" className={revision.revision_id === selectedRevisionId ? styles.revisionCurrent : ""} onClick={() => { setSelectedRevisionId(revision.revision_id); setForecastComparison(null); }}>גרסה {revision.revision_number} · {revision.origin === "csv" ? "CSV" : revision.origin === "restored" ? "שוחזרה" : "ידנית"}</button>
-              <span>{revision.created_at?.slice(0, 10) ?? revision.snapshot_date}</span>
+              <span><bdi dir="auto">{revision.created_at ? formatHebrewDateTime(revision.created_at) : formatHebrewDate(revision.snapshot_date)}</bdi></span>
               {revision.revision_number < selectedSnapshot.current_revision_number && <button type="button" disabled={saving || needsReconcile || selectedSnapshot.archived} onClick={() => void restoreRevision(revision)}>שחזור כגרסה חדשה</button>}
             </div>)}</div>
           </>}
         </div>}
       </div>}
 
-      {composer && <form className={styles.formCard} onSubmit={(event) => void saveSnapshot(event)}>
-        <div className={styles.formHeading}><h4>{composer === "new" ? "תמונת מצב חדשה" : `גרסה חדשה ל־${captureDate}`}</h4><button type="button" onClick={() => { setComposer(null); setComposerBaseRevisionNumber(null); setComposerStale(false); }}>סגירה</button></div>
+      {composer && <form ref={snapshotFormRef} className={styles.formCard} onSubmit={(event) => void saveSnapshot(event)}>
+        <div className={styles.formHeading}><h4>{composer === "new" ? "תמונת מצב חדשה" : `גרסה חדשה ל־${formatHebrewDate(captureDate)}`}</h4><button type="button" onClick={() => { setComposer(null); setComposerBaseRevisionNumber(null); setComposerStale(false); }}>סגירה</button></div>
         {composer === "revision" && composerStale && <div className={styles.warning} role="alert">
           <p>הטיוטה מבוססת על גרסה קודמת ונעולה לשמירה. רעננו נתונים לפני פתיחת טיוטה חדשה.</p>
           {composerHeadAdvanced && <Button type="button" variant="outline" onClick={startRevision}>פתיחת עורך על בסיס גרסה {selectedSnapshot?.current_revision_number}</Button>}
         </div>}
+        <p className={styles.help}>מזינים יתרה לכל חשבון שהיה פעיל בתאריך שנבחר. בחובות מזינים את הסכום שנותר לתשלום כמספר חיובי. יתרה חסרה אינה אפס.</p>
         {composer === "new" && <Field label="תאריך התמונה"><input required type="date" value={captureDate} onChange={(event) => setCaptureDate(event.target.value)} /></Field>}
+        {existingCapture && <div className={styles.warning} role="status"><p>לתאריך הזה כבר קיימת מדידה. בחרו תאריך אחר או עדכנו את המדידה הקיימת בגרסה חדשה.{existingCapture.archived && " המדידה נמצאת בארכיון; יש להחזיר אותה לפעילות לפני עדכון."}</p><Button type="button" variant="outline" disabled={saving || needsReconcile || existingCapture.archived} onClick={() => void editExistingCapture(existingCapture)}>עדכון המדידה הקיימת</Button></div>}
         {editorAccounts.length === 0 ? <p className={styles.muted}>אין חשבונות פעילים לתאריך הזה. עדכנו את תאריכי הפעילות ברשימת החשבונות.</p> : <div className={styles.tableWrap}><table><thead><tr><th>חשבון</th><th>יתרה בש״ח</th><th>תאריך הערכת שווי</th><th>הערה</th></tr></thead><tbody>
-          {editorAccounts.map((account) => <tr key={account.account_key}><td>{account.display_name}<small>{account.side === "asset" ? "נכס" : "התחייבות"} · {categoryLabels[account.category] ?? account.category}</small></td>
-            <td><input className={styles.tableInput} required inputMode="decimal" value={balanceDraft[account.account_key]?.amount_ils ?? ""} onChange={(event) => setBalanceDraft({ ...balanceDraft, [account.account_key]: { ...balanceDraft[account.account_key], amount_ils: event.target.value } })} placeholder="0" aria-label={`יתרה: ${account.display_name}`} /></td>
-            <td><input className={styles.tableInput} required type="date" value={balanceDraft[account.account_key]?.valuation_date ?? captureDate} onChange={(event) => setBalanceDraft({ ...balanceDraft, [account.account_key]: { ...balanceDraft[account.account_key], valuation_date: event.target.value } })} aria-label={`תאריך הערכת שווי: ${account.display_name}`} /></td>
-            <td><input className={styles.tableInput} maxLength={1000} value={balanceDraft[account.account_key]?.notes ?? ""} onChange={(event) => setBalanceDraft({ ...balanceDraft, [account.account_key]: { ...balanceDraft[account.account_key], notes: event.target.value } })} aria-label={`הערה: ${account.display_name}`} /></td>
+          {editorAccounts.map((account) => <tr key={account.account_key}><td data-label="חשבון">{account.display_name}<small>{account.side === "asset" ? "נכס" : "התחייבות"} · {categoryLabels[account.category] ?? account.category}</small></td>
+            <td data-label="יתרה בש״ח"><input className={styles.tableInput} required inputMode="decimal" value={balanceDraft[account.account_key]?.amount_ils ?? ""} onChange={(event) => setBalanceDraft({ ...balanceDraft, [account.account_key]: { ...balanceDraft[account.account_key], amount_ils: event.target.value } })} placeholder="הזינו יתרה" aria-label={`יתרה: ${account.display_name}`} /></td>
+            <td data-label="תאריך הערכת שווי"><input className={styles.tableInput} required type="date" value={balanceDraft[account.account_key]?.valuation_date ?? captureDate} onChange={(event) => setBalanceDraft({ ...balanceDraft, [account.account_key]: { ...balanceDraft[account.account_key], valuation_date: event.target.value } })} aria-label={`תאריך הערכת שווי: ${account.display_name}`} /></td>
+            <td data-label="הערה"><input className={styles.tableInput} maxLength={1000} value={balanceDraft[account.account_key]?.notes ?? ""} onChange={(event) => setBalanceDraft({ ...balanceDraft, [account.account_key]: { ...balanceDraft[account.account_key], notes: event.target.value } })} aria-label={`הערה: ${account.display_name}`} /></td>
           </tr>)}
         </tbody></table></div>}
         <Field label="הערות לתמונה"><textarea rows={2} maxLength={2000} value={snapshotNotes} onChange={(event) => setSnapshotNotes(event.target.value)} /></Field>
         <label className={styles.check}><input type="checkbox" checked={qualityAcknowledged} onChange={(event) => setQualityAcknowledged(event.target.checked)} /> אני מאשר/ת את אזהרות איכות הנתונים והערכת השווי, אם קיימות.</label>
-        <div className={styles.formActions}><Button type="submit" disabled={saving || needsReconcile || composerStale || editorAccounts.length === 0}>{saving ? "שומר…" : composer === "new" ? "שמירת תמונת מצב" : "שמירת גרסה חדשה"}</Button><Button type="button" variant="outline" onClick={() => { setComposer(null); setComposerBaseRevisionNumber(null); setComposerStale(false); }}>ביטול</Button></div>
+        <div className={styles.formActions}><Button type="submit" disabled={saving || needsReconcile || composerStale || editorAccounts.length === 0 || Boolean(existingCapture)}>{saving ? "שומר…" : composer === "new" ? "שמירת תמונת מצב" : "שמירת גרסה חדשה"}</Button><Button type="button" variant="outline" onClick={() => { setComposer(null); setComposerBaseRevisionNumber(null); setComposerStale(false); }}>ביטול</Button></div>
       </form>}
     </section>
 
@@ -590,7 +662,7 @@ export function NetWorthPage() {
       <div className={styles.csvControls}><Field label="תאריך לתבנית"><input type="date" value={captureDate} onChange={(event) => setCaptureDate(event.target.value)} /></Field><Button variant="outline" onClick={() => void downloadTemplate()}>הורדת תבנית CSV</Button></div>
       <div className={styles.csvControls}><Field label="קובץ CSV"><input type="file" accept=".csv,text/csv" onChange={(event) => { setCsvFile(event.target.files?.[0] ?? null); setCsvPreview(null); setActionError(null); }} /></Field><Button onClick={() => void previewCsv()} disabled={!csvFile || saving || needsReconcile}>בדיקת הקובץ</Button></div>
       {csvPreview && <div className={styles.preview}>
-        <h4>תוצאת בדיקה · {csvPreview.snapshot_date ?? "תאריך לא תקין"}</h4>
+        <h4>תוצאת בדיקה · <bdi dir="auto">{csvPreview.snapshot_date ? formatHebrewDate(csvPreview.snapshot_date) : "תאריך לא תקין"}</bdi></h4>
         <p>{csvPreview.row_count} שורות · {csvPreview.valid ? "הקובץ מוכן לייבוא" : "נדרשים תיקונים"}</p>
         {csvPreview.issues.length > 0 && <ul className={styles.issueList}>{csvPreview.issues.map((issue) => <li key={issue}>{issueLabels[issue.split(":")[0]] ?? issue}</li>)}</ul>}
         {csvPreview.warnings.length > 0 && <div className={styles.warning}><strong>אזהרות הערכת שווי</strong><ul>{csvPreview.warnings.map((warning) => <li key={warning}>{warning.replace("STALE_VALUATION:", "הערכת שווי ישנה בחשבון ")}</li>)}</ul></div>}
@@ -602,26 +674,21 @@ export function NetWorthPage() {
       </div>}
     </section>
 
-    <section className={styles.section} aria-labelledby="trend-heading">
-      <div className={styles.sectionHeading}><div><h3 id="trend-heading">מגמת הון שנמדד</h3><p>כל נקודה משקפת את הגרסה הנוכחית של תמונת מצב פעילה.</p></div></div>
-      {trend.length === 0 ? <EmptyState title="אין עדיין מגמת מדידה" description="שמרו יותר מתמונת מצב אחת כדי לעקוב אחר השינוי לאורך זמן." /> : <div className={styles.tableWrap}><table><thead><tr><th>תאריך</th><th>נכסים</th><th>התחייבויות</th><th>שווי נקי</th><th>נכסים נזילים</th></tr></thead><tbody>{trend.map((point) => <tr key={point.revision_id}><td>{point.snapshot_date}</td><td><bdi>{formatIls(point.total_assets)}</bdi></td><td><bdi>{formatIls(point.total_liabilities)}</bdi></td><td><bdi>{formatIls(point.net_worth)}</bdi></td><td><bdi>{formatIls(point.liquid_assets)}</bdi></td></tr>)}</tbody></table></div>}
-    </section>
-
     <section className={styles.section} aria-labelledby="forecast-comparison-heading">
       <div className={styles.sectionHeading}><div><h3 id="forecast-comparison-heading">השוואה לתחזית חיסכון</h3><p>השוו את היתרה שנמדדה מול גרסה ותפקיד מדויקים בתחזית. בחרו תמונה וגרסה באזור תמונות המצב למעלה.</p></div></div>
       {comparisonError && <div className={styles.alert} role="alert">{comparisonError}</div>}
       {forecastChoices.length === 0 ? <EmptyState title="אין תחזיות שמורות להשוואה" description="שמרו תחזית חיסכון כדי להשוות תוצאות צפויות ליתרות מדודות." /> : <>
         <div className={styles.formGrid}>
           <Field label="תחזית שמורה"><select aria-label="תחזית להשוואה" value={comparisonForecastId} onChange={(event) => void chooseComparisonForecast(event.target.value)}><option value="">בחירת תחזית</option>{forecastChoices.map((forecast) => <option key={forecast.forecast_id} value={forecast.forecast_id}>{forecast.name} · גרסה {forecast.current_revision_number}</option>)}</select></Field>
-          <Field label="גרסת תחזית"><select aria-label="גרסה להשוואה" value={comparisonRevisionNumber || ""} onChange={(event) => { setComparisonRevisionNumber(Number(event.target.value)); setForecastComparison(null); }}><option value="">בחירת גרסה</option>{forecastRevisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number} · {revision.created_at?.slice(0, 10) ?? "תאריך לא זמין"}</option>)}</select></Field>
+          <Field label="גרסת תחזית"><select aria-label="גרסה להשוואה" value={comparisonRevisionNumber || ""} onChange={(event) => { setComparisonRevisionNumber(Number(event.target.value)); setForecastComparison(null); }}><option value="">בחירת גרסה</option>{forecastRevisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number} · {revision.created_at ? formatHebrewDate(revision.created_at.slice(0, 10)) : "תאריך לא זמין"}</option>)}</select></Field>
           <Field label="מקרה תחזית"><select aria-label="מקרה תחזית להשוואה" value={comparisonRole} onChange={(event) => { setComparisonRole(event.target.value as ForecastRole); setForecastComparison(null); }}><option value="conservative">שמרני</option><option value="baseline">בסיסי</option><option value="optimistic">אופטימי</option></select></Field>
         </div>
         <div className={styles.comparisonSource}>
-          {selectedRevision ? <span>מקור שנמדד: {selectedSnapshot?.snapshot_date} · גרסה {selectedRevision.revision_number} <code dir="ltr">{selectedRevision.revision_id}</code></span> : <span>בחרו תמונת מצב וגרסה לשימוש בהשוואה.</span>}
+          {selectedRevision ? <><span>מקור שנמדד: <bdi dir="auto">{selectedSnapshot ? formatHebrewDate(selectedSnapshot.snapshot_date) : "תאריך לא זמין"}</bdi> · גרסה {selectedRevision.revision_number} · {snapshotOriginLabel(selectedRevision.origin)}</span><details className={styles.comparisonDiagnostics}><summary>מזהה גרסה נמדדת</summary><code dir="ltr">{selectedRevision.revision_id}</code></details></> : <span>בחרו תמונת מצב וגרסה לשימוש בהשוואה.</span>}
           <Button onClick={() => void runForecastComparison()} disabled={comparisonLoading || !selectedComparisonForecast || !comparisonRevisionNumber || !selectedRevision}>{comparisonLoading ? "משווה…" : "השוואה לתחזית"}</Button>
         </div>
         {forecastComparison && <div className={styles.comparisonResult} role="status">
-          <div className={styles.comparisonHeading}><strong>תוצאה לחודש {forecastComparison.projected_month}</strong><span>תחזית {forecastComparison.forecast_revision_number} · {forecastComparison.role === "baseline" ? "בסיסי" : forecastComparison.role === "conservative" ? "שמרני" : "אופטימי"}</span></div>
+          <div className={styles.comparisonHeading}><strong>תוצאה לחודש <bdi dir="auto">{formatHebrewMonth(forecastComparison.projected_month)}</bdi></strong><span>תחזית {forecastComparison.forecast_revision_number} · {forecastComparison.role === "baseline" ? "בסיסי" : forecastComparison.role === "conservative" ? "שמרני" : "אופטימי"}</span></div>
           <div className={styles.metrics}>
             <Metric label="פער כולל (נמדד פחות צפוי)" value={formatIls(forecastComparison.aggregate_delta)} emphasis />
             <Metric label="סה״כ צפוי לחשבונות המקושרים" value={formatIls(forecastComparison.projected_total)} />
@@ -634,16 +701,29 @@ export function NetWorthPage() {
         </div>}
       </>}
     </section>
+      </div>
+    </details>
   </div>;
+}
+
+function BalanceGroup({ title, side, balances }: { title: string; side: "asset" | "liability"; balances: SnapshotBalance[] }) {
+  const rows = balances.filter((balance) => balance.side === side);
+  return <section className={styles.balanceGroup} aria-label={`יתרות ${title}`}><h3>{title}</h3>
+    {rows.length === 0 ? <p className={styles.help}>לא נרשמו {title} במדידה הזו.</p> : <ul>{rows.map((balance) => <li key={balance.account_key}>
+      <div className={styles.balanceName}><strong>{balance.account_name}</strong><small>{categoryLabels[balance.category] ?? balance.category}{balance.owner_label ? ` · ${balance.owner_label}` : ""}</small></div>
+      <bdi className={styles.balanceAmount}>{formatIls(balance.amount_ils)}</bdi>
+      <small className={balance.stale ? styles.staleBalance : styles.balanceDate}>{balance.stale ? "הערכה ישנה · " : "נכון ל־"}{formatHebrewDate(balance.valuation_date)}</small>
+    </li>)}</ul>}
+  </section>;
 }
 
 function Metric({ label, value, emphasis = false }: { label: string; value: string; emphasis?: boolean }) {
   return <div className={`${styles.metric}${emphasis ? ` ${styles.metricEmphasis}` : ""}`}><span>{label}</span><strong><bdi>{value}</bdi></strong></div>;
 }
 
-function Breakdown({ title, values }: { title: string; values: Record<string, string> }) {
+function Breakdown({ title, values, description, labels = categoryLabels }: { title: string; values: Record<string, string>; description?: string; labels?: Record<string, string> }) {
   const rows = Object.entries(values);
-  return <div className={styles.breakdown}><h4>{title}</h4>{rows.length === 0 ? <span className={styles.muted}>אין נתונים</span> : rows.map(([key, value]) => <div key={key}><span>{categoryLabels[key] ?? key}</span><bdi>{formatIls(value)}</bdi></div>)}</div>;
+  return <div className={styles.breakdown}><h4>{title}</h4>{description && <p className={styles.help}>{description}</p>}{rows.length === 0 ? <span className={styles.muted}>אין נתונים</span> : rows.map(([key, value]) => <div key={key}><span>{labels[key] ?? key}</span><bdi>{formatIls(value)}</bdi></div>)}</div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

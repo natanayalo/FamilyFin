@@ -23,6 +23,12 @@ Implementation note (T07 Savings Forecasts): authenticated `/api/v1/forecasts` r
 
 The cookie is Secure, HttpOnly, SameSite=Strict, scoped to `/api/v1`, and has an eight-hour absolute lifetime by default. The API stores a token digest and verifies revocation and expiration on every authenticated request. Exactly two accounts are created once by the host-only `family-finance auth-bootstrap` command. Password recovery is host-only with `family-finance auth-reset-password`; it revokes that user's sessions. No registration, role management, public credential recovery, or unequal household permissions are exposed over HTTP. MFA is not implemented. Frontend code must hold the CSRF token only in memory and send it in `X-CSRF-Token` for mutations.
 
+Explicit local development (`FAMILY_FINANCE_LOCAL_DEV=1`) permits HTTP only on
+exact loopback/localhost origins, with non-Secure cookies for that HTTP profile.
+HttpOnly, SameSite, session expiry, origin, CSRF, and throttling requirements still
+apply. Production retains HTTPS and Secure cookies. See
+[local development](../local_development.md).
+
 Success envelope:
 
 | Field | Meaning |
@@ -172,7 +178,7 @@ Contributor query is a read-only authenticated JSON request: POST `/api/v1/dashb
 | Operation | Required body fields |
 | --- | --- |
 | Reconciliation decision | resolution; transaction_id only for link_existing; optional note. Supported resolutions are accept_as_new, dismiss, and link_existing. case_id comes from the URL. |
-| Classification override | POST requires `expected_override_version`, `expected_classification_state`, at least one of economic_class, analysis_category, expense_behavior, and reason. Queue items return the current version (0 when no override history exists) and the effective-state hash. DELETE requires both preconditions; `fields` and reason are optional. |
+| Classification override | POST requires `expected_override_version`, `expected_classification_state`, at least one of economic_class, analysis_category, expense_behavior, effective_amount, and reason. Queue items return the current version (0 when no override history exists) and the effective-state hash. DELETE requires both preconditions; `fields` and reason are optional. |
 | Reusable classification rule | account_kind, direction, source_category, currency, economic_class; optional source_movement_type, analysis_category, expense_behavior, reason. Preview uses the same fields, returns the exact-match count and `expected_current_rule_id` (nullable). Create must send that value as a required nullable `expected_current_rule_id`; disable sends the current id in the same named field. |
 | Manual planning scenario | name, currency, start_month, items. Each item uses kind, label, optional category, decimal-string amount, frequency, and either monthly start_month/end_month or one-time occurrence_month. |
 | Planning revision | expected_revision_number, items, optional notes, and acknowledge_provisional. Each existing item uses source_item_id from the expected base revision plus editable planning fields; the server copies its source provenance, completeness evidence, and item notes. New items receive manual origin from the server. Client-supplied lineage fields are rejected; saved revisions receive new item-row IDs and remain immutable. |
@@ -190,8 +196,132 @@ Contributor query is a read-only authenticated JSON request: POST `/api/v1/dashb
 
 The service return model is the response authority. In particular, do not rebuild a revision snapshot from just the submitted inputs: the service response includes the persisted revision number, generated ID/hash, origin, inherited quality/provenance, and timestamps.
 
+Classification queue items include `saved_override` for restoring the latest saved
+class/category/behavior even when the effective result remains unclassified. Results
+include `imported_amount`, `original_amount` and `original_currency`; `amount` is the
+effective reporting amount. An optional decimal-string `effective_amount` supports
+finite amounts with at most 24 total digits and 8 decimal places and requires a
+nonblank correction reason. The override POST validates the combined proposed amount
+and classification before persistence: an incompatible sign returns
+`422 CLASSIFICATION_DIRECTION_CONFLICT` and writes nothing. Amount, classification,
+category, behavior and actor audit commit in one serialized transaction.
+
+Amount corrections retain the original transaction and source fields. An internal
+source fingerprint in the override journal binds each correction to the imported and
+original amount/currency values. A changed source returns `STALE_AMOUNT_CORRECTION`,
+stops applying the previous amount correction, and requires explicit reconfirmation.
+DELETE without `fields` clears the four public decision fields plus that internal
+fingerprint using append-only tombstones. Undo restores the imported amount and
+reclassifies; optimistic preconditions, authentication and CSRF remain required.
+
+Explicit `analysis_category: null` clears the saved category override with an
+append-only tombstone and restores the source/reusable-rule default. Omitting the
+field preserves the saved override; this also applies to preview behavior.
+
+`economic_class` also accepts `no_financial_effect` for explicit zero-value review.
+This decision is transaction-specific: reusable-rule previews and writes reject it,
+and legacy reusable rules with this class are ignored during classification.
+Both `imported_amount` and effective `amount` must be zero; an amount override cannot
+turn a nonzero source row into an eligible zero decision. The result has
+`expense_behavior=not_applicable`, no financial contributors, and no unresolved
+classification for that row. The original-value anomaly remains in source provenance
+but is resolved in classification issues. A later nonzero source amount returns the
+decision to review. Saving and undo use the same authenticated, audited override
+routes and concurrency preconditions; no schema migration is needed.
+
 ## Provenance convention
 
 Do not normalize away the existing origin names or hashes. Responses for imports, seeds, revisions, snapshots, forecasts, and apartment studies preserve the fields exposed by their current models: source file SHA-256 and archived source reference, import batch/source IDs, reconciliation resolution, matching method, parser/matcher/decision-plan version and fingerprint, seed origin, completeness snapshot and issue codes, source scenario revision, pinned forecast revision and assumption hash, revision number/content hash, CSV archive/reference, snapshot valuation date, and quality acknowledgements.
 
 The API must not infer provenance missing from a service model. Actor identity is a separate new audit concern: current domain provenance describes data origin and revision ancestry, not consistently the household user who submitted a mutation.
+
+
+### Dashboard month scope and availability (October 2026)
+
+The overview UI makes two independent overview requests: one for the trend range,
+and one for a twelve-month history ending at the explicitly selected reporting month.
+Cards, quality checks and contributors refer only to the reporting month; changing
+the graph range does not change that month. Currency applies to both requests.
+
+Monthly metrics include additive `accepted_transaction_count` metadata. A month is
+available when it has accepted activity (including transactions outside financial
+metric breakdowns), or its `source_period_completeness.source_period_complete` flag
+proves period coverage. Without either, the UI presents missing data and chart gaps,
+not the service's default numeric zeros. A covered zero-activity month remains zero.
+A currency with no accepted activity anywhere in the household dataset is not inferred
+from another currency's report coverage.
+
+The overview also includes nullable `last_import_at`, the latest committed/review
+batch creation timestamp. `freshness_date` remains the last observed transaction date;
+these dates have separate UI labels. Both retain authenticated, private/no-store reads.
+
+Rolling averages retain the service's existing complete-consecutive-month policy.
+The UI searches window endings in the twelve months up to the reporting month and
+shows the latest available 3- and 6-month windows independently, with exact periods.
+It never combines nonconsecutive months, skips an incomplete month within a window,
+or includes a future window. No financial equations or database migrations changed.
+
+### Descriptive statistics for the graph period
+
+`GET /dashboard/overview` additionally returns `period_statistics.observed` and
+`period_statistics.complete`. Each population contains `sample_count`, chronological
+`included_months`, `partial_months`, `excluded_months`, and `metrics` keyed by
+`gross_income`, `net_consumption`, and `operating_surplus_or_deficit`.
+
+Each metric contains nullable decimal strings `mean`, `p25`, `median`, and `p75`.
+Each calendar month has equal weight. Quartiles use linear interpolation at index
+`(n - 1) × p` in the sorted monthly amounts; a single month has identical quartiles
+and mean, and no observations yield null rather than zero. Decimal arithmetic is
+retained, including for amounts above JavaScript's exact integer range. The final
+statistics use four decimal places with HALF_UP rounding, consistent with existing
+average calculations. Existing monthly amounts and classifications are unchanged.
+
+The observed population includes accepted activity or verified source-period coverage;
+covered zero-activity months remain zero, while unobserved/uncovered months are excluded.
+The complete population additionally requires the existing monthly completeness flag.
+Partial months may influence observed statistics, so the UI identifies them and provides
+an explicit complete-only switch. Missing months, including an entirely empty requested
+range, remain listed in `excluded_months`. These are summaries of the graph's selected
+period, not forecasts, transaction-weighted percentiles, or the separate consecutive
+3-/6-month complete windows anchored to the reporting month.
+
+### Recent dashboard transactions
+
+`GET /api/v1/dashboard/recent-transactions` accepts the dashboard `start_month`,
+`end_month`, and `currency` query parameters. It returns up to five accepted
+transactions within the requested booking-month range and currency, ordered by
+booking date descending and transaction ID descending for ties. Rows use the
+existing dashboard contributor DTO, including the effective classified amount
+and category. Authentication, response envelope, and private/no-store caching
+follow the other dashboard endpoints. A valid empty range returns an empty list.
+
+
+### Recurring spending decisions
+
+`GET /dashboard/expenses` now adds a stable `pattern_id` to each detected pattern
+and returns `recurring_pattern_reviews` for the requested currency. Reviews are
+household-wide. Each has `pattern` (saved detection evidence), `status` and
+`updated_at`. Saved decisions are returned even when the detector finds no pattern
+in the selected range. The UI uses current detection evidence when available and
+labels saved evidence when outside the range.
+
+`PUT /insights/recurring-patterns/{pattern_id}` accepts only `status`, `start_month`,
+`end_month` (ISO dates), `currency` (three uppercase letters), and required
+`expected_updated_at` (the exact saved review timestamp, or explicit null when no
+review was loaded). The precondition is checked inside the write transaction;
+stale decisions return HTTP 409 `STALE_RECURRING_REVIEW` without changing the review
+or adding an audit event. Clients must reload before making a new decision.
+Supported statuses:
+`approved`, `dismissed`, `stopped`, `pending`. Only approved patterns may be stopped;
+`pending` reverses a decision. First-time decisions must match an actual detection
+in the submitted range. Existing decisions remain reversible outside that range.
+Clients cannot submit or overwrite financial evidence or amounts.
+
+The authenticated, CSRF-protected endpoint commits its review and actor audit in
+one write unit of work. Reads and responses retain private/no-store handling.
+Identity hashes the normalized description, category, currency and account kind;
+it excludes dates, amounts and contributor IDs. Migration 0014 adds only the review
+table/index. Reviews do not reclassify transactions, create classification rules,
+change totals, schedule payments, or alter forecasting and alert rules. Tracking
+here means inclusion in the saved recurring-expense list; stopping keeps the
+reversible decision and excludes the pattern from new suggestions.

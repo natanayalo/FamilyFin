@@ -10,6 +10,18 @@ import type {
   ForecastSummary,
 } from "./types";
 
+/** Saved pool objects include a read-only pool_id absent from the strict write contract. */
+function forecastWriteBody<T extends { starting_pools: ForecastInputPayload["starting_pools"] }>(body: T) {
+  return { ...body, starting_pools: body.starting_pools.map((pool) => ({
+    name: pool.name, pool_type: pool.pool_type, opening_balance: pool.opening_balance, as_of_date: pool.as_of_date,
+    net_worth_account_key: pool.net_worth_account_key,
+    net_worth_snapshot_revision_id: pool.net_worth_snapshot_revision_id,
+    source_valuation_date: pool.source_valuation_date,
+    source_stale: pool.source_stale,
+    source_quality_acknowledged: pool.source_quality_acknowledged,
+  })) };
+}
+
 export async function getForecasts(includeArchived = true) {
   return (await apiRequest<ForecastSummary[]>(`/forecasts?include_archived=${includeArchived}`)).data;
 }
@@ -31,11 +43,11 @@ export async function getForecastProjection(forecastId: string, revisionNumber: 
 }
 
 export async function previewForecast(body: ForecastInputPayload) {
-  return (await apiRequest<ForecastDraft>("/forecasts/previews", { method: "POST", body: JSON.stringify(body) })).data;
+  return (await apiRequest<ForecastDraft>("/forecasts/previews", { method: "POST", body: JSON.stringify(forecastWriteBody(body)) })).data;
 }
 
 export async function createForecast(body: ForecastInputPayload & { name: string }) {
-  return (await apiRequest<ForecastSummary>("/forecasts", { method: "POST", body: JSON.stringify(body) })).data;
+  return (await apiRequest<ForecastSummary>("/forecasts", { method: "POST", body: JSON.stringify(forecastWriteBody(body)) })).data;
 }
 
 export async function saveForecastRevision(forecastId: string, body: {
@@ -46,7 +58,7 @@ export async function saveForecastRevision(forecastId: string, body: {
   provisional_acknowledged: boolean;
 }) {
   return (await apiRequest<ForecastSnapshot>(`/forecasts/${encodeURIComponent(forecastId)}/revisions`, {
-    method: "POST", body: JSON.stringify(body),
+    method: "POST", body: JSON.stringify(forecastWriteBody(body)),
   })).data;
 }
 

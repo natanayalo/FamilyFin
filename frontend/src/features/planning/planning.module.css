@@ -26,4 +26,52 @@
 .srOnly{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
 @media(max-width:900px){.scenarioList{grid-template-columns:1fr}.metricGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.monthlyGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:620px){.page{gap:13px}.toolbar{align-items:flex-start;flex-direction:column}.toolbar h2{font-size:21px}.section{gap:12px;padding:14px}.sectionHeading{display:grid}.actions{width:100%}.actions button{flex:1}.fieldGrid{grid-template-columns:1fr}.steps{margin-inline:-2px}.step{padding:8px}.step span{font-size:10px}.stepFooter{position:sticky;bottom:calc(77px + env(safe-area-inset-bottom));z-index:3;margin:0 -2px;padding:10px 2px;background:color-mix(in srgb,var(--card) 96%,transparent);backdrop-filter:blur(10px)}.stepFooter .button,.stepFooter .subtleButton{flex:1}.metricGrid{gap:7px}.metric{padding:10px}.metric strong{font-size:14px}.monthlyGrid{grid-template-columns:1fr}.historyRow{grid-template-columns:1fr auto}.historyRow .historyMeta{grid-column:1/-1}.compareChecks{grid-template-columns:1fr}.scenarioActions button{flex:1}.compareScenario{grid-template-columns:1fr}.scenarioCard{padding:12px}}
-.dark .error{background:#382422;color:#f2c4bf;border-color:#63413d}.dark .notice{background:#1d3425;color:#c7e5d0;border-color:#35583f}.dark .field input:focus,.dark .field select:focus,.dark .field textarea:focus{box-shadow:0 0 0 3px #263a2e}
+:global(.dark) .error{background:#382422;color:#f2c4bf;border-color:#63413d}:global(.dark) .notice{background:#1d3425;color:#c7e5d0;border-color:#35583f}:global(.dark) .field input:focus,:global(.dark) .field select:focus,:global(.dark) .field textarea:focus{box-shadow:0 0 0 3px #263a2e}
+
+.field input[aria-invalid="true"]{border-color:var(--destructive)}
+
+/* Monthly planning follows the shared Hebrew dashboard hierarchy. */
+.page{gap:20px;min-width:0}
+.intro{margin:0;font-size:14px;color:var(--muted-foreground);line-height:1.8}
+.planControls{display:flex;align-items:end;gap:12px}.planControls>.field{flex:1;max-width:520px}
+.section{gap:18px;padding:22px;border-radius:16px;min-width:0;scroll-margin-block:20px}
+.sectionHeading h2{font-size:20px;font-weight:600;margin:0 0 6px;line-height:1.6}
+.sectionHeading h3{font-size:17px;font-weight:600}
+.sectionHeading p,.muted{font-size:13px;line-height:1.8}
+.button,.subtleButton,.dangerButton{font-size:13px;min-height:42px}
+.field{font-size:13px}
+.metricGrid{grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.metric{padding:18px;gap:14px;background:var(--card);border-radius:13px}
+.metric span{font-size:13px;line-height:1.7}
+.metric strong{font-size:22px;line-height:1.6;font-weight:600;overflow-wrap:normal}
+.remaining{background:var(--secondary);border-color:color-mix(in srgb,var(--primary) 30%,var(--border))}
+.remaining strong{color:var(--primary)}
+.deficit{background:var(--warning);border-color:var(--warning-border)}.deficit strong{color:var(--warning-foreground)}
+.explanation{margin:0;color:var(--muted-foreground);font-size:13px;line-height:1.9}
+.explanation bdi,.actualRow bdi{font-variant-numeric:tabular-nums}
+.setup h2{margin:0;font-size:26px;line-height:1.6}.setup>p{max-width:650px;font-size:14px;line-height:1.9;margin:0;color:var(--muted-foreground)}
+.setupSteps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;list-style:decimal inside;padding:0;margin:0;counter-reset:none}
+.setupSteps li{padding:18px;border:1px solid var(--border);border-radius:12px;font-size:14px;line-height:1.8}
+.setupSteps strong{font-weight:600}.setupSteps span{display:block;margin-top:8px;font-size:13px;color:var(--muted-foreground)}
+.disclosure>summary{list-style:none;display:flex;gap:12px;align-items:center;justify-content:space-between;cursor:pointer;font-size:15px;font-weight:500;min-height:44px}
+.disclosure>summary::-webkit-details-marker{display:none}.disclosure>summary::marker{content:""}.disclosure>summary small{display:block;font-weight:400;color:var(--muted-foreground);font-size:13px;margin-top:5px}
+.disclosure>summary svg{flex-shrink:0;color:var(--muted-foreground)}.disclosure[open]>summary{margin-bottom:18px}.disclosure[open]>summary>svg{transform:rotate(180deg)}
+.disclosure .reviewList,.disclosure .itemList{margin-top:12px}
+.reviewRow{font-size:14px;line-height:1.8;padding:14px}.reviewRow small{font-size:12px;line-height:1.8}
+.scenarioMenu summary{font-size:13px;cursor:pointer;min-height:42px;display:flex;align-items:center;padding:0 12px;border:1px solid var(--border);border-radius:9px}
+.scenarioMenu[open]>.actions{margin-top:10px}.scenarioMenu[open]{display:grid;gap:8px}
+.actualRows{display:grid;min-width:0}.actualRow{display:grid;grid-template-columns:minmax(90px,1fr) repeat(2,minmax(0,1fr));gap:14px;padding:14px 0;border-bottom:1px solid var(--border);font-size:14px;align-items:start;line-height:1.8}
+.actualRow:first-child{font-size:12px;color:var(--muted-foreground)}.actualRow strong{font-weight:500}.actualRow bdi{justify-self:start;overflow-wrap:anywhere}
+.variance{display:flex;gap:10px 24px;flex-wrap:wrap;font-size:13px}.variance p{width:100%;margin:0;color:var(--muted-foreground);line-height:1.8}
+.monthCard h4{font-size:14px}.monthValue{font-size:12px;line-height:1.9}.monthValue bdi{font-size:13px}
+.notice{background:var(--secondary);color:var(--foreground);border:1px solid var(--border)}.error{background:color-mix(in srgb,var(--destructive) 10%,var(--card));color:var(--destructive);border:1px solid color-mix(in srgb,var(--destructive) 35%,var(--border))}
+.field input:focus-visible,.field select:focus-visible,.field textarea:focus-visible,.page button:focus-visible,.page summary:focus-visible{outline:2px solid var(--ring);outline-offset:3px}
+@media(max-width:1200px){.metricGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.monthlyGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.setupSteps{grid-template-columns:1fr}.setupSteps li{padding:14px}.sectionHeading{flex-wrap:wrap}}
+@media(max-width:620px){.section{padding:16px;gap:16px}.planControls{align-items:end}.planControls>.field{min-width:0}.sectionHeading h2{font-size:18px}.setup h2{font-size:23px}.metricGrid{grid-template-columns:1fr}.metric{padding:14px;gap:8px}.metric strong{font-size:24px}.monthlyGrid{grid-template-columns:1fr}.monthValue{flex-wrap:wrap}.actualRow{grid-template-columns:minmax(0,.9fr) repeat(2,minmax(0,1fr));gap:8px;font-size:12px}.actualRow bdi{font-size:12px}.reviewRow{grid-template-columns:1fr}.reviewRow bdi{justify-self:start}.scenarioMenu{width:100%}.scenarioMenu summary{justify-content:center}.disclosure>summary{font-size:14px}.step{min-width:0;padding:8px 5px;gap:4px}.step span{font-size:10px}.step b{flex-shrink:0;width:19px;height:19px}}
+
+.planControls{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:12px;align-items:end}
+.planControls>.field{max-width:none}.planControls>.warning,.planControls>.check{grid-column:1/-1}
+.planControls>.actions{align-items:flex-start}.scenarioMenu[open]{max-width:100%}
+@media(max-width:620px){.planControls{grid-template-columns:1fr}.planControls>.actions{flex-wrap:nowrap}.planControls>.actions>.subtleButton{flex:1}.planControls .scenarioMenu{width:auto;flex:1}.planControls .scenarioMenu[open]{flex:1}.planControls .scenarioMenu .actions{flex-direction:column}.planControls .scenarioMenu .actions button{width:100%;flex:auto}}
+.compareScenario{font-size:12px;line-height:1.8}.compareScenario strong{font-size:13px}.compareAmounts{font-size:12px;line-height:1.9}.compareMonth h4{font-size:14px}.compareChoice{font-size:13px;line-height:1.8}.historyRow{font-size:12px;line-height:1.8}.historyRow strong{font-size:14px}.historyRow small{font-size:12px}

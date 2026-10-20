@@ -149,6 +149,8 @@ class Database:
         project_root = Path(__file__).resolve().parents[3]
         config = Config(str(project_root / "alembic.ini"))
         config.set_main_option("sqlalchemy.url", f"sqlite:///{self.path.resolve().as_posix()}")
+        # A caller-owned Database path must win over a shell's migration URL.
+        config.attributes["family_finance_database_url"] = config.get_main_option("sqlalchemy.url")
         command.upgrade(config, "head")
 
     def connect(self) -> ConnectionAdapter:

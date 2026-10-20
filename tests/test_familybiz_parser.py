@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from decimal import Decimal
+
 import pytest
 
 from family_finance.importers.familybiz import FamilyBizParser, FamilyBizSchemaError
@@ -122,3 +124,13 @@ def test_actual_xml_cell_row_coordinate_is_validated(familybiz_row):
 
     with pytest.raises(FamilyBizSchemaError, match="cell has an invalid XML coordinate"):
         FamilyBizParser().parse(rewritten.getvalue(), filename="synthetic.xlsx")
+
+
+def test_reporting_amount_is_preserved_when_original_sign_differs(familybiz_row):
+    row = list(familybiz_row)
+    row[1] = 72.4
+    row[8] = -72.4
+    parsed = FamilyBizParser().parse(make_workbook([row]), filename="synthetic.xlsx")
+    assert parsed.records[0].amount == Decimal("72.4")
+    assert parsed.records[0].original_amount == Decimal("-72.4")
+    assert "INVALID_CLASS_SIGN" not in {issue.code for issue in parsed.records[0].issues}

@@ -1,22 +1,33 @@
 import type { NextConfig } from "next";
 
+const localDev = process.env.FAMILY_FINANCE_LOCAL_DEV === "1";
+const hotReload = process.env.NODE_ENV === "development";
+const apiPort = process.env.FAMILY_FINANCE_API_PORT || "8000";
+if (localDev && (!/^\d+$/.test(apiPort) || Number(apiPort) < 1 || Number(apiPort) > 65535)) {
+  throw new Error("FAMILY_FINANCE_API_PORT must be between 1 and 65535");
+}
+
 const contentSecurityPolicy = [
   "default-src 'self'",
   "base-uri 'self'",
-  "connect-src 'self'",
+  `connect-src 'self'${hotReload ? " ws://127.0.0.1:* ws://localhost:*" : ""}`,
   "font-src 'self'",
   "form-action 'self'",
   "frame-ancestors 'none'",
   "img-src 'self' data: blob:",
   "manifest-src 'self'",
   "object-src 'none'",
-  "script-src 'self' 'unsafe-inline'",
+  `script-src 'self' 'unsafe-inline'${hotReload ? " 'unsafe-eval'" : ""}`,
   "style-src 'self' 'unsafe-inline'",
   "worker-src 'self' blob:",
 ].join("; ");
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  distDir: localDev ? ".next-local" : ".next",
+  async rewrites() {
+    return localDev ? [{ source: "/api/:path*", destination: `http://127.0.0.1:${apiPort}/api/:path*` }] : [];
+  },
   async headers() {
     return [
       {

@@ -3,13 +3,18 @@
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { ApiRequestError } from "@/lib/api";
+import { formatHebrewDate, formatHebrewDateTime, formatHebrewDaysAgo } from "@/lib/display";
+import { resetDashboardFilters } from "@/features/dashboard/filter-state";
 import { getSessions, getSettings, revokeSession, saveAppPreferences, type SettingsOverview, type UserSession } from "./api";
 import "./settings.css";
 
 function dateLabel(value: string | null) {
   if (!value) return "אין עדיין נתונים";
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.valueOf()) ? value : parsed.toLocaleString("he-IL");
+  return formatHebrewDateTime(value);
+}
+
+function dateOnlyLabel(value: string | null) {
+  return value ? formatHebrewDate(value) : "אין עדיין נתונים";
 }
 
 function warningLabel(code: string) {
@@ -37,10 +42,12 @@ export function SettingsFeature() {
   const [currency, setCurrency] = useState("ILS");
   const [months, setMonths] = useState(12);
   const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [message, setMessage] = useState("");
 
   const refresh = useCallback(async () => {
+    setLoading(true);
     setError("");
     try {
       const [overview, sessionList] = await Promise.all([getSettings(), getSessions()]);
@@ -50,6 +57,8 @@ export function SettingsFeature() {
       setSessions(sessionList.data.items);
     } catch (reason) {
       setError(reason instanceof ApiRequestError ? reason.message : "לא ניתן לטעון את ההגדרות.");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -59,6 +68,7 @@ export function SettingsFeature() {
     event.preventDefault(); setBusy(true); setError(""); setMessage("");
     try {
       await saveAppPreferences({ default_currency: currency, default_months: months });
+      resetDashboardFilters();
       setMessage("העדפות התצוגה נשמרו לחשבון שלך.");
       await refresh();
     } catch (reason) {
@@ -80,16 +90,18 @@ export function SettingsFeature() {
   return <div className="settings-feature">
     {error && <p className="settings-error" role="alert">{error}</p>}
     {message && <p className="settings-success" role="status">{message}</p>}
-    {!settings ? <section className="surface settings-panel"><p role="status">טוענים הגדרות מהשרת…</p></section> : <>
+    {!settings ? <section className="surface settings-panel">{loading ? <p role="status">טוענים הגדרות מהשרת…</p> : <><p>ההגדרות לא נטענו.</p><Button variant="outline" onClick={() => void refresh()}>לנסות שוב</Button></>}</section> : <>
       <section className="surface settings-panel" aria-labelledby="settings-preferences-heading">
         <div className="settings-heading"><div><h2 id="settings-preferences-heading">העדפות תצוגה</h2><p>העדפות אלה נשמרות לכל חשבון בנפרד.</p></div></div>
         <form className="settings-form" onSubmit={save}>
-          <label>מטבע ברירת מחדל
-            <select value={currency} onChange={(event) => setCurrency(event.target.value)}>
+          <div className="settings-preference-field"><label>מטבע ברירת מחדל
+            <select aria-describedby="settings-currency-hint" value={currency} onChange={(event) => setCurrency(event.target.value)}>
               <option value="ILS">שקל ישראלי · ILS</option><option value="USD">דולר אמריקאי · USD</option>
               <option value="EUR">אירו · EUR</option><option value="GBP">לירה שטרלינג · GBP</option>
+              {!["ILS", "USD", "EUR", "GBP"].includes(currency) && <option value={currency}>{currency}</option>}
             </select>
           </label>
+          <p id="settings-currency-hint" className="settings-field-hint">קובע אילו עסקאות יוצגו בסקירה ובדוח ההוצאות. הסכומים נשארים במטבע המקורי ואינם מומרים.</p></div>
           <label>תקופת ברירת מחדל
             <select value={months} onChange={(event) => setMonths(Number(event.target.value))}>
               <option value={6}>6 חודשים</option><option value={12}>12 חודשים</option>
@@ -103,9 +115,9 @@ export function SettingsFeature() {
       <section className="surface settings-panel" aria-labelledby="settings-freshness-heading">
         <div className="settings-heading"><div><h2 id="settings-freshness-heading">עדכניות נתונים</h2><p>מועדי הייבוא האחרונים, ללא הצגת שמות קבצים או נתיבי אחסון.</p></div></div>
         <div className="settings-freshness-grid">
-          <article><strong>FamilyBiz</strong><span>ייבוא: {dateLabel(settings.freshness.familybiz.last_import_at)}</span><span>תאריך עסקה אחרון: {dateLabel(settings.freshness.familybiz.latest_transaction_date)}</span>{settings.freshness.familybiz.age_days !== null && <span>לפני {settings.freshness.familybiz.age_days} ימים</span>}</article>
-          <article><strong>תכנון</strong><span>ייבוא: {dateLabel(settings.freshness.planning.last_import_at)}</span>{settings.freshness.planning.age_days !== null && <span>לפני {settings.freshness.planning.age_days} ימים</span>}</article>
-          <article><strong>הון משפחתי</strong><span>ייבוא: {dateLabel(settings.freshness.net_worth.last_import_at)}</span>{settings.freshness.net_worth.age_days !== null && <span>לפני {settings.freshness.net_worth.age_days} ימים</span>}</article>
+          <article><strong>FamilyBiz</strong><span>ייבוא: <bdi dir="auto">{dateLabel(settings.freshness.familybiz.last_import_at)}</bdi></span><span>תאריך עסקה אחרון: <bdi dir="auto">{dateOnlyLabel(settings.freshness.familybiz.latest_transaction_date)}</bdi></span>{settings.freshness.familybiz.age_days !== null && <span>{formatHebrewDaysAgo(settings.freshness.familybiz.age_days)}</span>}</article>
+          <article><strong>תכנון</strong><span>ייבוא: <bdi dir="auto">{dateLabel(settings.freshness.planning.last_import_at)}</bdi></span>{settings.freshness.planning.age_days !== null && <span>{formatHebrewDaysAgo(settings.freshness.planning.age_days)}</span>}</article>
+          <article><strong>הון משפחתי</strong><span>ייבוא: <bdi dir="auto">{dateLabel(settings.freshness.net_worth.last_import_at)}</bdi></span>{settings.freshness.net_worth.age_days !== null && <span>{formatHebrewDaysAgo(settings.freshness.net_worth.age_days)}</span>}</article>
         </div>
       </section>
 
@@ -122,7 +134,7 @@ export function SettingsFeature() {
         <ul className="settings-member-list">{settings.household.members.map((member) => <li key={member}>{member}</li>)}</ul>
         <h3 className="settings-sessions-title">החיבורים הפעילים שלך</h3>
         {sessions.length ? <ul className="settings-session-list">{sessions.map((session) => <li key={session.id}>
-          <div><strong>{session.current ? "המכשיר הנוכחי" : "חיבור פעיל"}</strong><span>נוצר: {dateLabel(session.created_at)}</span><span>בתוקף עד: {dateLabel(session.expires_at)}</span></div>
+          <div><strong>{session.current ? "המכשיר הנוכחי" : "חיבור פעיל"}</strong><span>נוצר: <bdi dir="auto">{dateLabel(session.created_at)}</bdi></span><span>בתוקף עד: <bdi dir="auto">{dateLabel(session.expires_at)}</bdi></span></div>
           {!session.current && <Button variant="outline" size="sm" disabled={busy} onClick={() => void revoke(session)}>ביטול חיבור</Button>}
         </li>)}</ul> : <p className="settings-muted">לא נמצאו חיבורים פעילים.</p>}
       </section>

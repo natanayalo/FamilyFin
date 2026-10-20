@@ -135,8 +135,22 @@ class MetricsService:
             start=start,
             end=_next_month(end),
         ):
-            self._series_context = {}
-            return []
+            # A covered month with no activity is a verified zero, not missing data.
+            # Do not infer coverage for a currency absent from the household dataset.
+            covered = False
+            if self.repository.accepted_transactions(currency=normalized_currency):
+                month = start
+                while month <= end:
+                    if any(
+                        self._batch_proves_period_complete(batch, month)
+                        for batch in self.repository.batches_covering(month, _month_end(month))
+                    ):
+                        covered = True
+                        break
+                    month = _next_month(month)
+            if not covered:
+                self._series_context = {}
+                return []
         all_dates = self.repository.all_accepted_booking_dates()
         historical_start = min(all_dates).replace(day=1) if all_dates else start
         context_start = min(
@@ -382,6 +396,7 @@ class MetricsService:
             month=month,
             currency=currency,
             classification_policy_version=self.policy_version,
+            accepted_transaction_count=len(rows),
             source_period_completeness=source_completeness,
             completeness=completeness,
             unclassified_transaction_count=len(unclassified),

@@ -9,14 +9,14 @@ Each section repeats these source columns:
 | Source field | Normalized field | Treatment |
 | --- | --- | --- |
 | תאריך | booking_date | Required dd/mm/yyyy; used for cash-flow and historical metrics |
-| סכום | amount | Required Decimal(str(value)) |
+| סכום | amount | Required Decimal(str(value)); authoritative reporting amount and direction |
 | תאור | description | Unicode-normalized and trimmed |
 | תאריך ביעדים | allocation_date | Preserved separately; never silently substituted for booking date |
 | סוג תנועה | movement_type | Optional source classification |
 | קטגוריה | category | Preserved as an exact source value |
 | מטבע | currency | The reporting currency for the amount |
 | מטבע מקורי | original_currency | Optional original transaction currency |
-| תנועה מקורית | original_amount | Optional original transaction amount |
+| תנועה מקורית | original_amount | Optional source metadata; its sign does not establish reporting direction |
 
 The report header states a requested range through 30 September 2026, while the latest observed booking date is 19 September 2026. Freshness therefore uses import time and the maximum booking date. It does not treat the requested report end as evidence that the period is complete.
 
@@ -31,6 +31,17 @@ The workbook contains 1,452 transaction rows from 1 September 2025 through 19 Se
 - 115 category cells contain the escaped _x000D_ marker and are normalized to a newline.
 - The export has 1,438 ILS rows and 14 USD rows. Non-ILS rows are imported and displayed separately, but excluded from ILS analytics until an FX policy exists.
 - The source contains duplicate-looking occurrences. Date, amount, and description are not a unique transaction identity.
+
+Read-only verification on 6 October 2026 found 24 rows with positive `סכום` and
+negative `תנועה מקורית`; 61 have both positive, 1,345 have both negative, 18 have
+zero `סכום` with negative `תנועה מקורית`, and four have missing original values.
+All 1,241 populated original values in card sections are negative. The 61 positive
+original values are in bank sections; four card rows have missing original values.
+For example, Google One has reporting amount +72.4 and original value −72.4;
+PAYBOX has reporting amount +630 and original value −630. The original-value
+column is not consistently signed as household cash flow. Classification and
+metrics use `סכום`; they do not reverse it based on `תנועה מקורית`. An explicit
+amount correction requires independent evidence that `סכום` itself is wrong.
 
 These are warnings unless a value is required for safe parsing. The raw row payload is preserved in source_records; normalization is used for matching and analytics fields.
 

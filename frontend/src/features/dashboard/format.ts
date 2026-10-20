@@ -1,15 +1,4 @@
-const currencyNames: Record<string, string> = {
-  ILS: "ש״ח",
-  USD: "$",
-  EUR: "€",
-  GBP: "£",
-};
-
-export function formatAmount(amount: string | null | undefined, currency = "ILS") {
-  if (amount == null) return "לא זמין";
-  const symbol = currencyNames[currency] ?? currency;
-  return `${amount} ${symbol}`;
-}
+export { formatAmount } from "@/lib/display";
 
 export function formatMonth(month: string) {
   const [year, monthNumber] = month.slice(0, 7).split("-");
@@ -68,6 +57,7 @@ export function classificationLabel(value: string) {
     savings_transfer: "העברת חיסכון",
     credit_card_settlement: "סילוק כרטיס אשראי",
     debt_principal: "קרן חוב",
+    no_financial_effect: "נבדק - ללא השפעה כספית",
     unclassified: "לא מסווג",
     fixed: "קבועה",
     variable: "משתנה",
@@ -81,12 +71,13 @@ export function classificationLabel(value: string) {
 }
 
 export function comparisonReason(reason: string | null) {
-  if (!reason) return "המדיניות לא מסרה סיבה.";
-  if (reason.startsWith("The selected month is provisional:")) return `החודש שנבחר זמני: ${reason.split(":").slice(1).join(":").trim()}`;
-  if (reason.startsWith("The comparison month is provisional:")) return `חודש ההשוואה זמני: ${reason.split(":").slice(1).join(":").trim()}`;
+  if (!reason) return "אין נתוני השוואה מאומתים.";
+  if (reason.startsWith("The selected month is provisional:")) return "נתוני החודש שנבחר אינם מלאים.";
+  if (reason.startsWith("The comparison month is provisional:")) return "נתוני חודש ההשוואה אינם מלאים.";
   if (reason === "The comparison month is outside the selected range.") return "חודש ההשוואה מחוץ לטווח שנבחר.";
   if (reason === "The metrics policy withheld this comparison.") return "מדיניות המדדים אינה מאפשרת את ההשוואה.";
-  return reason;
+  if (["No prior month", "No prior year", "Prior year unavailable"].includes(reason)) return "אין נתונים לתקופה הקודמת.";
+  return "אין נתוני השוואה מאומתים.";
 }
 
 export function insightLabel(label: string) {

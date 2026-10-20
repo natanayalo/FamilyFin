@@ -55,6 +55,12 @@ def test_authenticated_dashboard_filters_and_contributor_contract(tmp_path):
         assert overview["selected_month"]["metrics"]["net_consumption"] == "17.4"
         assert isinstance(overview["headline"]["income"], str)
         assert "request_id" in overview_response.json()["meta"]
+        statistics = overview["period_statistics"]
+        assert statistics["observed"]["sample_count"] == 1
+        assert statistics["observed"]["partial_months"] == ["2026-09-01"]
+        assert statistics["observed"]["metrics"]["gross_income"]["mean"] == "1000.0000"
+        assert statistics["complete"]["sample_count"] == 0
+        assert statistics["complete"]["metrics"]["gross_income"]["mean"] is None
 
         expenses_response = client.get(
             "/api/v1/dashboard/expenses",
@@ -126,3 +132,78 @@ def test_authenticated_dashboard_filters_and_contributor_contract(tmp_path):
         assert reversed_range.status_code == 422
         partial_range = client.get("/api/v1/dashboard/overview", params={"start_month": "2026-09"})
         assert partial_range.status_code == 422
+
+
+def test_dashboard_distinguishes_covered_zero_activity_from_missing_month(tmp_path):
+    settings, database, _auth, app = make_api(tmp_path)
+    service = ImportService(settings=settings, database=database)
+    workbook = make_workbook(
+        [
+            ["01/01/2026", 1000, "salary", "01/01/2026", "credit", "salary", "ILS", "ILS", 1000],
+            ["31/03/2026", 1000, "salary", "31/03/2026", "credit", "salary", "ILS", "ILS", 1000],
+        ],
+        provider="בנק", report_end="31/03/2026",
+    )
+    preview = service.preview_import(workbook, "covered-zero.xlsx")
+    service.commit_import(workbook, preview.preview_token, "covered-zero.xlsx")
+    with ApiTestClient(app, base_url="https://testserver") as client:
+        _sign_in(client)
+        zero = client.get("/api/v1/dashboard/overview", params={
+            "start_month": "2026-02", "end_month": "2026-02", "currency": "ILS",
+        }).json()["data"]
+        assert zero["selected_month"]["complete"] is True
+        assert zero["selected_month"]["metrics"]["accepted_transaction_count"] == 0
+        assert zero["headline"]["income"] == "0"
+        assert zero["last_import_at"] is not None
+        missing = client.get("/api/v1/dashboard/overview", params={
+            "start_month": "2026-04", "end_month": "2026-04", "currency": "ILS",
+        }).json()["data"]
+        assert missing["selected_month"] is None
+        assert missing["period_statistics"]["observed"]["excluded_months"] == ["2026-04-01"]
+        history = client.get("/api/v1/dashboard/overview", params={
+            "start_month": "2026-01", "end_month": "2026-04", "currency": "ILS",
+        }).json()["data"]
+        assert history["selected_month"]["metrics"]["accepted_transaction_count"] == 0
+        assert history["selected_month"]["metrics"]["source_period_completeness"]["source_period_complete"] is False
+        assert history["series"][0]["metrics"]["accepted_transaction_count"] == 1
+        assert history["series"][2]["metrics"]["rolling_three_month_averages"]["gross_income"] is not None
+        assert history["series"][3]["metrics"]["rolling_three_month_averages"]["gross_income"] is None
+        statistics = history["period_statistics"]["complete"]
+        assert statistics["sample_count"] == 3
+        assert statistics["included_months"] == ["2026-01-01", "2026-02-01", "2026-03-01"]
+        assert statistics["excluded_months"] == ["2026-04-01"]
+        assert statistics["metrics"]["gross_income"] == {
+            "mean": "666.6667", "p25": "500.0000", "median": "1000.0000", "p75": "1000.0000",
+        }
+        usd = client.get("/api/v1/dashboard/overview", params={
+            "start_month": "2026-02", "end_month": "2026-02", "currency": "USD",
+        }).json()["data"]
+        assert usd["series"] == []
+
+
+def test_recent_transactions_are_authenticated_scoped_and_newest_first(tmp_path):
+    settings, database, _auth, app = make_api(tmp_path)
+    service = ImportService(settings=settings, database=database)
+    rows = [
+        [f"{day:02d}/09/2026", -day, f"purchase {day}", f"{day:02d}/09/2026", "purchase", "food", "ILS", "ILS", -day]
+        for day in range(1, 8)
+    ] + [
+        ["30/08/2026", -80, "previous month", "30/08/2026", "purchase", "food", "ILS", "ILS", -80],
+        ["29/09/2026", -90, "foreign currency", "29/09/2026", "purchase", "food", "USD", "USD", -90],
+    ]
+    workbook = make_workbook(rows, provider="בנק", reference="recent-transactions", report_end="30/09/2026")
+    preview = service.preview_import(workbook, "recent.xlsx")
+    service.commit_import(workbook, preview.preview_token, "recent.xlsx")
+    with ApiTestClient(app, base_url="https://testserver") as client:
+        assert client.get("/api/v1/dashboard/recent-transactions").status_code == 401
+        _sign_in(client)
+        response = client.get("/api/v1/dashboard/recent-transactions", params={"start_month": "2026-09", "end_month": "2026-09", "currency": "ILS"})
+        assert response.status_code == 200, response.text
+        assert response.headers["cache-control"] == "private, no-store"
+        recent = response.json()["data"]
+        assert [row["description"] for row in recent] == [f"purchase {day}" for day in range(7, 2, -1)]
+        assert all(row["currency"] == "ILS" for row in recent)
+        assert all(row["amount"].startswith("-") for row in recent)
+        missing = client.get("/api/v1/dashboard/recent-transactions", params={"start_month": "2026-10", "end_month": "2026-10", "currency": "ILS"})
+        assert missing.status_code == 200
+        assert missing.json()["data"] == []

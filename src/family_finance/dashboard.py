@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import Counter
 from datetime import UTC, date, datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_UP, Decimal, localcontext
 from typing import Any
 
 from family_finance.classification import ClassificationService
@@ -14,14 +14,16 @@ from family_finance.models import (
     CategorySummary,
     DashboardComparison,
     DashboardFilters,
+    DashboardStatisticsPopulation,
     DataQualityDashboard,
     ExpenseBehavior,
     ExpenseDashboard,
+    MonthlyAmountDistribution,
     MonthlyMetrics,
-        MonthlySeriesPoint,
+    MonthlySeriesPoint,
     OverviewDashboard,
-        TransactionContribution,
-    )
+    TransactionContribution,
+)
 from family_finance.persistence.db import Database
 from family_finance.persistence.repositories import FinancialRepository
 
@@ -34,6 +36,77 @@ def _month_shift(month: date, offset: int) -> date:
     year = month.year + (month.month - 1 + offset) // 12
     month_number = (month.month - 1 + offset) % 12 + 1
     return date(year, month_number, 1)
+
+
+_PERIOD_METRICS = ("gross_income", "net_consumption", "operating_surplus_or_deficit")
+_STATISTICS_SCALE = Decimal("0.0001")
+
+
+def _monthly_distribution(values: list[Decimal]) -> MonthlyAmountDistribution:
+    """Use one observation per month and linear interpolation at (n - 1) * p.
+
+    Preserve Decimal arithmetic, rounding final descriptive statistics to the
+    same four decimal places as existing monthly average calculations.
+    """
+    if not values:
+        return MonthlyAmountDistribution()
+    ordered = sorted(values)
+    # Large exact decimal amounts must not inherit the interpreter's 28-digit limit.
+    integer_digits = max(max(0, value.adjusted() + 1) for value in ordered)
+    fraction_digits = max(max(0, -value.as_tuple().exponent) for value in ordered)
+    with localcontext() as context:
+        context.prec = max(28, integer_digits + fraction_digits + len(str(len(values))) + 8)
+
+        def quantile(percentile: Decimal) -> Decimal:
+            position = Decimal(len(ordered) - 1) * percentile
+            lower = int(position)
+            upper = min(lower + 1, len(ordered) - 1)
+            value = ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+            return value.quantize(_STATISTICS_SCALE, rounding=ROUND_HALF_UP)
+
+        return MonthlyAmountDistribution(
+            mean=(sum(ordered, Decimal(0)) / Decimal(len(ordered))).quantize(
+                _STATISTICS_SCALE, rounding=ROUND_HALF_UP
+            ),
+            p25=quantile(Decimal("0.25")),
+            median=quantile(Decimal("0.5")),
+            p75=quantile(Decimal("0.75")),
+        )
+
+
+def _period_statistics(
+    series: list[MonthlyMetrics], filters: DashboardFilters | None = None
+) -> dict[str, DashboardStatisticsPopulation]:
+    """Separate provisional observed sums from the complete-month population."""
+    ordered = sorted(series, key=lambda item: item.month)
+    observed = [
+        item for item in ordered
+        if item.accepted_transaction_count > 0
+        or item.source_period_completeness.source_period_complete
+    ]
+    requested_months = [item.month for item in ordered]
+    if filters is not None:
+        count = ((filters.end_month.year - filters.start_month.year) * 12
+                 + filters.end_month.month - filters.start_month.month + 1)
+        requested_months = [_month_shift(filters.start_month, offset) for offset in range(count)]
+    populations = {
+        "observed": observed,
+        "complete": [item for item in observed if item.completeness.complete],
+    }
+    result = {}
+    for name, included in populations.items():
+        months = {item.month for item in included}
+        result[name] = DashboardStatisticsPopulation(
+            included_months=[item.month for item in included],
+            partial_months=[item.month for item in included if not item.completeness.complete],
+            excluded_months=[month for month in requested_months if month not in months],
+            sample_count=len(included),
+            metrics={
+                metric: _monthly_distribution([getattr(item, metric) for item in included])
+                for metric in _PERIOD_METRICS
+            },
+        )
+    return result
 
 
 class DashboardService:
@@ -167,6 +240,7 @@ class DashboardService:
             if selected
             else {}
         )
+        latest_batch = self.repository.latest_batch()
         return OverviewDashboard(
             filters=selected_filters,
             selected_month=self._point(selected) if selected else None,
@@ -174,6 +248,8 @@ class DashboardService:
             headline=headline,
             comparisons=comparisons,
             freshness_date=selected.data_freshness_date if selected else None,
+            last_import_at=str(latest_batch["created_at"]) if latest_batch else None,
+            period_statistics=_period_statistics(series_metrics, selected_filters),
             source_coverage=selected.completeness.source_coverage if selected else "unknown",
             currency=selected_filters.currency,
         )
@@ -268,6 +344,7 @@ class DashboardService:
             behavior_totals=behavior_totals,
             category_comparisons=category_comparisons,
             potential_recurring_spending=recurring,
+            recurring_pattern_reviews=self.insights.list_recurring_reviews(selected_filters.currency),
             unusual_category_spending=anomalies,
             currency=selected_filters.currency,
         )
@@ -282,7 +359,7 @@ class DashboardService:
                     transaction_id=int(row["id"]),
                     booking_date=date.fromisoformat(str(row["booking_date"])),
                     description=str(row["description"]),
-                    amount=Decimal(str(row["amount"])),
+                    amount=classification.amount,
                     currency=str(row["currency"]).upper(),
                     source_category=str(row["category"]),
                     movement_type=row.get("movement_type"),
@@ -339,6 +416,7 @@ class DashboardService:
             currencies=dict(currencies),
             issue_counts=dict(issue_counts),
             incomplete_months=[item.month for item in metrics if not item.completeness.complete],
+            monthly_checks=metrics,
             open_reconciliation_cases=len(
                 self.repository.open_cases_in_period(selected_filters.start_month, end_exclusive)
             ),

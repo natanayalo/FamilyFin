@@ -8,6 +8,7 @@ async function mockSession(page: Page) {
     if (route.request().method() === "GET") await route.fulfill({ status: 200, contentType: "application/json", headers: { "Cache-Control": "no-store" }, body: JSON.stringify(session) });
     else await route.fulfill({ status: 204, headers: { "Cache-Control": "no-store" } });
   });
+  await page.route("**/api/v1/dashboard/recent-transactions**", (route) => route.fulfill({ status: 200, json: { data: [], meta: { request_id: "fixture-recent" } } }));
   await page.route("**/api/v1/dashboard/overview**", async (route) => route.fulfill({
     status: 200,
     contentType: "application/json",
@@ -41,7 +42,7 @@ test("sign-in is Hebrew RTL and reaches the authenticated shell", async ({ page 
   await page.getByLabel("סיסמה").fill("example-password");
   await page.getByRole("button", { name: "התחברות" }).click();
   await expect(page.getByRole("heading", { name: "סקירה כללית" })).toBeVisible();
-  await expect(page.getByText("משתמשת בדיקה")).toBeVisible();
+  await expect(page.getByRole("button", { name: "יציאה", exact: true })).toBeVisible();
 });
 
 test("overview and expenses routes show service metrics and contributor drill-downs", async ({ page }) => {
@@ -107,7 +108,7 @@ test("overview and expenses routes show service metrics and contributor drill-do
     filters, selected_month: point, series: [point],
     categories: [{ category: "food", amount: "17.40", contributor_transaction_ids: [12] }],
     behavior_totals: { fixed: "0", variable: "17.40", unknown: "0" }, category_comparisons: [],
-    potential_recurring_spending: [{ label: "Potential pattern", normalized_description: "monthly market", analysis_category: "food", currency: "ILS", account_kind: "card", median_amount: "17.40", minimum_amount: "17.40", maximum_amount: "17.40", amount_range: ["17.40", "17.40"], occurrence_months: ["2026-09-01"], contributor_transaction_ids: [12] }],
+    potential_recurring_spending: [{ pattern_id: "monthly-market-fixture", label: "Potential pattern", normalized_description: "monthly market", analysis_category: "food", currency: "ILS", account_kind: "card", median_amount: "17.40", minimum_amount: "17.40", maximum_amount: "17.40", amount_range: ["17.40", "17.40"], occurrence_months: ["2026-09-01"], contributor_transaction_ids: [12] }],
     unusual_category_spending: [], currency: "ILS",
   }) }));
   await page.route("**/api/v1/dashboard/contributors/query", async (route) => {
@@ -120,40 +121,47 @@ test("overview and expenses routes show service metrics and contributor drill-do
   });
 
   await page.goto("/dashboard");
-  await expect(page.getByText("הנתונים זמניים; חלק מההשוואות אינן זמינות")).toBeVisible();
-  await expect(page.getByText("1000.00 ש״ח").first()).toBeVisible();
+  await expect(page.getByText("סכומי החודש זמניים עד להשלמת הבדיקות")).toBeVisible();
+  await expect(page.getByText("\u2067\u20661,000.00\u2069 ש״ח\u2069").first()).toBeVisible();
   const chartData = page.locator(".dashboard-chart-data");
   await chartData.getByText("הצגת נתונים בטבלה").click();
   const chartTable = chartData.getByRole("table", { name: "נתוני תרשים: מגמת הכנסה, צריכה נטו ועודף תפעולי" });
-  await expect(chartTable.getByText("1000.00", { exact: true })).toBeVisible();
-  await expect(chartTable.getByText("17.40", { exact: true })).toBeVisible();
+  await expect(chartTable.getByText("\u2067\u20661,000.00\u2069 ש״ח\u2069", { exact: true })).toBeVisible();
+  await expect(chartTable.getByText("\u2067\u206617.40\u2069 ש״ח\u2069", { exact: true })).toBeVisible();
+  await expect(chartTable.getByRole("rowheader")).toHaveCount(3);
+  await expect(chartData.getByRole("region", { name: "גלילת נתוני התרשים" })).toHaveAttribute("tabindex", "0");
   const axe = () => new AxeBuilder({ page }).withTags(["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"]).analyze();
   expect((await axe()).violations.map((violation) => violation.id)).toEqual([]);
+  await page.getByText("בדיקת העסקאות שמרכיבות את הסיכום", { exact: true }).click();
   await page.getByLabel("מדד או קטגוריה").selectOption("spending_by_category:food");
   await page.getByRole("button", { name: "הצגת עסקאות תורמות (1)" }).click();
   await expect(page.getByText("Synthetic grocery")).toBeVisible();
 
   await page.goto("/expenses");
   await expect(page.getByRole("heading", { name: "התפלגות לפי קטגוריה" })).toBeVisible();
-  await expect(page.getByText("כל זיהוי הוא היוריסטי בלבד ואינו סיווג חשבונאי.")).toBeVisible();
-  await expect(page.getByText(/קטגוריות ההוצאות מבוססות על קטגוריית הניתוח \(analysis_category\), ובהיעדרה על קטגוריית המקור \(source_category\)/)).toBeVisible();
+  await expect(page.locator("#expense-more-details")).not.toHaveAttribute("open");
+  await page.getByText("תובנות ופירוט נוסף", { exact: true }).click();
+  await page.getByText("דפוסי הוצאה חוזרים אפשריים", { exact: true }).click();
+  await expect(page.getByText("ההחלטות נשמרות למשפחה. אישור מוסיף לרשימת ההוצאות החוזרות בלבד; הוא אינו משנה עסקאות, סיווגים או תחזיות.")).toBeVisible();
+  await expect(page.getByText(/ההוצאות מקובצות לפי הקטגוריה שנקבעה בסיווג/)).toBeVisible();
   expect((await axe()).violations.map((violation) => violation.id)).toEqual([]);
   await page.getByRole("button", { name: "הצגת העסקאות בדפוס (1)" }).click();
-  await expect(page.getByText("Synthetic grocery")).toBeVisible();
+  const patternSection = page.locator('details[aria-label="דפוסי הוצאה חוזרים אפשריים"]');
+  await expect(patternSection.getByText("Synthetic grocery")).toBeVisible();
 });
 
-test("desktop navigation exposes the nine destinations in labeled groups", async ({ page }) => {
+test("desktop navigation exposes the ten destinations in labeled groups", async ({ page }) => {
   await mockSession(page);
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/");
   const navigation = page.getByRole("navigation", { name: "ניווט ראשי" });
-  await expect(navigation.getByRole("link")).toHaveCount(9);
+  await expect(navigation.getByRole("link")).toHaveCount(10);
   await expect(navigation.getByText("תמונה משפחתית")).toBeVisible();
   await expect(navigation.getByRole("link", { name: "תכנון", exact: true })).toBeVisible();
   await expect(navigation.getByText("בדיקה וניהול")).toBeVisible();
 });
 
-test("merged feature navigation mounts each module and gates it from the shared offline shell", async ({ page, context }) => {
+test("merged feature navigation mounts each module and gates it from the shared offline shell", async ({ page }) => {
   await mockSession(page);
   const envelope = (data: unknown) => ({ data, meta: { request_id: "merged-navigation" } });
   await page.route("**/api/v1/dashboard/quality", (route) => route.fulfill({ status: 200, json: envelope({
@@ -171,7 +179,9 @@ test("merged feature navigation mounts each module and gates it from the shared 
     } : [];
     return route.fulfill({ status: 200, json: envelope(data) });
   });
+  await page.route("**/api/v1/planning/categories?*", (route) => route.fulfill({ status: 200, json: envelope([]) }));
   await page.route("**/api/v1/net-worth/**", (route) => route.fulfill({ status: 200, json: envelope([]) }));
+  await page.route("**/api/v1/forecasts**", (route) => route.fulfill({ status: 200, json: envelope([]) }));
 
   await page.goto("/dashboard");
   const navigation = page.getByRole("navigation", { name: "ניווט ראשי", exact: true });
@@ -179,21 +189,24 @@ test("merged feature navigation mounts each module and gates it from the shared 
     ["סקירה", "סקירה כללית", ""],
     ["איכות נתונים", "איכות נתונים וייבוא", "העלאת קובץ FamilyBiz"],
     ["סיווג", "סיווג עסקאות", "תור בדיקה"],
-    ["הון משפחתי", "הון משפחתי", "הון משפחתי"],
+    ["הון משפחתי", "הון משפחתי", "כמה שווה ההון המשפחתי שלכם?"],
   ]) {
     await navigation.getByRole("link", { name: label, exact: true }).click();
     await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
     const featureLocator = label === "סקירה" ? page.locator(".dashboard-feature") : page.getByRole("heading", { level: 2, name: moduleHeading });
     await expect(featureLocator).toBeVisible();
-    await context.setOffline(true);
+    await page.route("**/api/**", (route) => route.abort());
+    // Keep frontend chunks available while testing loss of API reachability.
+    await page.evaluate(() => window.dispatchEvent(new Event("offline")));
     await expect(page.getByRole("heading", { name: "נדרש חיבור מאומת מחדש" })).toBeVisible();
     await expect(featureLocator).toHaveCount(0);
-    await context.setOffline(false);
+    await page.unroute("**/api/**");
+    await page.evaluate(() => window.dispatchEvent(new Event("online")));
     await expect(featureLocator).toBeVisible();
   }
   await page.getByRole("button", { name: "יציאה" }).click();
   await expect(page.getByRole("heading", { name: "התחברות ל‑FamilyFin" })).toBeVisible();
-  await expect(page.getByRole("heading", { level: 2, name: "הון משפחתי" })).toHaveCount(0);
+  await expect(page.getByRole("heading", { level: 2, name: "כמה שווה ההון המשפחתי שלכם?" })).toHaveCount(0);
 });
 
 test("mobile navigation keeps four primary links and groups secondary pages under More", async ({ browser }) => {
@@ -286,6 +299,8 @@ test("Data Quality previews, downloads its plan, and commits only after confirma
     buffer: Buffer.from("synthetic workbook bytes"),
   });
   await page.getByRole("button", { name: "בדיקה ותצוגה מקדימה" }).click();
+  await expect(page.getByText("plan-fingerprint")).toBeHidden();
+  await page.getByText("פרטים טכניים של הבדיקה", { exact: true }).click();
   await expect(page.getByText("plan-fingerprint")).toBeVisible();
   expect(previewCalls).toBe(1);
   expect(commitCalls).toBe(0);
@@ -295,7 +310,7 @@ test("Data Quality previews, downloads its plan, and commits only after confirma
   expect((await downloadPromise).suggestedFilename()).toBe(`${fileHash}-import-plan.json`);
 
   await page.getByRole("button", { name: "אישור וייבוא" }).click();
-  await expect(page.getByText(/מזהה אצווה: synthetic-batch/)).toBeVisible();
+  await expect(page.getByText(/הייבוא הושלם\./)).toBeVisible();
   expect(commitCalls).toBe(1);
   expect(commitHadIdempotencyKey).toBe(false);
 });
@@ -316,8 +331,9 @@ test("the in-app offline banner appears on disconnect and clears after reconnect
   await mockSession(page);
   await page.goto("/");
   await expect(page.getByText("מחובר", { exact: true })).toBeVisible();
-  await expect(page.getByText("משתמשת בדיקה")).toBeVisible();
+  await expect(page.getByRole("button", { name: "יציאה", exact: true })).toBeVisible();
 
+  await page.route("**/api/**", (route) => route.abort());
   await context.setOffline(true);
   const banner = page.locator(".offline-banner");
   await expect(banner).toContainText("החיבור נותק");
@@ -326,6 +342,7 @@ test("the in-app offline banner appears on disconnect and clears after reconnect
   await expect(page.locator(".dashboard-feature")).toHaveCount(0);
   await expect.poll(() => banner.evaluate((element) => getComputedStyle(element).backgroundColor)).toBe("rgb(252, 245, 231)");
 
+  await page.unroute("**/api/**");
   await context.setOffline(false);
   await expect(page.getByText("מחובר", { exact: true })).toBeVisible();
   await expect(banner).toBeHidden();
@@ -359,7 +376,7 @@ test("the offline shell and service worker cache only static assets", async ({ p
   expect(cachedPaths.every((path) => path.startsWith("/_next/static/") || path.startsWith("/icons/") || path === "/offline.html" || path === "/manifest.webmanifest")).toBe(true);
   await context.setOffline(true);
   await page.goto("/expenses");
-  await expect(page.getByRole("heading", { name: "אין חיבור לאינטרנט" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "אין חיבור לשירות FamilyFin" })).toBeVisible();
 });
 
 test("core workspace has no serious accessibility violations", async ({ page }) => {

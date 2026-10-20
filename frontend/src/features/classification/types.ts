@@ -7,6 +7,7 @@ export type EconomicClass =
   | "savings_transfer"
   | "credit_card_settlement"
   | "debt_principal"
+  | "no_financial_effect"
   | "unclassified";
 export type ExpenseBehavior = "fixed" | "variable" | "unknown" | "not_applicable";
 
@@ -15,6 +16,9 @@ export type ClassificationResult = {
   transaction_id: number;
   booking_date: string;
   amount: string;
+  imported_amount?: string | null;
+  original_amount?: string | null;
+  original_currency?: string | null;
   currency: string;
   account_kind: string;
   source_category: string;
@@ -40,10 +44,25 @@ export type ReviewItem = {
   source_category: string;
   source_movement_type?: string | null;
   effective_classification: ClassificationResult;
+  saved_override?: {
+    economic_class?: EconomicClass | null;
+    analysis_category?: string | null;
+    expense_behavior?: ExpenseBehavior | null;
+    effective_amount?: string | null;
+    reason?: string;
+  } | null;
   source_fields: Record<string, unknown>;
   issues: ClassificationIssue[];
   expected_override_version: number;
   expected_classification_state: string;
+};
+
+export type ResolutionValues = {
+  economic_class: string;
+  analysis_category: string | null;
+  expense_behavior: string;
+  effective_amount?: string;
+  reason?: string;
 };
 
 export type Coverage = {

@@ -194,6 +194,7 @@ def review_queue(
             version_before = _override_version(service, item.transaction_id)
             service.invalidate_cache()
             effective = service.classify_one(item.transaction_id)
+            saved_override = service.saved_override(item.transaction_id)
             version_after = _override_version(service, item.transaction_id)
             if version_before == version_after:
                 break
@@ -212,8 +213,10 @@ def review_queue(
             continue
         rows.append(
             ReviewQueueItem(
-                **item.model_dump(exclude={"effective_classification"}),
+                **item.model_dump(exclude={"effective_classification", "saved_override", "amount"}),
+                amount=effective.amount,
                 effective_classification=effective,
+                saved_override=saved_override,
                 expected_override_version=version_after,
                 expected_classification_state=_classification_state(effective, version_after),
             ).model_dump(mode="json")
@@ -305,7 +308,10 @@ def save_override(
             current_state = _classification_state(current, current_version)
             if current_version != body.expected_override_version or current_state != body.expected_classification_state:
                 raise ApiError(409, "STALE_CLASSIFICATION", "This transaction changed after it was loaded. Reload before saving.")
-            result = service.save_override(transaction_id, **fields, reason=body.reason)
+            proposed = service.preview_override(transaction_id, fields)
+            if any(issue.code == "INVALID_CLASS_SIGN" for issue in proposed.issues):
+                raise ApiError(422, "CLASSIFICATION_DIRECTION_CONFLICT", "הסכום לחישוב אינו מתאים לסיווג שנבחר. יש לתקן את כיוון הסכום לפני השמירה.")
+            result = service.save_override(transaction_id, override=fields, reason=body.reason)
             new_version = _override_version(service, transaction_id)
             record_actor_audit(
                 session,

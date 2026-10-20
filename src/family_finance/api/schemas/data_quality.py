@@ -29,6 +29,15 @@ class ImportHistoryItem(BaseModel):
     created_at: str
 
 
+class DataQualityMonth(BaseModel):
+    month: date
+    source_period_complete: bool
+    classification_complete: bool
+    unclassified_transaction_count: int
+    open_reconciliation_count: int
+    complete: bool
+
+
 class DataQualitySummary(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,6 +48,7 @@ class DataQualitySummary(BaseModel):
     currencies: dict[str, int]
     issue_counts: dict[str, int]
     incomplete_months: list[date]
+    monthly_checks: list[DataQualityMonth] = Field(default_factory=list)
     open_reconciliation_cases: int
     unclassified_transaction_count: int
     unclassified_absolute_amount: Decimal

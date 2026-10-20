@@ -1,5 +1,5 @@
 // Bump RELEASE_VERSION with each frontend release. Activation removes every prior FamilyFin cache.
-const RELEASE_VERSION = "t02-2026-09-25-2";
+const RELEASE_VERSION = "local-dev-2026-10-02-1";
 const CACHE_PREFIX = "familyfin-static-";
 const CACHE_NAME = `${CACHE_PREFIX}${RELEASE_VERSION}`;
 const INSTALL_ASSETS = ["/offline.html", "/icons/icon-192.svg", "/icons/icon-512.svg", "/manifest.webmanifest"];

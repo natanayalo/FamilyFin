@@ -15,7 +15,7 @@ Only the app/API uses the Tailscale network path. The application does not send 
 
 ## Host layout and installation
 
-Use a supported Linux host with systemd, Python 3.12, uv, rsync, Caddy v2, and the exact Node version pinned in [`.nvmrc`](../../.nvmrc) (currently `22.14.0`). Keep application code root-owned and read-only to service users. Create separate non-login accounts for the API and Next server so a web process cannot read the financial data root:
+Use a supported Linux host with systemd, Python 3.12, uv, rsync, Caddy v2, and the exact Node version pinned in [`.nvmrc`](../../.nvmrc) (currently `22.22.2`). Keep application code root-owned and read-only to service users. Create separate non-login accounts for the API and Next server so a web process cannot read the financial data root:
 
 ```sh
 sudo useradd --system --home-dir /nonexistent --shell /usr/sbin/nologin familyfin-api
@@ -33,8 +33,8 @@ sudo git clone --no-checkout https://github.com/natanayalo/FamilyFin.git "$RELEA
 sudo git -C "$RELEASE" checkout --detach "$RELEASE_ID"
 cd "$RELEASE"
 sudo uv sync --locked --no-dev
-sudo /opt/node-v22.14.0/bin/npm ci --prefix "$RELEASE/frontend"
-sudo /opt/node-v22.14.0/bin/npm run build --prefix "$RELEASE/frontend"
+sudo /opt/node-v22.22.2/bin/npm ci --prefix "$RELEASE/frontend"
+sudo /opt/node-v22.22.2/bin/npm run build --prefix "$RELEASE/frontend"
 sudo chown -R root:root "$RELEASE"
 sudo chmod -R a-w "$RELEASE"
 sudo ln -s "$RELEASE" /opt/familyfin/current

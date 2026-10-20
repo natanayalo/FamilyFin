@@ -1437,7 +1437,7 @@ def main() -> None:
         st.title("Apartment Plan")
         st.caption(
             "Compare 2–4 manually specified purchases against one immutable forecast revision. "
-            "Estimate—not an offer or guarantee."
+            "Estimate - not an offer or guarantee."
         )
         planning = service.planning_service
         forecasting = service.savings_forecast_service
@@ -1777,7 +1777,7 @@ def main() -> None:
                             "source_forecast_revision": forecast_snapshot.revision_number,
                             "source_forecast_hash": forecast_snapshot.assumption_hash,
                             "assumption_hash": draft.assumption_hash,
-                            "disclaimer": "Estimate—not an offer or guarantee.",
+                            "disclaimer": "Estimate - not an offer or guarantee.",
                         })
             study_name = st.text_input(
                 "Study name",

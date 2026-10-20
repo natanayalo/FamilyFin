@@ -24,6 +24,7 @@
 .chips { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 13px; }
 .chips span { padding: 4px 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--card); color: var(--muted-foreground); font-size: 11px; }
 .explanation { margin: 12px 0 0; color: var(--muted-foreground); font-size: 13px; line-height: 1.65; }
+.directionHelp, .decisionFeedback { margin: 12px 0; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); color: var(--foreground); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .issues { margin: 10px 0; padding-inline-start: 22px; color: var(--destructive); font-size: 12px; line-height: 1.65; }
 .sourceDetails { margin: 12px 0; color: var(--muted-foreground); font-size: 12px; }
 .sourceDetails summary { cursor: pointer; width: fit-content; }
@@ -56,3 +57,92 @@
   .amount { font-size: 15px; }
   .coverageHead > strong { font-size: 23px; }
 }
+.categoryToggle {
+  width: 100%;
+  height: auto;
+  min-height: 36px;
+  padding: 6px;
+  white-space: normal;
+  text-align: start;
+}
+
+.categorySuggestions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  max-height: 180px;
+  overflow-y: auto;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.categorySuggestions button {
+  max-width: 100%;
+  height: auto;
+  min-height: 36px;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.overrideForm, .ruleFields { align-items: start; }
+.resolutionSource, .amountCorrection, .resolutionPreview { grid-column: 1 / -1; padding: 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--card); font-size: 13px; line-height: 1.7; }
+.resolutionSource h4 { margin: 0 0 10px; font-size: 14px; }
+.resolutionSource dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.resolutionSource dt { color: var(--muted-foreground); }
+.resolutionSource dd { margin: 4px 0 0; overflow-wrap: anywhere; }
+.amountCorrection summary { cursor: pointer; font-weight: 600; }
+.amountCorrection p, .resolutionPreview p { margin: 8px 0; }
+.correctionFields { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; margin-top: 12px; align-items: start; }
+.correctionFields > :last-child:nth-child(3) { grid-column: 1 / -1; }
+.resolutionPreview[role="alert"] { border-color: var(--destructive); }
+@media (max-width: 620px) {
+  .resolutionSource dl, .correctionFields { grid-template-columns: 1fr; }
+}
+
+.zeroDecisionHelp { grid-column: 1 / -1; margin: 0; line-height: 1.7; color: var(--muted-foreground); }
+
+.zeroDecisionClass { grid-column: 1 / -1; }
+
+/* Keep review work visible; secondary diagnostics and reusable rules open on demand. */
+.coverageCard{padding:17px 20px}
+.coverageHead h2{font-size:15px}.coverageHead p{display:none}
+.coverageHead>strong{font-size:23px}.coverageCard progress{height:6px;margin:10px 0}
+.coverageDetails{margin-top:12px;font-size:12px;color:var(--muted-foreground)}
+.coverageDetails>summary,.advancedFilters>summary,.ruleTools>summary{cursor:pointer;min-height:32px;line-height:32px}
+.coverageBreakdown{margin-top:10px;padding-top:12px}
+.primaryFilters{grid-template-columns:minmax(140px,1fr) minmax(90px,.6fr) auto;margin-bottom:8px}
+.advancedFilters{margin-bottom:14px;font-size:13px;color:var(--muted-foreground)}
+.advancedFilters .filters{margin:10px 0}
+.queue{gap:0}
+.reviewItem{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:16px;padding:16px 0;border:0;border-bottom:1px solid var(--border);border-radius:0;background:transparent}
+.transactionHead{grid-column:1;align-items:center}.transactionHead h3{font-size:15px}
+.transactionHead p{margin-top:4px;font-size:11px}.amount{font-size:16px;text-align:right;direction:rtl}
+.chips{grid-column:1;gap:6px;margin-top:8px}.chips span{border:0;border-radius:5px;padding:3px 7px;background:var(--muted);font-size:11px}
+.rowEdit{grid-column:2;grid-row:1 / span 2;align-self:center}
+.reviewItem>.explanation,.reviewItem>.sourceDetails,.reviewItem>.directionHelp,.reviewItem>.decisionFeedback,.editorRegion{grid-column:1/-1;min-width:0}
+.reviewItem:has(.editorRegion){padding:18px 14px;background:var(--muted);border-radius:10px;border:1px solid var(--border);margin-block:8px}
+.editorRegion .overrideForm{margin-top:8px}
+.ruleTools{border-top:1px solid var(--border);padding-top:8px;font-size:14px}
+.ruleToolsBody{display:grid;gap:16px;margin-top:12px}
+@media(max-width:620px){
+.coverageCard{padding:14px}.coverageStats{gap:5px 12px;font-size:12px}.coverageStats b{font-size:14px}
+.primaryFilters{grid-template-columns:1fr 90px;gap:8px}.primaryFilters .checkFilter{grid-column:1/-1;min-height:32px}
+.reviewItem{column-gap:8px;padding-block:15px}.transactionHead{display:flex;align-items:flex-start;gap:8px}.transactionHead h3{font-size:14px}
+.transactionHead p{font-size:10px}.amount{font-size:13px}.rowEdit{grid-column:1/-1;grid-row:auto;justify-self:start;margin-top:10px;min-height:36px}
+.reviewItem:has(.editorRegion){padding:14px 10px}.chips{grid-column:1/-1}.ruleToolsBody .panel{padding:14px}
+}
+.panel,.coverageCard{gap:0}
+.coverageCard progress::-webkit-progress-bar{background:var(--muted)}
+.coverageCard progress::-webkit-progress-value{background:var(--primary)}
+.coverageCard progress::-moz-progress-bar{background:var(--primary)}
+
+.coverageCard{padding:14px 18px}.coverageHead>strong{font-size:21px;line-height:1.4}
+.coverageCard progress{margin:6px 0}.coverageDetails{margin-top:5px}
+.coverageDetails>summary{min-height:26px;line-height:26px}
+.primaryFilters{margin-top:12px}.primaryFilters :global(.form-field){margin-bottom:0}
+.module{min-width:0;grid-template-columns:minmax(0,1fr)}
+.panel,.coverageCard,.ruleTools,.ruleToolsBody{min-width:0}
+.filters :global(.form-field){min-width:0}
+.filters input,.filters select{min-width:0}
+@media(max-width:620px){.primaryFilters{grid-template-columns:minmax(0,1fr) 90px}}
+@media(max-width:400px){.primaryFilters{grid-template-columns:minmax(0,1fr)}}

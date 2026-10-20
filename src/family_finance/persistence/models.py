@@ -756,6 +756,18 @@ class AutomationFileOutcomeRow(Base):
     created_at: Mapped[str] = mapped_column(Text)
 
 
+class RecurringPatternReviewRow(Base):
+    __tablename__ = "recurring_pattern_reviews"
+
+    pattern_id: Mapped[str] = mapped_column(Text, primary_key=True)
+    currency: Mapped[str] = mapped_column(Text, index=True)
+    status: Mapped[str] = mapped_column(Text)
+    pattern_json: Mapped[str] = mapped_column(Text)
+    updated_by: Mapped[str | None] = mapped_column(ForeignKey("api_users.user_id", ondelete="SET NULL"), nullable=True)
+    created_at: Mapped[str] = mapped_column(Text)
+    updated_at: Mapped[str] = mapped_column(Text)
+
+
 class InsightAlertRow(Base):
     __tablename__ = "insight_alerts"
 

@@ -1,0 +1,13 @@
+#!/bin/sh
+# Invoke installed Python directly: runtime commands must never synchronize/download.
+set -eu
+task_root=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+cd "$task_root"
+export PYTHONPATH="$task_root/src${PYTHONPATH:+:$PYTHONPATH}"
+if [ -x "$task_root/.venv/bin/python" ]; then
+    exec "$task_root/.venv/bin/python" -m family_finance.localdev "$@"
+elif command -v python3.12 >/dev/null 2>&1; then
+    exec python3.12 -m family_finance.localdev "$@"
+else
+    exec python3 -m family_finance.localdev "$@"
+fi

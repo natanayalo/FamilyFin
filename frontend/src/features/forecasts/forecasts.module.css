@@ -132,3 +132,44 @@
 
 @media(max-width:1000px){.forecastList{grid-template-columns:repeat(2,minmax(0,1fr))}.formGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.inputRow{grid-template-columns:repeat(3,minmax(0,1fr))}.poolMonth{grid-template-columns:repeat(3,minmax(0,1fr))}.poolMonth>div:first-child{grid-column:1/-1}.monthFlowGrid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.page{gap:13px}.toolbar{align-items:flex-start;flex-direction:column}.toolbar h2{font-size:22px}.toolbarActions{width:100%}.toolbarActions button{flex:1}.section,.editor{gap:13px;padding:14px;border-radius:13px}.sectionHeading,.editorHeading{align-items:flex-start}.sectionHeading{flex-direction:column}.sectionHeading h3{font-size:17px}.forecastList{grid-template-columns:1fr}.forecastChoice{padding:11px}.verificationGrid,.poolGrid,.caseSummaryGrid,.assumptionGrid{grid-template-columns:1fr}.revisionBar{align-items:flex-start}.revisionBar .field{width:100%}.formGrid{grid-template-columns:1fr}.steps li{flex-direction:column;align-items:flex-start;gap:5px;padding:7px;font-size:10px}.steps li>span{width:20px;height:20px}.seedAccount{grid-template-columns:auto minmax(0,1fr)}.seedAccount select{grid-column:2;max-width:100%}.inputRow{grid-template-columns:1fr 1fr}.inputRow>.textButton{grid-column:1/-1}.confirmGrid{grid-template-columns:1fr}.caseSummary>strong{font-size:18px}.chart{min-height:190px}.chartCard{padding:10px}.monthCard>summary{grid-template-columns:minmax(0,1fr) auto;gap:9px;padding:9px}.monthBalance{text-align:end}.expandHint{grid-column:1/-1;justify-self:start}.monthFlowGrid{grid-template-columns:1fr 1fr;padding:9px}.poolMonthlyList{padding:0 9px 9px}.poolMonth{grid-template-columns:1fr 1fr}.poolMonth>div:first-child{grid-column:1/-1}.monthFlowGrid bdi{font-size:10px}.detailControls{align-items:stretch;flex-direction:column}.detailControls .field{width:100%}.formActions{align-items:stretch}.formActions button{flex:1;min-height:40px}.formActions>.muted{width:100%}.textButton{min-height:34px}.chartScroll{margin-inline:-3px}.caseTitle .badge{font-size:9px}.compactResults .chart{min-height:165px}}
+
+/* The shared Hebrew dashboard hierarchy, with forecast assumptions kept explicit. */
+.page{--forecast-conservative:#a96556;--forecast-optimistic:#527c9b;gap:20px}
+:global(.dark) .page{--forecast-conservative:#e2b59e;--forecast-optimistic:#9dc6e5}
+.section,.editor{padding:22px;gap:20px;scroll-margin-block:20px}
+.sectionHeading h2{margin:0 0 6px;font-size:22px;line-height:1.6;font-weight:600}
+.forecastControls{display:flex;align-items:end;gap:12px}.forecastControls>.field{flex:1}
+.field{font-size:13px}.field input,.field select,.field textarea,.seedAccount select{min-height:43px;font-size:13px}
+.field input:focus-visible,.field select:focus-visible,.field textarea:focus-visible,.page button:focus-visible,.page summary:focus-visible{outline:2px solid var(--ring);outline-offset:3px}
+.setup h2{font-size:26px;line-height:1.6;margin:0}.setup>p{max-width:680px;font-size:14px;line-height:1.9;color:var(--muted-foreground);margin:0}
+.setupSteps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;list-style:decimal inside;padding:0;margin:0}
+.setupSteps li{padding:16px;border:1px solid var(--border);border-radius:12px;font-size:14px;line-height:1.8}.setupSteps strong{font-weight:600}.setupSteps span{display:block;margin-top:8px;font-size:13px;color:var(--muted-foreground)}
+.disclosure>summary{display:flex;align-items:center;justify-content:space-between;gap:12px;list-style:none;min-height:44px;cursor:pointer;font-size:15px;font-weight:500}
+.disclosure>summary::-webkit-details-marker{display:none}.disclosure>summary::marker{content:""}.disclosure>summary small{display:block;font-size:13px;font-weight:400;color:var(--muted-foreground);margin-top:6px}.disclosure>summary svg{flex-shrink:0}.disclosure[open]>summary{margin-bottom:18px}.disclosure[open]>summary>svg{transform:rotate(180deg)}
+.forecastMetrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px}
+.forecastMetric{display:grid;gap:12px;min-width:0;padding:18px;border:1px solid var(--border);border-radius:13px;background:var(--card)}
+.forecastMetric span{font-size:13px;line-height:1.8;color:var(--muted-foreground)}.forecastMetric strong{font-size:22px;line-height:1.6;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere}
+.endingMetric{background:var(--secondary);border-color:color-mix(in srgb,var(--primary) 30%,var(--border))}.endingMetric strong{color:var(--primary)}
+.balanceExplanation{font-size:13px;color:var(--muted-foreground);line-height:1.9;margin:0}.balanceExplanation bdi{font-variant-numeric:tabular-nums}
+.caseSummaryGrid{grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}
+.caseSummary{border:1px solid var(--border);text-align:start;color:var(--foreground);font:inherit;cursor:pointer;background:var(--background);padding:16px}
+.caseSummary>span{font-size:13px;line-height:1.8}.caseSummary>strong{font-size:22px;overflow-wrap:anywhere;line-height:1.6;letter-spacing:normal;font-weight:600}.caseSummary>small{font-size:12px;line-height:1.8}
+article.caseSummary{cursor:default}.activeCase{border-color:var(--primary);background:var(--secondary)}
+.monthlySection{display:grid;gap:16px;border-top:1px solid var(--border);padding-top:20px;min-width:0}
+.monthCard>summary strong{font-size:14px}.monthCard>summary small{font-size:12px;line-height:1.8}.monthBalance bdi{font-size:16px}.expandHint{font-size:12px}
+.monthFlowGrid{gap:10px;padding:14px}.monthFlowGrid>div{gap:8px;padding:12px}.monthFlowGrid span,.poolMonth small{font-size:12px;line-height:1.8}.monthFlowGrid bdi{font-size:14px;overflow-wrap:anywhere}
+.poolMonth{grid-template-columns:repeat(3,minmax(0,1fr));font-size:13px;line-height:1.8;padding:12px}.poolMonth>div:first-child{grid-column:1/-1}.poolMonth>div:first-child strong{font-size:14px}.poolMonth>div:first-child span,.poolMonth bdi{font-size:12px}
+.poolMonthlyList>strong{font-size:14px}.muted,.referenceCard,.check,.assumptionDetails>p,.seedPanel>p{font-size:13px;line-height:1.8}.referenceCard strong{font-size:14px}.referenceCard>details{margin-top:6px}.sourceReference{font-size:12px;line-height:1.8}
+.warning{background:var(--warning);border:1px solid var(--warning-border);color:var(--warning-foreground)}.notice{background:var(--secondary);color:var(--foreground);border:1px solid var(--border)}.alert{background:color-mix(in srgb,var(--destructive) 10%,var(--card));color:var(--destructive);border:1px solid color-mix(in srgb,var(--destructive) 35%,var(--border))}
+.assumptionDetails summary,.seedPanel summary{font-size:14px;min-height:40px;line-height:1.8}.assumptionDetails{display:block}.assumptionDetails[open]{display:grid}.assumptionGrid>div{font-size:13px}.assumptionGrid small{font-size:12px}
+.chartHeading h4{font-size:16px}.chartHeading p,.legend{font-size:12px}.axisLabel{font-size:12px}.chart{min-height:0}.chartScroll{overflow:hidden}.legend i{flex-shrink:0}
+.compactResults .monthList{display:none}.compactResults .chart{min-height:0}.inputRow{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:1200px){.forecastMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:900px){.setupSteps{grid-template-columns:1fr}.sectionHeading{flex-wrap:wrap}.caseSummary>strong{font-size:19px}.caseSummary{padding:12px}}
+@media(max-width:650px){.section,.editor{padding:16px;gap:16px}.sectionHeading h2{font-size:20px}.forecastControls{flex-direction:column;align-items:stretch}.forecastMetrics{grid-template-columns:1fr}.forecastMetric{padding:14px;gap:8px}.forecastMetric strong{font-size:26px}.caseSummaryGrid{grid-template-columns:1fr}.caseSummary>strong{font-size:24px}.monthFlowGrid{grid-template-columns:1fr;padding:12px}.monthFlowGrid bdi{font-size:16px}.monthFlowGrid>div{padding:12px}.poolMonth{grid-template-columns:repeat(2,minmax(0,1fr))}.poolMonth bdi{font-size:13px}.setup h2{font-size:23px}.inputRow{grid-template-columns:1fr}.field>input[type="date"]{max-width:100%}.formActions{position:sticky;bottom:calc(77px + env(safe-area-inset-bottom));padding:10px 0;background:var(--card);z-index:2}.stepContent .formActions:not(:last-child){position:static}.sectionHeading>.field{width:100%}}
+.steps .activeStep>span,.steps .completeStep>span{color:var(--primary-foreground)}
+@media(max-width:650px){.steps li{font-size:12px}.confirmations p{font-size:12px;line-height:1.8}.confirmations>strong{font-size:14px}.seedAccount strong{font-size:13px}.seedAccount small{font-size:12px;line-height:1.8}}
+.poolCard .formGrid{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:650px){.poolCard .formGrid{grid-template-columns:1fr}}
+.compactResults .forecastMetrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+@media(max-width:650px){.compactResults .forecastMetrics{grid-template-columns:1fr}}

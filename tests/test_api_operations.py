@@ -336,7 +336,14 @@ def test_attention_commit_blocks_without_readiness_or_fresh_backup(tmp_path, mon
             assert session.query(TransactionRow).count() == 0
 
 
-def test_insights_two_user_permissions_preferences_review_and_sessions(tmp_path):
+def test_insights_two_user_permissions_preferences_review_and_sessions(tmp_path, monkeypatch):
+    # Empty-dashboard defaults depend on the current month, not the test run date.
+    class SeptemberDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 9, 23, tzinfo=tz)
+
+    monkeypatch.setattr("family_finance.dashboard.datetime", SeptemberDateTime)
     _settings, database, _, app = make_api(tmp_path)
     now = datetime.now(UTC).isoformat()
     alert_id = str(uuid.uuid4())

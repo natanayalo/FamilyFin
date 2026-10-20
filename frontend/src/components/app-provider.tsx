@@ -1,7 +1,9 @@
 "use client";
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import { Fragment, createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import { ApiRequestError, apiRequest, setCsrfToken, subscribeApiHealth, type Session } from "@/lib/api";
+import { resetDashboardFilters } from "@/features/dashboard/filter-state";
+import { configureServiceWorker } from "@/lib/service-worker";
 
 type AuthState =
   | { status: "loading"; session?: Session }
@@ -44,30 +46,40 @@ export function AppProvider({ children }: Readonly<{ children: React.ReactNode }
   const [online, setOnline] = useState(false);
   const [auth, setAuth] = useState<AuthState>({ status: "loading" });
 
-  const refreshSession = useCallback(async () => {
-    if (typeof navigator !== "undefined" && !navigator.onLine) {
-      setCsrfToken(undefined);
-      setOnline(false);
-      setAuth((previous) => offlineState(previous));
-      return;
+  const accountId = useRef<string | undefined>(undefined);
+  const publishAuth = useCallback((next: AuthState) => {
+    const nextAccountId = sessionFrom(next)?.user.id;
+    if (nextAccountId !== accountId.current || next.status === "signed-out") {
+      resetDashboardFilters();
     }
+    accountId.current = nextAccountId;
+    setAuth(next);
+  }, []);
+
+  const refreshSession = useCallback(async () => {
     setAuth((previous) => {
+      // A background check must not unmount the workspace and discard local drafts.
+      if (previous.status === "signed-in") return previous;
       const session = sessionFrom(previous);
       return session ? { status: "loading", session } : { status: "loading" };
     });
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 5000);
     try {
-      const result = await apiRequest<unknown>("/auth/session");
+      const result = await apiRequest<unknown>("/auth/session", { signal: controller.signal });
       if (!isSession(result.data)) {
-        setAuth({ status: "signed-out" });
+        publishAuth({ status: "signed-out" });
         return;
       }
-      setAuth({ status: "signed-in", session: result.data });
+      publishAuth({ status: "signed-in", session: result.data });
     } catch (error) {
-      if (error instanceof ApiRequestError && error.status === 401) setAuth({ status: "signed-out" });
-      else if (error instanceof ApiRequestError && (error.status === 0 || error.status === 503)) setAuth((previous) => offlineState(previous));
-      else setAuth({ status: "signed-out", error: error instanceof Error ? error.message : "לא ניתן לבדוק את ההתחברות." });
+      if (error instanceof ApiRequestError && error.status === 401) publishAuth({ status: "signed-out" });
+      else if (error instanceof ApiRequestError && (error.status === 0 || error.status >= 500)) setAuth((previous) => offlineState(previous));
+      else publishAuth({ status: "signed-out", error: error instanceof Error ? error.message : "לא ניתן לבדוק את ההתחברות." });
+    } finally {
+      window.clearTimeout(timeout);
     }
-  }, []);
+  }, [publishAuth]);
 
   useEffect(() => {
     const unsubscribeHealth = subscribeApiHealth((health) => {
@@ -77,16 +89,14 @@ export function AppProvider({ children }: Readonly<{ children: React.ReactNode }
         setAuth((previous) => offlineState(previous));
       } else if (health === "unauthorized") {
         setOnline(true);
-        setAuth({ status: "signed-out" });
+        publishAuth({ status: "signed-out" });
       } else {
         setOnline(true);
       }
     });
     void refreshSession();
     const goOffline = () => {
-      setCsrfToken(undefined);
-      setOnline(false);
-      setAuth((previous) => offlineState(previous));
+      void refreshSession();
     };
     const goOnline = () => {
       void refreshSession();
@@ -97,14 +107,14 @@ export function AppProvider({ children }: Readonly<{ children: React.ReactNode }
     window.addEventListener("offline", goOffline);
     window.addEventListener("online", goOnline);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    if ("serviceWorker" in navigator) void navigator.serviceWorker.register("/sw.js", { scope: "/" }).catch(() => undefined);
+    void configureServiceWorker(process.env.NODE_ENV === "development").catch(() => undefined);
     return () => {
       unsubscribeHealth();
       window.removeEventListener("offline", goOffline);
       window.removeEventListener("online", goOnline);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [refreshSession]);
+  }, [refreshSession, publishAuth]);
 
   const signIn = useCallback(async (username: string, password: string) => {
     const result = await apiRequest<unknown>("/auth/session", {
@@ -112,15 +122,15 @@ export function AppProvider({ children }: Readonly<{ children: React.ReactNode }
       body: JSON.stringify({ username, password }),
     });
     if (!isSession(result.data)) throw new Error("התקבלה תשובת התחברות לא תקינה.");
-    setAuth({ status: "signed-in", session: result.data });
-  }, []);
+    publishAuth({ status: "signed-in", session: result.data });
+  }, [publishAuth]);
 
   const signOut = useCallback(async () => {
     await apiRequest<void>("/auth/session", { method: "DELETE" });
     setCsrfToken(undefined);
-    setAuth({ status: "signed-out" });
-  }, []);
+    publishAuth({ status: "signed-out" });
+  }, [publishAuth]);
 
   const value = useMemo(() => ({ auth, online, signIn, signOut, refreshSession }), [auth, online, signIn, signOut, refreshSession]);
-  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
+  return <AuthContext.Provider value={value}><Fragment key={sessionFrom(auth)?.user.id ?? "signed-out"}>{children}</Fragment></AuthContext.Provider>;
 }

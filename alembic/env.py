@@ -6,7 +6,10 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 
 config = context.config
-if database_url := os.environ.get("FAMILY_FINANCE_DATABASE_URL"):
+if database_url := (
+    config.attributes.get("family_finance_database_url")
+    or os.environ.get("FAMILY_FINANCE_DATABASE_URL")
+):
     config.set_main_option("sqlalchemy.url", database_url)
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)

@@ -1,5 +1,10 @@
 import { expect, test, type Page } from "@playwright/test";
 
+async function openForecastManagement(page: Page) {
+  const details = page.locator('details[aria-label="מקורות, גרסאות וניהול"]');
+  if (await details.getAttribute("open") === null) await details.locator(":scope > summary").click();
+}
+
 const session = {
   data: { user: { id: "fixture-user", display_name: "משתמשת בדיקה" }, csrf_token: "fixture-csrf" },
   meta: { request_id: "forecast-fixture" },
@@ -245,18 +250,24 @@ test("mobile RTL forecast flow creates, saves, and restores immutable revisions"
 
   await page.goto("/savings-forecast");
   await expect(page.locator("html")).toHaveAttribute("dir", "rtl");
-  await expect(page.getByRole("heading", { name: "תחזיות חיסכון" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "תחזית חיסכון", exact: true })).toBeVisible();
   await page.getByRole("button", { name: "תחזית חדשה" }).click();
   await page.getByRole("button", { name: "המשך ליתרות פתיחה" }).click();
   await page.getByLabel("יתרת פתיחה קופה 1", { exact: true }).fill("1000.00");
   await page.getByRole("button", { name: "המשך למקרי תחזית" }).click();
+  await expect(page.getByLabel("תשואה שנתית בסיסי", { exact: true })).toHaveValue("3");
+  await expect(page.getByLabel("תשואה שנתית אופטימי", { exact: true })).toHaveValue("6");
+  await page.getByLabel("תשואה שנתית בסיסי", { exact: true }).fill("3.5");
+  const previewRequest = page.waitForRequest((request) => request.url().endsWith("/api/v1/forecasts/previews") && request.method() === "POST");
   await page.getByRole("button", { name: "חישוב תצוגה מקדימה" }).click();
-  await expect(page.getByRole("heading", { name: "תצוגה מקדימה לאחר חישוב" })).toBeVisible();
+  expect((await previewRequest).postDataJSON().cases.find((item: { role: string }) => item.role === "baseline").annual_return_rate).toBe("0.035");
+  await expect(page.getByRole("heading", { name: "תצוגה מקדימה · 36 חודשים" })).toBeVisible();
+  await expect(page.getByText("36 חודשים · ש״ח · א׳ = אלפים, מ׳ = מיליונים", { exact: true })).toBeVisible();
   const confirmations = page.getByRole("checkbox", { name: /עברתי על ההנחות ואישרתי את המקרה/ });
   await expect(confirmations).toHaveCount(3);
   for (let index = 0; index < 3; index += 1) await confirmations.nth(index).check();
   await page.getByRole("button", { name: "שמירת תחזית" }).click();
-  await expect(page.getByRole("heading", { name: "תכנון משפחתי · תחזית חיסכון", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "התחזית הנבחרת" })).toContainText("תכנון משפחתי · תחזית חיסכון");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 
   await page.getByRole("button", { name: "עריכת הנחות" }).click();
@@ -267,12 +278,15 @@ test("mobile RTL forecast flow creates, saves, and restores immutable revisions"
   const editConfirmations = page.getByRole("checkbox", { name: /עברתי על ההנחות ואישרתי את המקרה/ });
   for (let index = 0; index < 3; index += 1) await editConfirmations.nth(index).check();
   await page.getByRole("button", { name: "שמירת גרסה חדשה" }).click();
+  await openForecastManagement(page);
   await expect(page.getByText("גרסת תחזית 2")).toBeVisible();
 
   const revisionPicker = page.getByLabel("גרסת תחזית לבדיקה");
   await revisionPicker.selectOption("1");
+  await openForecastManagement(page);
   await page.getByRole("button", { name: "שחזור כגרסה חדשה" }).click();
   await expect(revisionPicker).toHaveValue("3");
+  await openForecastManagement(page);
   await expect(page.getByText("גרסת תחזית 3")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(390);
 });
@@ -292,7 +306,7 @@ test("a committed create with a lost response stays locked after refresh", async
   await expect(page.getByText(/התחזיות רועננו/)).toBeVisible();
   expect(requests.createRequests).toBe(1);
   await page.getByRole("button", { name: "רענון" }).click();
-  await expect(page.getByRole("heading", { name: "תכנון משפחתי · תחזית חיסכון", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "התחזית הנבחרת" })).toContainText("תכנון משפחתי · תחזית חיסכון");
   await expect(page.getByRole("button", { name: "תחזית חדשה" })).toBeDisabled();
   expect(requests.createRequests).toBe(1);
 
@@ -305,7 +319,8 @@ test("a committed clone with a lost response stays locked after refresh", async 
   await installCommonRoutes(page);
   const requests = await installUnknownMutationRoutes(page, "clone", true);
   await page.goto("/savings-forecast");
-  await expect(page.getByRole("heading", { name: "תכנון משפחתי · תחזית חיסכון", exact: true })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "התחזית הנבחרת" })).toContainText("תכנון משפחתי · תחזית חיסכון");
+  await openForecastManagement(page);
   await page.getByRole("button", { name: "שכפול" }).click();
 
   await expect(page.getByRole("heading", { name: "נדרש חיבור מאומת מחדש" })).toBeVisible();
@@ -317,7 +332,8 @@ test("a committed clone with a lost response stays locked after refresh", async 
   await expect(page.getByText(/התחזיות רועננו/)).toBeVisible();
   expect(requests.cloneRequests).toBe(1);
   await page.getByRole("button", { name: "רענון" }).click();
-  await expect(page.getByRole("button", { name: /עותק של תחזית החיסכון/ })).toBeVisible();
+  await expect(page.getByRole("combobox", { name: "התחזית הנבחרת" })).toContainText("עותק של תחזית החיסכון");
+  await openForecastManagement(page);
   await expect(page.getByRole("button", { name: "שכפול" })).toBeDisabled();
   await expect(page.getByRole("button", { name: "תחזית חדשה" })).toBeDisabled();
   expect(requests.cloneRequests).toBe(1);

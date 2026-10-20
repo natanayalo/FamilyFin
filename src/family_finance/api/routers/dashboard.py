@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from calendar import monthrange
 from datetime import date
 from typing import Annotated
 
 from fastapi import Depends, Request
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from family_finance.api.app import ApiError, authenticated_router
 from family_finance.api.schemas.dashboard import (
@@ -87,6 +88,30 @@ def expenses(
     dashboard = _dashboard(request)
     result = dashboard.expenses(_filter_model(query, dashboard, request))
     return _envelope(result.model_dump(mode="json"), request)
+
+
+@router.get("/recent-transactions", response_model=ApiResponse[list[DashboardContributor]])
+def recent_transactions(
+    request: Request,
+    query: Annotated[DashboardFilterQuery, Depends()],
+) -> dict:
+    dashboard = _dashboard(request)
+    filters = _filter_model(query, dashboard, request)
+    # ISO dates compare chronologically. Include the whole selected end month.
+    end_date = filters.end_month.replace(
+        day=monthrange(filters.end_month.year, filters.end_month.month)[1]
+    )
+    with request.app.state.database.session() as session:
+        ids = list(session.execute(
+            select(TransactionRow.id).where(
+                TransactionRow.state == "accepted",
+                func.upper(TransactionRow.currency) == filters.currency,
+                TransactionRow.booking_date >= filters.start_month.isoformat(),
+                TransactionRow.booking_date <= end_date.isoformat(),
+            ).order_by(TransactionRow.booking_date.desc(), TransactionRow.id.desc()).limit(5)
+        ).scalars())
+    rows = sorted(dashboard.contributors(ids), key=lambda row: (row.booking_date, row.transaction_id), reverse=True)
+    return _envelope([row.model_dump(mode="json") for row in rows], request)
 
 
 @router.post(

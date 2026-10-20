@@ -43,7 +43,7 @@ export function SignIn() {
         <div className="signin-form-column"><div className="signin-toolbar"><ThemeToggle /></div><Card className="signin-panel"><form className="signin-form" onSubmit={submit}>
           <div className="eyebrow">ברוכים הבאים</div><h2>התחברות ל‑FamilyFin</h2><p>הזינו את פרטי החשבון שלכם.</p>
           {(error || (auth.status === "signed-out" && auth.error)) && <div className="form-error" role="alert">{error || (auth.status === "signed-out" ? auth.error : "")}</div>}
-          {!online && <div className="form-error" role="status">אין חיבור לאינטרנט. התחברות מחייבת חיבור פעיל.</div>}
+          {!online && <div className="form-error" role="status">אין חיבור לשירות FamilyFin. התחברות מחייבת שירות זמין.</div>}
           <TextField id="username" label="שם משתמש" autoComplete="username" required value={username} onChange={(event) => setUsername(event.target.value)} />
           <TextField id="password" label="סיסמה" type="password" autoComplete="current-password" required value={password} onChange={(event) => setPassword(event.target.value)} />
           <Button className="w-full" size="lg" type="submit" disabled={busy || !online}>{busy ? "מתחברים…" : "התחברות"}</Button>

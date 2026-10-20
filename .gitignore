@@ -13,6 +13,9 @@ htmlcov/
 # PWA workspace build artifacts
 frontend/node_modules/
 frontend/.next/
+frontend/.next-local/
+frontend/.familyfin-dev.lock
+frontend/.familyfin-dev.sock
 frontend/out/
 frontend/test-results/
 frontend/playwright-report/
@@ -20,6 +23,9 @@ frontend/blob-report/
 
 # Local financial data and database state
 data/local/
+data/dev-local/
+data/dev-backups/
+data/.dev-local-*/
 data/*.xlsx
 data/*.xlsm
 data/*.xls
