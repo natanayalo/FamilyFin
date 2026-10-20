@@ -6,7 +6,7 @@
 .section{display:grid;gap:16px;padding:20px;border:1px solid var(--border);border-radius:16px;background:var(--card);box-shadow:0 8px 28px rgba(23,38,29,.035)}
 .sectionHeading{align-items:flex-start}
 .sectionHeading h3,.deferred h3{margin:0 0 4px;font-size:17px;letter-spacing:-.02em}
-.metrics{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:11px}
+.metrics{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:11px}
 .metric{display:grid;gap:8px;min-width:0;padding:16px;border:1px solid var(--border);border-radius:12px;background:color-mix(in srgb,var(--card) 70%,var(--muted))}
 .metric span{color:var(--muted-foreground);font-size:12px}
 .metric strong{overflow-wrap:anywhere;font-size:20px;font-variant-numeric:tabular-nums;letter-spacing:-.02em}
@@ -62,8 +62,15 @@
 .detailHeader h4{margin:0 0 3px;font-size:15px}
 .detailHeader{align-items:flex-start}
 .inlineActions{justify-content:flex-end}
-.revisionMeta{display:grid;grid-template-columns:auto minmax(0,1fr);gap:10px;align-items:center;color:var(--muted-foreground);font-size:10px}
-.revisionMeta code{overflow:hidden;text-overflow:ellipsis;color:var(--foreground);font-size:10px}
+.diagnosticDetails,.comparisonDiagnostics{min-width:0;border:1px solid var(--border);border-radius:9px;background:var(--muted);padding:9px 11px;color:var(--muted-foreground);font-size:11px}
+.diagnosticDetails summary,.comparisonDiagnostics summary{min-height:24px;cursor:pointer;color:var(--foreground);font-size:13px;font-weight:600}
+.diagnosticDetails dl{display:grid;gap:8px;margin:10px 0 0}
+.diagnosticDetails dl>div{display:grid;grid-template-columns:minmax(90px,auto) minmax(0,1fr);gap:10px;align-items:start}
+.diagnosticDetails dt{color:var(--muted-foreground)}
+.diagnosticDetails dd{min-width:0;margin:0}
+.diagnosticDetails code,.comparisonDiagnostics code{overflow-wrap:anywhere;color:var(--foreground);font-size:10px}
+.comparisonDiagnostics{padding:9px 11px}
+.comparisonDiagnostics[open]{display:grid;gap:6px}
 .revisionList{display:grid;gap:5px}
 .revisionList h5{margin:0 0 2px;font-size:12px}
 .revisionRow{display:grid;grid-template-columns:1fr auto auto;gap:12px;align-items:center;padding:8px 10px;border:1px solid var(--border);border-radius:8px;color:var(--muted-foreground);font-size:10px}
@@ -84,5 +91,67 @@
 .muted{color:var(--muted-foreground);font-size:12px}
 .srOnly{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
 
+@media(max-width:620px){.sectionHeading{display:grid;grid-template-columns:minmax(0,1fr)}.sectionHeading>button{justify-self:start}}
+
 @media(max-width:900px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.breakdowns{grid-template-columns:1fr}.formGrid{grid-template-columns:repeat(2,minmax(0,1fr))}.snapshotLayout{grid-template-columns:1fr}.snapshotList{display:flex;max-height:none;overflow:auto;padding-bottom:4px}.snapshotButton{min-width:125px}.snapshotButton span{display:grid}.snapshotButton em{width:max-content}}
 @media(max-width:620px){.page{gap:14px}.toolbar{align-items:flex-start}.toolbar h2{font-size:22px}.section{gap:13px;padding:15px}.sectionHeading{align-items:flex-start}.metrics{gap:8px}.metric{padding:12px}.metric strong{font-size:16px}.metricEmphasis strong{font-size:18px}.formGrid{grid-template-columns:1fr}.detailHeader{display:grid}.inlineActions{justify-content:flex-start}.revisionRow{grid-template-columns:1fr auto}.revisionRow button:last-child{grid-column:1/-1;justify-self:start}.csvControls{align-items:stretch}.csvControls .field{width:100%}.deferred{grid-template-columns:1fr}.tableWrap{overflow:visible;border:0}.tableWrap table,.tableWrap tbody{display:block;width:100%}.tableWrap thead{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0,0,0,0)}.tableWrap tbody{display:grid;gap:9px}.tableWrap tr{display:grid;gap:0;padding:6px 11px;border:1px solid var(--border);border-radius:10px;background:var(--background)}.tableWrap td{display:flex;justify-content:space-between;gap:12px;white-space:normal;border:0;padding:8px 1px}.tableWrap td+td{border-top:1px solid var(--border)}.rowActions{justify-content:flex-start!important;flex-wrap:wrap}.tableInput{max-width:56%;min-height:36px}.tableWrap td small{text-align:left}}
+
+/* Primary balance view and progressive first-use setup. */
+.page{min-width:0}
+.toolbar{align-items:center;flex-wrap:wrap}
+.sectionHeading h2{margin:0 0 6px;font-size:20px;font-weight:600}
+.sectionHeading>.field{min-width:min(100%,230px)}
+.help{margin:0;color:var(--muted-foreground);font-size:13px;line-height:1.8}
+.metric span{font-size:13px}
+.metric strong{font-size:clamp(22px,2.4vw,30px);line-height:1.45;letter-spacing:0}
+.metricEmphasis{background:var(--mint)}
+.metricEmphasis strong{font-size:clamp(22px,2.4vw,30px);color:var(--foreground)}
+.warning{border-color:var(--warning-border);background:var(--warning);color:var(--warning-foreground)}
+.warning p{margin:5px 0 0}
+.notice{border-color:var(--border);background:var(--mint);color:var(--foreground);scroll-margin-block:20px}
+.alert{border-color:color-mix(in srgb,var(--destructive) 35%,var(--border));background:color-mix(in srgb,var(--destructive) 10%,var(--card));color:var(--destructive)}
+.setup header{max-width:760px}
+.setup h2{font-size:24px;font-weight:600;line-height:1.5;margin:8px 0 12px}
+.setup header p{font-size:14px;line-height:1.9;color:var(--muted-foreground);margin:0}
+.setupSteps{list-style:none;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;margin:8px 0;padding:0}
+.setupSteps li{display:grid;align-content:start;gap:9px;padding:18px 16px;border:1px solid var(--border);border-radius:var(--radius);font-size:14px}
+.setupSteps li[data-current="true"]{background:var(--mint);border-color:var(--ring)}
+.setupSteps strong{font-weight:600}
+.setupSteps span,.setupSteps small{font-size:13px;color:var(--muted-foreground);line-height:1.8}
+.balanceGroups{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;margin-top:6px}
+.balanceGroup{min-width:0}
+.balanceGroup h3{font-size:15px;font-weight:600;margin:0 0 8px}
+.balanceGroup ul{list-style:none;margin:0;padding:0}
+.balanceGroup li{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:7px 14px;padding:15px 0;border-bottom:1px solid var(--border)}
+.balanceGroup li:last-child{border-bottom:0}
+.balanceName{min-width:0;overflow-wrap:anywhere}
+.balanceName strong{display:block;font-size:14px;font-weight:500;line-height:1.7}
+.balanceName small{display:block;font-size:12px;line-height:1.7;color:var(--muted-foreground);margin-top:4px}
+.balanceAmount{align-self:start;margin-top:3px;font-size:16px;font-weight:600;font-variant-numeric:tabular-nums;overflow-wrap:anywhere;max-width:100%}
+.balanceDate,.staleBalance{grid-column:1/-1;justify-self:start;font-size:12px;color:var(--muted-foreground);line-height:1.7}
+.staleBalance{color:var(--warning-foreground);background:var(--warning);border:1px solid var(--warning-border);border-radius:5px;padding:3px 7px}
+.breakdownDetails{border-top:1px solid var(--border);padding-top:8px;min-width:0}
+.breakdownDetails>summary,.management>summary{list-style:none;display:flex;align-items:center;justify-content:space-between;gap:16px;cursor:pointer}
+.breakdownDetails>summary{min-height:44px;font-size:14px;font-weight:500}
+.breakdownDetails>summary::-webkit-details-marker,.management>summary::-webkit-details-marker{display:none}
+.breakdownDetails>summary::marker,.management>summary::marker{content:""}
+.breakdownDetails[open]>summary{margin-bottom:10px}
+.breakdownDetails[open]>summary>svg,.management[open]>summary>svg{transform:rotate(180deg)}
+.breakdown .help{font-size:12px;margin-bottom:5px}
+.management{min-width:0;border:1px solid var(--border);border-radius:16px;background:var(--card)}
+.management>summary{padding:20px}
+.management>summary span{display:grid;gap:6px}
+.management>summary strong{font-size:16px;font-weight:600}
+.management>summary small{font-size:13px;color:var(--muted-foreground);line-height:1.7}
+.management>summary svg{flex-shrink:0;color:var(--muted-foreground)}
+.managementContent{display:grid;gap:20px;padding:20px;border-top:1px solid var(--border)}
+.managementContent>.section{box-shadow:none}
+.formCard{scroll-margin-block:20px}
+.page summary:focus-visible,.page button:focus-visible,.notice:focus{outline:3px solid var(--ring);outline-offset:3px;border-radius:6px}
+.field input:focus-visible,.field select:focus-visible,.tableInput:focus-visible{outline:2px solid var(--ring);outline-offset:2px}
+@media(max-width:900px){.balanceGroups{grid-template-columns:1fr;gap:20px}.metrics{grid-template-columns:repeat(3,minmax(0,1fr))}.setupSteps{grid-template-columns:1fr}.balanceAmount{max-width:100%}}
+@media(max-width:620px){.toolbar{display:grid;gap:12px}.sectionHeading h2{font-size:18px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metricEmphasis{grid-column:1/-1}.metric strong{font-size:16px}.metricEmphasis strong{font-size:28px}.summaryMeta{gap:9px;font-size:12px;display:grid}.setup h2{font-size:22px}.setupSteps li{padding:14px}.management>summary{padding:16px}.managementContent{padding:12px;gap:16px}.managementContent>.section{padding:12px}.balanceGroup li{grid-template-columns:1fr;gap:6px}.balanceAmount{justify-self:start;font-size:20px}.balanceName strong{font-size:14px}.balanceDate,.staleBalance{grid-column:1}.formCard .tableWrap td[data-label]{display:grid;grid-template-columns:minmax(0,1fr);gap:7px}.formCard .tableWrap td[data-label]:before{content:attr(data-label);color:var(--muted-foreground);font-size:12px}.formCard .tableInput{max-width:100%}}
+
+@media(max-width:360px){.metrics{grid-template-columns:1fr}.metricEmphasis{grid-column:auto}.metric strong{font-size:24px}.metricEmphasis strong{font-size:28px}}
+
+@media(min-width:621px) and (max-width:1100px){.metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.metricEmphasis{grid-column:1/-1}.metricEmphasis strong{font-size:28px}}

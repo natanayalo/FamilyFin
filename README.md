@@ -4,6 +4,21 @@ Family Finance is a local-first household finance application. Phase 1 establish
 
 ## Local setup
 
+For the full PWA/API environment with isolated data, hot reload, debugging,
+and disconnected QA, see [`docs/local_development.md`](docs/local_development.md):
+
+```sh
+./dev setup
+./dev init-data
+./dev start
+```
+
+Stop the stack with Ctrl-C in its terminal, or `./dev stop` from another terminal.
+
+Setup needs internet once; later development and `./dev start --qa` run locally
+without Tailscale. The commands below describe standalone Streamlit using
+`data/local/`.
+
 The project uses Python 3.12 and uv. If `uv` is already on your `PATH`:
 
     uv sync --dev

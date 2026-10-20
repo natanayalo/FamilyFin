@@ -9,6 +9,7 @@ from family_finance.classification import ClassificationService
 from family_finance.config import Settings
 from family_finance.metrics import MetricsService
 from family_finance.models import EconomicClass, ExpenseBehavior
+from family_finance.persistence.models import TransactionRow
 from family_finance.services import ImportService
 
 from .conftest import make_workbook
@@ -20,6 +21,85 @@ def _import(tmp_path, rows):
     preview = app.preview_import(workbook, "phase2.xlsx")
     app.commit_import(workbook, preview.preview_token, "phase2.xlsx")
     return app
+
+
+def test_amount_correction_requires_reconfirmation_after_source_amount_changes(tmp_path):
+    app = _import(tmp_path, [["01/09/2026", 72.4, "cloud", "01/09/2026", None, "income", "ILS", "ILS", -72.4]])
+    classifier = ClassificationService(app.database)
+    classifier.save_override(1, economic_class="consumption", effective_amount="-72.4", reason="Verified debit")
+    assert classifier.classify_one(1).amount == Decimal("-72.4")
+    with app.database.write_session() as session:
+        transaction = session.get(TransactionRow, 1)
+        transaction.amount = "75"
+    classifier.invalidate_cache()
+    stale = classifier.classify_one(1)
+    assert stale.amount == Decimal(75)
+    assert stale.economic_class == EconomicClass.UNCLASSIFIED
+    assert "STALE_AMOUNT_CORRECTION" in {issue.code for issue in stale.issues}
+    count_before = app.database.count("analysis_overrides")
+    preview = classifier.preview_override(1, {"economic_class": "consumption", "effective_amount": "-75"})
+    assert preview.economic_class == EconomicClass.CONSUMPTION
+    assert preview.amount == Decimal(-75)
+    assert app.database.count("analysis_overrides") == count_before
+    classifier.save_override(1, economic_class="consumption", effective_amount="-75", reason="Verified changed source")
+    assert classifier.classify_one(1).amount == Decimal(-75)
+    assert "STALE_AMOUNT_CORRECTION" not in {issue.code for issue in classifier.classify_one(1).issues}
+
+
+@pytest.mark.parametrize(
+    ("imported_amount", "corrected_amount", "direction", "economic_class"),
+    [(-100, "100", "credit", "income"), (100, "-100", "debit", "consumption")],
+)
+def test_rule_preview_matches_corrected_direction_and_actual_application(
+    tmp_path, imported_amount, corrected_amount, direction, economic_class
+):
+    app = _import(tmp_path, [[
+        "01/09/2026", imported_amount, "shop", "01/09/2026", "purchase", "food",
+        "ILS", "ILS", imported_amount,
+    ]])
+    classifier = ClassificationService(app.database)
+    rule = {
+        "account_kind": "bank", "direction": direction, "source_category": "food",
+        "source_movement_type": "purchase", "currency": "ILS",
+        "economic_class": economic_class, "analysis_category": "reviewed category",
+    }
+    assert classifier.preview_rule(rule)["transaction_ids"] == []
+
+    classifier.save_override(1, effective_amount=corrected_amount, reason="Verified direction")
+    preview = classifier.preview_rule(rule)
+    assert preview["transaction_ids"] == [1]
+    assert preview["count"] == 1
+    opposite_direction = "debit" if direction == "credit" else "credit"
+    assert classifier.preview_rule({**rule, "direction": opposite_direction})["count"] == 0
+
+    saved = classifier.create_rule(rule)
+    result = classifier.classify_one(1)
+    assert result.rule_id == saved.id
+    assert result.economic_class == EconomicClass(economic_class)
+    assert result.analysis_category == "reviewed category"
+
+    classifier.clear_override(1, fields=["effective_amount"])
+    assert classifier.preview_rule(rule)["transaction_ids"] == []
+    assert classifier.classify_one(1).rule_id is None
+
+
+def test_rule_preview_ignores_stale_amount_corrections(tmp_path):
+    app = _import(tmp_path, [[
+        "01/09/2026", -100, "shop", "01/09/2026", "purchase", "food",
+        "ILS", "ILS", -100,
+    ]])
+    classifier = ClassificationService(app.database)
+    classifier.save_override(1, effective_amount="100", reason="Verified credit")
+    with app.database.write_session() as session:
+        session.get(TransactionRow, 1).amount = "-200"
+    classifier.invalidate_cache()
+
+    rule = {
+        "account_kind": "bank", "direction": "credit", "source_category": "food",
+        "source_movement_type": "purchase", "currency": "ILS", "economic_class": "income",
+    }
+    assert classifier.preview_rule(rule)["transaction_ids"] == []
+    assert classifier.preview_rule({**rule, "direction": "debit"})["transaction_ids"] == [1]
 
 
 def test_classification_precedence_and_append_only_clearing(tmp_path):
@@ -281,3 +361,33 @@ def test_supplied_workbook_policy_counts_and_trailing_completeness(tmp_path):
     september = MetricsService(app.database).calculate_monthly_metrics("2026-09")
     assert not september.completeness.complete
     assert september.savings_rate is None
+
+
+@pytest.mark.parametrize("provider,category,manual_class,expected_class", [
+    ("בנק", "salary", None, EconomicClass.INCOME),
+    ("כאל", "החזרים", None, EconomicClass.REFUND),
+    ("כאל", "הכנסות מעסק", "income", EconomicClass.INCOME),
+])
+def test_reporting_sign_drives_classification_and_metrics_despite_negative_original(
+    tmp_path, provider, category, manual_class, expected_class
+):
+    app = ImportService(Settings(data_root=tmp_path / "local"))
+    payload = make_workbook([["19/09/2026", 72.4, "Synthetic credit", "19/09/2026", "credit", category, "ILS", "ILS", -72.4]], provider=provider)
+    preview = app.preview_import(payload)
+    app.commit_import(payload, preview.preview_token, "synthetic.xlsx")
+    classifier = ClassificationService(app.database)
+    if manual_class:
+        classifier.save_override(1, economic_class=manual_class, reason="Confirmed income")
+    result = classifier.classify_one(1)
+    assert result.amount == Decimal("72.4")
+    assert result.imported_amount == Decimal("72.4")
+    assert result.original_amount == Decimal("-72.4")
+    assert result.economic_class == expected_class
+    assert "INVALID_CLASS_SIGN" not in {issue.code for issue in result.issues}
+    metrics = MetricsService(app.database).calculate_monthly_metrics("2026-09")
+    assert metrics.gross_consumption == 0
+    if expected_class == EconomicClass.INCOME:
+        assert metrics.gross_income == Decimal("72.4")
+    else:
+        assert metrics.refunds == Decimal("72.4")
+        assert metrics.net_consumption == Decimal("-72.4")

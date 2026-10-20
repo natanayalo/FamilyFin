@@ -209,6 +209,7 @@ class EconomicClass(StrEnum):
     SAVINGS_TRANSFER = "savings_transfer"
     CREDIT_CARD_SETTLEMENT = "credit_card_settlement"
     DEBT_PRINCIPAL = "debt_principal"
+    NO_FINANCIAL_EFFECT = "no_financial_effect"
     UNCLASSIFIED = "unclassified"
 
 
@@ -267,6 +268,7 @@ class ClassificationOverride(BaseModel):
     economic_class: EconomicClass | None = None
     analysis_category: str | None = None
     expense_behavior: ExpenseBehavior | None = None
+    effective_amount: Decimal | None = Field(default=None, allow_inf_nan=False, max_digits=24, decimal_places=8)
     reason: str = ""
     created_at: datetime | None = None
 
@@ -277,6 +279,9 @@ class ClassificationResult(BaseModel):
     transaction_id: int
     booking_date: date
     amount: Decimal
+    imported_amount: Decimal | None = None
+    original_amount: Decimal | None = None
+    original_currency: str | None = None
     currency: str
     account_kind: str
     source_category: str
@@ -334,6 +339,7 @@ class MonthlyMetrics(BaseModel):
     classification_policy_version: str
     source_period_completeness: CompletenessAssessment
     completeness: CompletenessAssessment
+    accepted_transaction_count: int = 0
     unclassified_transaction_count: int = 0
     unclassified_absolute_amount: Decimal = Decimal(0)
     data_freshness_date: date | None = None
@@ -470,6 +476,27 @@ class DashboardComparison(BaseModel):
     reason: str | None = None
 
 
+class MonthlyAmountDistribution(BaseModel):
+    """Equally weighted monthly amounts, with interpolated quartiles."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    mean: Decimal | None = None
+    p25: Decimal | None = None
+    median: Decimal | None = None
+    p75: Decimal | None = None
+
+
+class DashboardStatisticsPopulation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    included_months: list[date] = Field(default_factory=list)
+    partial_months: list[date] = Field(default_factory=list)
+    excluded_months: list[date] = Field(default_factory=list)
+    sample_count: int = 0
+    metrics: dict[str, MonthlyAmountDistribution] = Field(default_factory=dict)
+
+
 class OverviewDashboard(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -479,6 +506,8 @@ class OverviewDashboard(BaseModel):
     headline: dict[str, Decimal | None] = Field(default_factory=dict)
     comparisons: list[DashboardComparison] = Field(default_factory=list)
     freshness_date: date | None = None
+    last_import_at: str | None = None
+    period_statistics: dict[str, DashboardStatisticsPopulation] = Field(default_factory=dict)
     source_coverage: str = "unknown"
     currency: str
 
@@ -501,6 +530,7 @@ class ExpenseDashboard(BaseModel):
     behavior_totals: dict[str, Decimal] = Field(default_factory=dict)
     category_comparisons: list[DashboardComparison] = Field(default_factory=list)
     potential_recurring_spending: list[PotentialRecurringSpending] = Field(default_factory=list)
+    recurring_pattern_reviews: list[RecurringPatternReview] = Field(default_factory=list)
     unusual_category_spending: list[UnusualCategorySpending] = Field(default_factory=list)
     currency: str
 
@@ -515,6 +545,7 @@ class DataQualityDashboard(BaseModel):
     currencies: dict[str, int] = Field(default_factory=dict)
     issue_counts: dict[str, int] = Field(default_factory=dict)
     incomplete_months: list[date] = Field(default_factory=list)
+    monthly_checks: list[MonthlyMetrics] = Field(default_factory=list)
     open_reconciliation_cases: int = 0
     unclassified_transaction_count: int = 0
     unclassified_absolute_amount: Decimal = Decimal(0)
@@ -525,6 +556,7 @@ class PotentialRecurringSpending(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     label: str = "Potential pattern"
+    pattern_id: str = ""
     normalized_description: str
     analysis_category: str
     currency: str
@@ -535,6 +567,14 @@ class PotentialRecurringSpending(BaseModel):
     amount_range: tuple[Decimal, Decimal]
     occurrence_months: list[date]
     contributor_transaction_ids: list[int] = Field(default_factory=list)
+
+
+class RecurringPatternReview(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    pattern: PotentialRecurringSpending
+    status: Literal["approved", "dismissed", "stopped", "pending"]
+    updated_at: str
 
 
 class UnusualCategorySpending(BaseModel):
@@ -2208,6 +2248,7 @@ class ClassificationReviewItem(BaseModel):
     source_category: str
     source_movement_type: str | None = None
     effective_classification: ClassificationResult
+    saved_override: ClassificationOverride | None = None
     source_fields: dict[str, Any] = Field(default_factory=dict)
     issues: list[DataQualityIssue] = Field(default_factory=list)
 

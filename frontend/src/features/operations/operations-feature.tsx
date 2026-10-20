@@ -57,7 +57,9 @@ function RunRow({ run }: { run: AutomationRun }) {
 }
 
 function AttentionReview({ ready }: { ready: boolean }) {
-  const [files, setFiles] = useState<AttentionFile[]>([]);
+  const [files, setFiles] = useState<AttentionFile[] | null>(null);
+  const [filesLoading, setFilesLoading] = useState(true);
+  const [filesError, setFilesError] = useState("");
   const [selected, setSelected] = useState<string | null>(null);
   const [preview, setPreview] = useState<AttentionPreflight | null>(null);
   const [confirmed, setConfirmed] = useState(false);
@@ -66,11 +68,15 @@ function AttentionReview({ ready }: { ready: boolean }) {
   const [message, setMessage] = useState("");
 
   const refresh = useCallback(async () => {
+    setFilesLoading(true);
+    setFilesError("");
     try {
       const response = await getAttentionFiles();
       setFiles(response.data.items);
     } catch (reason) {
-      setError(reason instanceof ApiRequestError ? reason.message : "לא ניתן לטעון קבצים לבדיקה.");
+      setFilesError(reason instanceof ApiRequestError ? reason.message : "לא ניתן לטעון קבצים לבדיקה.");
+    } finally {
+      setFilesLoading(false);
     }
   }, []);
   useEffect(() => { void refresh(); }, [refresh]);
@@ -116,8 +122,10 @@ function AttentionReview({ ready }: { ready: boolean }) {
   };
 
   return <section className="surface operations-panel" aria-labelledby="attention-heading">
-    <div className="operations-heading"><div><h2 id="attention-heading">קבצים לבדיקה</h2><p>בדיקה מוקדמת אינה משנה נתונים. אישור מפעיל את שירות Python לאחר ביקורת וגיבוי מאומת חדש.</p></div><Button variant="outline" disabled={busy} onClick={() => void refresh()}>רענון קבצים</Button></div>
-    {files.length === 0 ? <p className="operations-muted">אין קבצים שממתינים לבדיקה.</p> : <ul className="operations-attention-list">{files.map((file, index) => <li key={file.id}>
+    <div className="operations-heading"><div><h2 id="attention-heading">קבצים לבדיקה</h2><p>בדיקה מוקדמת אינה משנה נתונים. האישור מייבא את הקובץ לאחר בדיקת תקינות ויצירת גיבוי מאומת.</p></div><Button variant="outline" disabled={busy || filesLoading} onClick={() => void refresh()}>רענון קבצים</Button></div>
+    {filesLoading && <p className="operations-muted" role="status">טוענים קבצים לבדיקה…</p>}
+    {filesError && <p className="operations-error" role="alert">{filesError}{files !== null ? " מוצגות תוצאות קודמות; הרשימה עשויה להיות לא מעודכנת." : " נסו לרענן את הקבצים."}</p>}
+    {files === null ? null : files.length === 0 ? !filesLoading && !filesError && <p className="operations-muted">אין קבצים שממתינים לבדיקה.</p> : <ul className="operations-attention-list">{files.map((file, index) => <li key={file.id}>
       <div><strong>קובץ לבדיקה {index + 1}</strong><span>{Math.ceil(file.size_bytes / 1024)} KB · {timeLabel(file.modified_at)}</span></div>
       <Button variant="outline" disabled={busy} onClick={() => void inspect(file.id)}>בדיקה מוקדמת</Button>
     </li>)}</ul>}
@@ -138,19 +146,24 @@ function AttentionReview({ ready }: { ready: boolean }) {
 
 export function OperationsFeature() {
   const [status, setStatus] = useState<AutomationStatus>();
-  const [runs, setRuns] = useState<AutomationRun[]>([]);
+  const [runs, setRuns] = useState<AutomationRun[] | null>(null);
+  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
+  const [statusError, setStatusError] = useState("");
+  const [runError, setRunError] = useState("");
   const [message, setMessage] = useState("");
 
   const refresh = useCallback(async () => {
-    setError("");
+    setLoading(true);
+    setStatusError("");
     try {
       const [statusResponse, runsResponse] = await Promise.all([getAutomationStatus(), getAutomationRuns()]);
       setStatus(statusResponse.data);
       setRuns(runsResponse.data.items);
     } catch (reason) {
-      setError(reason instanceof ApiRequestError ? reason.message : "לא ניתן לטעון את מצב התהליכים.");
+      setStatusError(reason instanceof ApiRequestError ? reason.message : "לא ניתן לטעון את מצב התהליכים.");
+    } finally {
+      setLoading(false);
     }
   }, []);
 
@@ -159,7 +172,7 @@ export function OperationsFeature() {
   const run = async (dryRun: boolean) => {
     setBusy(true);
     setMessage("");
-    setError("");
+    setRunError("");
     try {
       const response = await startAutomation(dryRun);
       const result = response.data;
@@ -168,7 +181,13 @@ export function OperationsFeature() {
         : `הריצה ${runLabel(result.status)}${result.backup_created ? " לאחר יצירת גיבוי מאומת" : ""}.`);
       await refresh();
     } catch (reason) {
-      setError(reason instanceof ApiRequestError ? reason.message : "הריצה לא הושלמה.");
+      const detail = reason instanceof ApiRequestError ? `${reason.message} ` : "";
+      const outcomeUnknown = !(reason instanceof ApiRequestError) || reason.status === 0 || reason.status >= 500;
+      setRunError(detail + (dryRun
+        ? "לא ניתן לאשר את תוצאת הבדיקה. בדקו את היסטוריית הריצות לפני בדיקה נוספת."
+        : outcomeUnknown
+          ? "לא ניתן לאשר את תוצאת ההפעלה. ייתכן שהפעולה הושלמה. בדקו את היסטוריית הריצות ואת הקבצים לפני ניסיון נוסף."
+          : "ההפעלה לא אושרה. בדקו את פרטי השגיאה ורעננו את מצב התהליכים לפני ניסיון נוסף."));
       await refresh();
     } finally {
       setBusy(false);
@@ -177,9 +196,10 @@ export function OperationsFeature() {
 
   return <div className="operations-feature">
     <section className="surface operations-panel" aria-labelledby="operations-status-heading">
-      <div className="operations-heading"><div><h2 id="operations-status-heading">מצב תהליכים</h2><p>הצגת מצב ותוצאות; הפעלה מתבצעת בשירות Python בלבד.</p></div><Button variant="outline" onClick={() => void refresh()} disabled={busy}>רענון</Button></div>
-      {error && <p className="operations-error" role="alert">{error}</p>}
-      {!status ? <p className="operations-muted" role="status">טוענים נתונים מהשרת…</p> : <>
+      <div className="operations-heading"><div><h2 id="operations-status-heading">מצב תהליכים</h2><p>מצב התהליכים ותוצאותיהם בשירות FamilyFin.</p></div><Button variant="outline" onClick={() => void refresh()} disabled={busy || loading}>רענון</Button></div>
+      {statusError && <p className="operations-error" role="alert">{statusError}</p>}
+      {runError && <p className="operations-error" role="alert">{runError}</p>}
+      {!status ? loading ? <p className="operations-muted" role="status">טוענים נתונים מהשרת…</p> : null : <>
         <div className="operations-metrics">
           <article><span>קבצים בתיבת הקלט</span><strong>{status.inbox.inbox_file_count}</strong></article>
           <article><span>קבצים לבדיקה</span><strong>{status.inbox.review_file_count}</strong></article>
@@ -192,8 +212,8 @@ export function OperationsFeature() {
         </div>
         {status.operations.warnings.length > 0 && <div className="operations-warning" role="status"><strong>נדרשת תשומת לב</strong><ul>{status.operations.warnings.map((warning) => <li key={warning}>{issueLabel(warning)}</li>)}</ul></div>}
         <div className="operations-actions">
-          <Button variant="outline" disabled={busy} onClick={() => void run(true)}>{busy ? "פועלת…" : "בדיקת תיבה ללא שינויים"}</Button>
-          <Button disabled={busy || !status.operations.run_now_allowed} onClick={() => void run(false)} aria-describedby="run-now-note">הפעלה עכשיו</Button>
+          <Button variant="outline" disabled={busy || loading || Boolean(statusError)} onClick={() => void run(true)}>{busy ? "פועלת…" : "בדיקת תיבה ללא שינויים"}</Button>
+          <Button disabled={busy || loading || Boolean(statusError) || !status.operations.run_now_allowed} onClick={() => void run(false)} aria-describedby="run-now-note">הפעלה עכשיו</Button>
         </div>
         <p className="operations-note" id="run-now-note">
           {status.operations.run_now_allowed
@@ -211,11 +231,13 @@ export function OperationsFeature() {
       </>}
     </section>
 
-    <AttentionReview ready={Boolean(status?.operations.run_now_allowed)} />
+    <AttentionReview ready={Boolean(status?.operations.run_now_allowed) && !loading && !statusError} />
 
     <section className="surface operations-panel" aria-labelledby="automation-history-heading">
       <div className="operations-heading"><div><h2 id="automation-history-heading">היסטוריית ריצות</h2><p>היסטוריה מציגה סטטוסים, ספירות וקודי בעיה בלבד.</p></div></div>
-      {runs.length ? <ul className="operations-run-list">{runs.map((item) => <RunRow key={item.id} run={item} />)}</ul> : <p className="operations-muted">אין ריצות שמורות.</p>}
+      {loading && <p className="operations-muted" role="status">טוענים היסטוריית ריצות…</p>}
+      {statusError && <p className="operations-muted">{runs === null ? "היסטוריית הריצות אינה זמינה. נסו לרענן את מצב התהליכים." : "מוצגות תוצאות קודמות; היסטוריית הריצות עשויה להיות לא מעודכנת."}</p>}
+      {runs === null ? null : runs.length ? <ul className="operations-run-list">{runs.map((item) => <RunRow key={item.id} run={item} />)}</ul> : !loading && !statusError && <p className="operations-muted">אין ריצות שמורות.</p>}
     </section>
 
     <InsightPreferencesFeature />

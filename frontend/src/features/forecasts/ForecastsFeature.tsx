@@ -1,8 +1,12 @@
 "use client";
 
-import { useEffect, useState } from "react";
-import { Button } from "@/components/ui/button";
-import { EmptyState, ErrorState, LoadingState } from "@/components/ui/async-state";
+import { useEffect, useRef, useState } from "react";
+import Link from "next/link";
+import { ChevronDown } from "lucide-react";
+import { MonthPicker } from "@/components/ui/month-picker";
+import { Button, buttonVariants } from "@/components/ui/button";
+import { ErrorState, LoadingState } from "@/components/ui/async-state";
+import { formatAmount as formatMoney, rateToPercent as formatRateAsPercent, percentToRate, currencyLabel, formatHebrewDate, formatHebrewMonth, issueLabel } from "@/lib/display";
 import { ApiRequestError } from "@/lib/api";
 import { getScenarios, getRevision as getPlanningRevision, getRevisions as getPlanningRevisions } from "@/features/planning/api";
 import type { PlanningItem, PlanningRevision, PlanningScenario } from "@/features/planning/types";
@@ -47,9 +51,9 @@ const roleLabels: Record<ForecastRole, string> = {
   optimistic: "אופטימי",
 };
 const roleColors: Record<ForecastRole, string> = {
-  conservative: "#a96556",
-  baseline: "#3f7253",
-  optimistic: "#527c9b",
+  conservative: "var(--forecast-conservative)",
+  baseline: "var(--primary)",
+  optimistic: "var(--forecast-optimistic)",
 };
 const savingKinds = new Set(["savings_contribution", "savings_withdrawal"]);
 const eventTypes: ForecastEventType[] = ["income", "expense", "contribution", "withdrawal"];
@@ -74,41 +78,27 @@ type EditorState = {
   provisionalAcknowledged: boolean;
 };
 
-function formatMoney(value: string | null | undefined, currency: string) {
-  if (value == null || value === "") return "—";
-  const negative = value.startsWith("-");
-  const unsigned = negative ? value.slice(1) : value;
-  const [whole, fraction] = unsigned.split(".");
-  return `${negative ? "−" : ""}${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",")}${fraction ? `.${fraction}` : ""}\u00a0${currency}`;
+function monthLabel(month: string) { return formatHebrewMonth(month.slice(0, 7)); }
+
+/** Exact aggregation for display only; all forecast calculations stay on the server. */
+function sumDisplayAmounts(values: string[]): string | null {
+  if (values.some((value) => !/^-?\d+(?:\.\d+)?$/.test(value))) return null;
+  const scale = Math.max(0, ...values.map((value) => value.split(".")[1]?.length ?? 0));
+  const total = values.reduce((sum, value) => {
+    const [whole, fraction = ""] = value.replace(/^-/, "").split(".");
+    return sum + (value.startsWith("-") ? -BigInt(1) : BigInt(1)) * BigInt(whole + fraction.padEnd(scale, "0"));
+  }, BigInt(0));
+  const digits = (total < BigInt(0) ? -total : total).toString().padStart(scale + 1, "0");
+  return `${total < BigInt(0) ? "-" : ""}${scale ? `${digits.slice(0, -scale)}.${digits.slice(-scale)}` : digits}`;
 }
 
-function formatRateAsPercent(rate: string) {
-  const negative = rate.startsWith("-");
-  const unsigned = negative ? rate.slice(1) : rate;
-  const [whole, fraction = ""] = unsigned.split(".");
-  const digits = `${whole}${fraction.padEnd(2, "0")}`;
-  const integer = digits.length > 2 ? digits.slice(0, -2) : "0";
-  const decimal = digits.length > 2 ? digits.slice(-2) : digits.padStart(2, "0");
-  return `${negative ? "-" : ""}${integer}.${decimal}`.replace(/\.00$/, "");
+function forecastMonth(start: string, number: number) {
+  const [year, month] = start.slice(0, 7).split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1 + number - 1, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}`;
 }
-
-function percentToRate(percent: string) {
-  const text = percent.trim().replace(/%$/, "").trim();
-  if (!/^-?(?:\d+(?:\.\d*)?|\.\d+)$/.test(text)) return "0";
-  const negative = text.startsWith("-");
-  const unsigned = negative ? text.slice(1) : text;
-  const [whole = "0", fraction = ""] = unsigned.split(".");
-  const allDigits = `${whole || "0"}${fraction}`.replace(/^0+(?=\d)/, "");
-  const shifted = allDigits.length > 2
-    ? `${allDigits.slice(0, -2)}.${allDigits.slice(-2)}`
-    : `0.${allDigits.padStart(2, "0")}`;
-  const trimmed = shifted.replace(/(\.\d*?)0+$/, "$1").replace(/\.$/, "");
-  return `${negative && trimmed !== "0" ? "-" : ""}${trimmed}`;
-}
-
-function monthLabel(month: string) {
-  const [year, monthNumber] = month.slice(0, 7).split("-").map(Number);
-  return new Intl.DateTimeFormat("he-IL", { month: "short", year: "2-digit", timeZone: "UTC" }).format(new Date(Date.UTC(year, monthNumber - 1, 1)));
+function forecastMonthNumber(start: string, value: string) {
+  return (Number(value.slice(0, 4)) - Number(start.slice(0, 4))) * 12 + Number(value.slice(5, 7)) - Number(start.slice(5, 7)) + 1;
 }
 
 function sourceItems(revision: PlanningRevision | null): PlanningItem[] {
@@ -152,6 +142,7 @@ function describeError(error: unknown) {
   if (!(error instanceof ApiRequestError)) return "הפעולה לא הושלמה. בדקו את הקלט ונסו שוב.";
   if (error.apiError?.code === "STALE_REVISION") return "נשמרה גרסה חדשה בזמן העבודה. רעננו את התחזית ופתחו טיוטה חדשה לפני שמירה.";
   if (error.apiError?.code === "QUALITY_ACKNOWLEDGEMENT_REQUIRED") return "יש לעיין במקור התכנון או ביתרות הישנות ולאשר אותן לפני שמירה.";
+  if (error.apiError?.code === "VALIDATION_ERROR") return "בדקו את הסכומים, התאריכים וניתוב הקופות לפני חישוב או שמירה.";
   if (error.status === 0 || error.status >= 500) return "לא ידוע אם השמירה הושלמה. רעננו את התחזית לפני ניסיון נוסף.";
   return error.apiError?.message || "בדקו את הנתונים ונסו שוב.";
 }
@@ -192,12 +183,14 @@ export function ForecastsFeature() {
   const [unknownOperation, setUnknownOperation] = useState(readUnknownForecastMutation);
   const [error, setError] = useState("");
   const [notice, setNotice] = useState("");
-  const [showArchived, setShowArchived] = useState(true);
+  const projectionSequence = useRef(0);
+  const newForecastButton = useRef<HTMLButtonElement>(null);
+  const editorWasOpen = useRef(false);
   const [seedError, setSeedError] = useState("");
   const [restoreError, setRestoreError] = useState("");
 
   const selectedForecast = forecasts.find((item) => item.forecast_id === selectedForecastId) ?? null;
-  const visibleForecasts = showArchived ? forecasts : forecasts.filter((item) => !item.archived);
+  const visibleForecasts = forecasts;
   const eligibleSeedBalances = seedRevision?.balances.filter((item) => item.side === "asset" && item.liquidity === "liquid") ?? [];
   const selectedScenario = scenarios.find((item) => item.scenario_id === editor?.scenarioId) ?? null;
   const savingItems = sourceItems(sourceRevision);
@@ -211,6 +204,7 @@ export function ForecastsFeature() {
   }
 
   async function refreshAll(preferredForecastId?: string, preferredRevisionNumber?: number): Promise<boolean> {
+    const sequence = ++projectionSequence.current;
     setLoading(true);
     setError("");
     try {
@@ -219,6 +213,7 @@ export function ForecastsFeature() {
         getScenarios(false).then((result) => result.data),
         getSnapshots(false),
       ]);
+      if (sequence !== projectionSequence.current) return false;
       setForecasts(nextForecasts);
       setScenarios(nextScenarios);
       setSnapshots(nextSnapshots);
@@ -235,47 +230,68 @@ export function ForecastsFeature() {
         return true;
       }
       const nextRevisions = await getForecastRevisions(chosen.forecast_id);
+      if (sequence !== projectionSequence.current) return false;
       setRevisions(nextRevisions);
       const revisionNumber = nextRevisions.some((item) => item.revision_number === preferredRevisionNumber)
         ? preferredRevisionNumber!
         : chosen.current_revision_number;
       setSelectedRevisionNumber(revisionNumber);
-      setDetail(await getForecastProjection(chosen.forecast_id, revisionNumber));
+      const result = await getForecastProjection(chosen.forecast_id, revisionNumber);
+      if (sequence !== projectionSequence.current) return false;
+      setDetail(result);
       markUnknownOperationReconciled();
       return true;
     } catch (cause) {
-      setError(describeError(cause));
+      if (sequence === projectionSequence.current) setError(describeError(cause));
       return false;
     } finally {
-      setLoading(false);
+      if (sequence === projectionSequence.current) setLoading(false);
     }
   }
 
-  useEffect(() => { void refreshAll(); }, []);
+  const editing = Boolean(editor);
+  const initialRefresh = useRef(refreshAll);
+  useEffect(() => { void initialRefresh.current(); }, []);
+  useEffect(() => {
+    if (editing) {
+      document.getElementById("forecast-editor-heading")?.scrollIntoView?.({ block: "start" });
+      document.getElementById("forecast-name")?.focus();
+    } else if (editorWasOpen.current) newForecastButton.current?.focus();
+    editorWasOpen.current = editing;
+  }, [editing]);
 
   async function chooseForecast(forecastId: string) {
+    const sequence = ++projectionSequence.current;
     setSelectedForecastId(forecastId);
+    setDetail(null);
     setError("");
     const chosen = forecasts.find((item) => item.forecast_id === forecastId);
     if (!chosen) return;
     setBusy(true);
     try {
       const nextRevisions = await getForecastRevisions(forecastId);
+      if (sequence !== projectionSequence.current) return;
       setRevisions(nextRevisions);
       const number = chosen.current_revision_number;
       setSelectedRevisionNumber(number);
-      setDetail(await getForecastProjection(forecastId, number));
-    } catch (cause) { setError(describeError(cause)); }
-    finally { setBusy(false); }
+      const result = await getForecastProjection(forecastId, number);
+      if (sequence === projectionSequence.current) setDetail(result);
+    } catch (cause) { if (sequence === projectionSequence.current) setError(describeError(cause)); }
+    finally { if (sequence === projectionSequence.current) setBusy(false); }
   }
 
   async function chooseForecastRevision(revisionNumber: number) {
     if (!selectedForecast) return;
+    const sequence = ++projectionSequence.current;
     setSelectedRevisionNumber(revisionNumber);
+    setDetail(null);
     setBusy(true);
-    try { setDetail(await getForecastProjection(selectedForecast.forecast_id, revisionNumber)); }
-    catch (cause) { setError(describeError(cause)); }
-    finally { setBusy(false); }
+    setError("");
+    try {
+      const result = await getForecastProjection(selectedForecast.forecast_id, revisionNumber);
+      if (sequence === projectionSequence.current) setDetail(result);
+    } catch (cause) { if (sequence === projectionSequence.current) setError(describeError(cause)); }
+    finally { if (sequence === projectionSequence.current) setBusy(false); }
   }
 
   async function loadScenarioRevision(scenarioId: string, revisionNumber?: number) {
@@ -560,8 +576,8 @@ export function ForecastsFeature() {
 
   return <div className={styles.page}>
     <div className={styles.toolbar}>
-      <div><span className={styles.eyebrow}>36 חודשים · תחזית, לא מדידה</span><h2>תחזיות חיסכון</h2><p>כל תחזית נעולה לגרסה מדויקת של תרחיש תכנון וליתרות פתיחה מפורשות.</p></div>
-      <div className={styles.toolbarActions}><Button variant="outline" disabled={busy} onClick={() => void refreshAll(selectedForecastId, selectedRevisionNumber || undefined)}>{unknownOperation && !unknownOperation.reconciled ? "רענון ובדיקת מצב" : "רענון"}</Button><Button disabled={busy || !scenarios.length || Boolean(unknownOperation)} onClick={() => void startCreate()}>תחזית חדשה</Button></div>
+      <p>ראו איך יתרת הפתיחה, ההפקדות והנחות התשואה משפיעות על החיסכון לאורך זמן.</p>
+      <div className={styles.toolbarActions}><Button variant="outline" disabled={busy} onClick={() => void refreshAll(selectedForecastId, selectedRevisionNumber || undefined)}>{unknownOperation && !unknownOperation.reconciled ? "רענון ובדיקת מצב" : "רענון"}</Button><Button ref={newForecastButton} disabled={busy || Boolean(editor) || !scenarios.length || Boolean(unknownOperation)} onClick={() => void startCreate()}>תחזית חדשה</Button></div>
     </div>
     {unknownOperation && <section className={styles.warning} role="status" aria-live="polite">
       <strong>{unknownOperation.kind === "create" ? "לא ידוע אם התחזית נוצרה." : "לא ידוע אם העותק נוצר."}</strong>
@@ -608,49 +624,50 @@ export function ForecastsFeature() {
       setSeedPoolTypes={setSeedPoolTypes}
       addNetWorthPools={() => void addNetWorthPools()}
     /> : <>
-      {forecasts.length > 0 && <section className={styles.section} aria-labelledby="saved-forecasts-heading">
-        <div className={styles.sectionHeading}><div><h3 id="saved-forecasts-heading">תחזיות שמורות</h3><p>פתחו כל גרסה היסטורית כדי לראות את ההנחות והתוצאה שחושבה ממנה.</p></div><label className={styles.check}><input type="checkbox" checked={showArchived} onChange={(event) => setShowArchived(event.target.checked)} /> הצגת ארכיון</label></div>
-        <div className={styles.forecastList} aria-label="תחזיות שמורות">
-          {visibleForecasts.map((item) => <button key={item.forecast_id} type="button" className={`${styles.forecastChoice}${item.forecast_id === selectedForecastId ? ` ${styles.forecastSelected}` : ""}`} onClick={() => void chooseForecast(item.forecast_id)}>
-            <span><strong>{item.name}</strong>{item.archived && <em>בארכיון</em>}</span>
-            <small>{item.currency} · גרסה {item.current_revision_number} · מקור תכנון {item.source_revision_number}</small>
-          </button>)}
-        </div>
-      </section>}
-
-      {!selectedForecast || !detail ? <section className={styles.section}><EmptyState title="אין תחזית להצגה" description={scenarios.length ? "צרו תחזית חדשה ובחרו תרחיש תכנון ויתרות פתיחה." : "צרו תרחיש תכנון לפני בניית תחזית חיסכון."} action={scenarios.length && !unknownOperation ? <Button onClick={() => void startCreate()}>יצירת תחזית</Button> : undefined} /></section> : <>
+      {forecasts.length > 0 && <div className={styles.forecastControls}>
+        <Field label="התחזית הנבחרת"><select aria-label="התחזית הנבחרת" value={selectedForecastId} disabled={busy} onChange={(event) => void chooseForecast(event.target.value)}>
+          {visibleForecasts.map((item) => <option key={item.forecast_id} value={item.forecast_id}>{item.name}{item.archived ? " · בארכיון" : ""} · {currencyLabel(item.currency)}</option>)}
+        </select></Field>
+        <Button variant="outline" disabled={busy || selectedForecast?.archived} onClick={() => void startEdit()}>עריכת הנחות</Button>
+      </div>}
+      {busy && !detail && forecasts.length > 0 ? <LoadingState label="טוענים את גרסת התחזית שנבחרה…" /> : selectedForecast && !detail ? <ErrorState title="לא ניתן לטעון את גרסת התחזית" description={error || "רעננו את הגרסה כדי לנסות שוב."} onRetry={() => void chooseForecast(selectedForecast.forecast_id)} retrying={busy} /> : !selectedForecast || !detail ? <section className={`${styles.section} ${styles.setup}`} aria-labelledby="forecast-setup-title">
+        <h2 id="forecast-setup-title">איך החיסכון שלכם יכול להתפתח?</h2>
+        <p>{scenarios.length ? "מתחילים בתכנון קיים, מוסיפים את הכסף שכבר חסכתם ומשווים בין שלוש הנחות תשואה." : "תחילה בונים תקציב עם הכנסות, הוצאות והעברות לחיסכון. אחר כך אפשר להוסיף יתרת פתיחה ולבנות תחזית."}</p>
+        <div className={styles.actionRow}>{!scenarios.length ? <Link className={buttonVariants()} href="/planning">יצירת תקציב</Link> : !unknownOperation && <Button onClick={() => void startCreate()}>יצירת תחזית</Button>}</div>
+        <ol className={styles.setupSteps}><li><strong>בוחרים תכנון</strong><span>הפקדות ומשיכות מהגרסה שנבחרה.</span></li><li><strong>מוסיפים יתרת פתיחה</strong><span>הכסף שכבר נמצא בקופות בתחילת התחזית.</span></li><li><strong>משווים תוצאות</strong><span>הפרדה בין הפקדות לבין תשואה משוערת.</span></li></ol>
+      </section> : <>
+        {selectedRevisionNumber !== selectedForecast.current_revision_number && <div className={styles.warning}>מוצגת גרסה היסטורית {selectedRevisionNumber}. עריכת הנחות מתחילה מהגרסה העדכנית {selectedForecast.current_revision_number}.</div>}
+        {selectedForecast.archived && <div className={styles.warning}>התחזית בארכיון. אפשר לעיין בה או להחזיר אותה דרך כלי הניהול.</div>}
+        {detail.source_verification.at_creation.provisional && <div className={styles.warning}>תחזית זו מבוססת על מקור תכנון חלקי או זמני. פרטי הכיסוי והאישור זמינים בכלי הניהול.</div>}
+        <ForecastResults key={`${selectedForecast.forecast_id}-${detail.snapshot.revision_number}`}
+          draft={detail.draft} snapshot={detail.snapshot} horizon={horizon} setHorizon={setHorizon}
+          selectedRole={selectedRole} setSelectedRole={setSelectedRole} />
+        <details className={`${styles.section} ${styles.disclosure}`} aria-label="מקורות, גרסאות וניהול"><summary><span>מקורות, גרסאות וניהול<small>תכנון המקור, היסטוריה, שכפול וארכיון</small></span><ChevronDown size={18} aria-hidden="true" /></summary>
         <section className={styles.section} aria-labelledby="forecast-detail-heading">
-          <div className={styles.sectionHeading}><div><span className={styles.eyebrow}>תוצאות מחושבות · לא יתרות שנמדדו</span><h3 id="forecast-detail-heading">{selectedForecast.name}</h3><p>{detail.snapshot.currency} · 36 חודשים · גרסת תחזית {detail.snapshot.revision_number}</p></div><div className={styles.actionRow}>
-            <Button size="sm" onClick={() => void startEdit()} disabled={busy || selectedForecast.archived}>עריכת הנחות</Button>
+          <div className={styles.sectionHeading}><div><span className={styles.eyebrow}>תוצאות מחושבות · לא יתרות שנמדדו</span><h3 id="forecast-detail-heading">{selectedForecast.name}</h3><p>{currencyLabel(detail.snapshot.currency)} · 36 חודשים · גרסת תחזית {detail.snapshot.revision_number}</p></div><div className={styles.actionRow}>
             <Button size="sm" variant="outline" onClick={() => void runAction(() => cloneForecast(selectedForecast.forecast_id), "נוצר עותק חדש של התחזית.", "clone")} disabled={busy || Boolean(unknownOperation)}>שכפול</Button>
             <Button size="sm" variant="outline" onClick={() => void runAction(() => setForecastArchived(selectedForecast.forecast_id, !selectedForecast.archived), selectedForecast.archived ? "התחזית הוחזרה מהארכיון." : "התחזית הועברה לארכיון.")} disabled={busy}>{selectedForecast.archived ? "החזרה מהארכיון" : "העברה לארכיון"}</Button>
           </div></div>
-          <div className={styles.summaryMeta}>
+          <details className={styles.assumptionDetails}><summary>מקורות ופרטים טכניים</summary><div className={styles.summaryMeta}>
             <span>תרחיש תכנון: <bdi>{detail.snapshot.scenario_id}</bdi></span>
             <span>גרסת מקור נעולה: <bdi>{detail.snapshot.source_revision_number}</bdi></span>
             <span>גיבוב הנחות: <code dir="ltr">{detail.snapshot.assumption_hash.slice(0, 18)}…</code></span>
             <span>מקור הון: {detail.snapshot.net_worth_snapshot_revision_id ? "יתרות מתמונת הון מדודה" : "יתרות פתיחה ידניות"}</span>
           </div>
+          </details>
           {detail.source_verification.at_creation.provisional && <div className={styles.warning}><strong>איכות מקור התכנון בעת השמירה:</strong> זמנית · {detail.source_verification.at_creation.issue_codes.join(" · ") || "נדרשה סקירת מקור"} · אישור נשמר: {detail.snapshot.provisional_acknowledged ? "כן" : "לא"}</div>}
           <div className={styles.verificationGrid}>
             <VerificationCard title="אימות המקור בעת השמירה" value={detail.source_verification.at_creation} />
             <VerificationCard title="אימות תרחיש התכנון כעת" value={detail.source_verification.current} />
           </div>
           <div className={styles.revisionBar}>
-            <label className={styles.field}><span>גרסת תחזית לבדיקה</span><select value={selectedRevisionNumber} onChange={(event) => void chooseForecastRevision(Number(event.target.value))}>{revisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number} · {revision.created_at?.slice(0, 10) ?? "תאריך לא זמין"}</option>)}</select></label>
+            <label className={styles.field}><span>גרסת תחזית לבדיקה</span><select value={selectedRevisionNumber} onChange={(event) => void chooseForecastRevision(Number(event.target.value))}>{revisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number} · {revision.created_at ? formatHebrewDate(revision.created_at.slice(0, 10)) : "תאריך לא זמין"}</option>)}</select></label>
             <span className={styles.badge}>{selectedRevisionNumber === selectedForecast.current_revision_number ? "הגרסה הנוכחית" : "גרסה היסטורית"}</span>
             {selectedRevisionNumber < selectedForecast.current_revision_number && <Button size="sm" variant="outline" disabled={busy || selectedForecast.archived} onClick={() => void restoreSelectedRevision()}>שחזור כגרסה חדשה</Button>}
           </div>
           {restoreError && <ErrorBanner message={restoreError} />}
         </section>
-        <ForecastResults
-          draft={detail.draft}
-          snapshot={detail.snapshot}
-          horizon={horizon}
-          setHorizon={setHorizon}
-          selectedRole={selectedRole}
-          setSelectedRole={setSelectedRole}
-        />
+        </details>
       </>}
     </>}
   </div>;
@@ -723,6 +740,12 @@ function Editor(props: EditorProps) {
     updateEditor((current) => ({
       ...current,
       pools: current.pools.map((pool, itemIndex) => itemIndex === index ? { ...pool, ...patch } : pool),
+      cases: patch.name === undefined ? current.cases : current.cases.map((item) => ({
+        ...item,
+        routes: item.routes.map((route) => route.pool_name === current.pools[index].name ? { ...route, pool_name: patch.name! } : route),
+        sweep_pool_name: item.sweep_pool_name === current.pools[index].name ? patch.name! : item.sweep_pool_name,
+        events: item.events.map((event) => event.pool_name === current.pools[index].name ? { ...event, pool_name: patch.name! } : event),
+      })),
     }));
   }
 
@@ -737,33 +760,33 @@ function Editor(props: EditorProps) {
   return <section className={styles.editor} aria-labelledby="forecast-editor-heading">
     <div className={styles.editorHeading}><div><span className={styles.eyebrow}>{editor.mode === "create" ? "בונה תחזית חדשה" : `גרסה ${editor.expectedRevisionNumber} · עריכת הנחות`}</span><h3 id="forecast-editor-heading">{editor.mode === "create" ? "תחזית חיסכון" : editor.name}</h3><p>שלושה שלבים: מקור תכנון, יתרות פתיחה, מקרי תחזית ותוצאות.</p></div><button type="button" className={styles.textButton} onClick={closeEditor}>סגירת העורך</button></div>
     <ol className={styles.steps} aria-label="שלבי עריכת התחזית">
-      {["מקור תכנון", "יתרות פתיחה", "מקרי תחזית"].map((label, index) => <li key={label} className={editor.step === index + 1 ? styles.activeStep : editor.step > index + 1 ? styles.completeStep : ""}><span>{index + 1}</span>{label}</li>)}
+      {["מקור תכנון", "יתרות פתיחה", "מקרי תחזית"].map((label, index) => <li key={label} aria-current={editor.step === index + 1 ? "step" : undefined} className={editor.step === index + 1 ? styles.activeStep : editor.step > index + 1 ? styles.completeStep : ""}><span>{index + 1}</span>{label}</li>)}
     </ol>
 
     {editor.step === 1 && <div className={styles.stepContent}>
       <div className={styles.formGrid}>
         {editor.mode === "create" ? <Field label="תרחיש תכנון"><select aria-label="תרחיש תכנון" value={editor.scenarioId} onChange={(event) => onScenarioChange(event.target.value)}>{scenarios.map((scenario) => <option key={scenario.scenario_id} value={scenario.scenario_id}>{scenario.name} · {scenario.currency}</option>)}</select></Field> : <Field label="תרחיש תכנון"><input disabled value={`${selectedScenario?.name ?? editor.scenarioId} · ${selectedScenario?.currency ?? ""}`} /></Field>}
-        {editor.mode === "create" ? <Field label="גרסת תכנון מדויקת"><select aria-label="גרסת תכנון מדויקת" value={editor.sourceRevisionNumber} onChange={(event) => onSourceRevisionChange(Number(event.target.value))}>{planningRevisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number} · {revision.revision_id.slice(0, 8)}</option>)}</select></Field> : <Field label="גרסת תכנון נעולה"><input disabled value={`גרסה ${editor.sourceRevisionNumber} · ${sourceRevision.revision_id.slice(0, 12)}`} /></Field>}
-        <Field label="שם התחזית"><input aria-label="שם התחזית" maxLength={200} value={editor.name} onChange={(event) => updateEditor((current) => ({ ...current, name: event.target.value }), false)} /></Field>
+        {editor.mode === "create" ? <Field label="גרסת תכנון מדויקת"><select aria-label="גרסת תכנון מדויקת" value={editor.sourceRevisionNumber} onChange={(event) => onSourceRevisionChange(Number(event.target.value))}>{planningRevisions.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number}</option>)}</select></Field> : <Field label="גרסת תכנון נעולה"><input disabled value={`גרסה ${editor.sourceRevisionNumber} · ${sourceRevision.revision_id.slice(0, 12)}`} /></Field>}
+        <Field label="שם התחזית"><input id="forecast-name" aria-label="שם התחזית" maxLength={200} value={editor.name} onChange={(event) => updateEditor((current) => ({ ...current, name: event.target.value }), false)} /></Field>
       </div>
-      <div className={styles.referenceCard}><strong>מקור מדויק שנבחר</strong><span>תרחיש <bdi dir="ltr">{editor.scenarioId}</bdi> · גרסה {sourceRevision.revision_number} · {selectedScenario?.currency ?? ""}</span><code dir="ltr">{sourceRevision.revision_id}</code></div>
+      <div className={styles.referenceCard}><strong>{selectedScenario?.name ?? "תכנון המקור"} · גרסה {sourceRevision.revision_number}</strong><span>{selectedScenario ? `${formatHebrewMonth(selectedScenario.start_month)} עד ${formatHebrewMonth(selectedScenario.end_month)}` : "גרסת התכנון שנשמרה עם התחזית"}. תנועות חודשיות חוזרות גם בשנים הבאות; אירועים חד־פעמיים אינם חוזרים.</span><details><summary>מזהי מקור</summary><code dir="ltr">{editor.scenarioId} · {sourceRevision.revision_id}</code></details></div>
       {sourceRevision.provisional && <div className={styles.warning}><strong>הגרסה הזמנית כוללת:</strong> {sourceRevision.issue_codes.join(" · ") || "פערי איכות במקור"}<label className={styles.check}><input type="checkbox" checked={editor.provisionalAcknowledged} onChange={(event) => updateEditor((current) => ({ ...current, provisionalAcknowledged: event.target.checked }), false)} /> קראתי ואישרתי את מצב מקור התכנון הזה.</label></div>}
-      {sourceItems.length > 0 && <div className={styles.referenceCard}><strong>תנועות חיסכון והעברה מהמקור</strong>{sourceItems.map((item) => <span key={item.id}>{itemLabel(item)} · {formatMoney(item.amount, selectedScenario?.currency ?? "ILS")} · <code dir="ltr">{item.id}</code></span>)}</div>}
+      {sourceItems.length > 0 && <div className={styles.referenceCard}><strong>תנועות חיסכון והעברה מהמקור</strong>{sourceItems.map((item) => <span key={item.id}>{itemLabel(item)} · {formatMoney(item.amount, selectedScenario?.currency ?? "ILS")}</span>)}</div>}
       <Field label="הערות לגרסה"><textarea rows={3} maxLength={2000} value={editor.notes} onChange={(event) => updateEditor((current) => ({ ...current, notes: event.target.value }), false)} /></Field>
       <div className={styles.formActions}><Button onClick={() => updateEditor((current) => ({ ...current, step: 2 }), false)}>המשך ליתרות פתיחה</Button><Button variant="outline" onClick={closeEditor}>ביטול</Button></div>
     </div>}
 
     {editor.step === 2 && <div className={styles.stepContent}>
-      <div className={styles.sectionHeading}><div><h4>קופות ויתרות פתיחה</h4><p>היתרות הן קלט מפורש. לא נגזרות עסקאות, הכנסות או חיסכון קודם.</p></div><Button size="sm" variant="outline" onClick={addPool}>הוספת קופה ידנית</Button></div>
-      <div className={styles.poolGrid}>{editor.pools.map((pool, index) => <article className={styles.poolCard} key={`${pool.name}-${index}`}>
+      <div className={styles.sectionHeading}><div><h4>קופות ויתרות פתיחה</h4><p>הזינו את הכסף שכבר נמצא בכל קופה בתחילת התחזית. ההפקדות העתידיות יתווספו בנפרד מתכנון המקור.</p></div><Button size="sm" variant="outline" onClick={addPool}>הוספת קופה ידנית</Button></div>
+      <div className={styles.poolGrid}>{editor.pools.map((pool, index) => <article className={styles.poolCard} key={`pool-${index}`}>
         <div className={styles.cardTop}><strong>{pool.net_worth_account_key ? "יתרה שנמדדה" : "יתרה ידנית"}</strong><button type="button" className={styles.textButton} disabled={editor.pools.length <= 1} onClick={() => updateEditor((current) => ({ ...current, pools: current.pools.filter((_, itemIndex) => itemIndex !== index) }))}>הסרה</button></div>
         <div className={styles.formGrid}>
           <Field label="שם הקופה"><input aria-label={`שם קופה ${index + 1}`} required maxLength={200} value={pool.name} onChange={(event) => patchPool(index, { name: event.target.value })} /></Field>
           <Field label="סוג"><select aria-label={`סוג קופה ${index + 1}`} value={pool.pool_type} onChange={(event) => patchPool(index, { pool_type: event.target.value as ForecastPoolType })}><option value="cash">מזומן או חיסכון</option><option value="investment">השקעה</option></select></Field>
-          <Field label={`יתרת פתיחה (${selectedScenario?.currency ?? "ILS"})`}><input aria-label={`יתרת פתיחה קופה ${index + 1}`} inputMode="decimal" required value={pool.opening_balance} onChange={(event) => patchPool(index, { opening_balance: event.target.value })} /></Field>
+          <Field label={`יתרת פתיחה (${currencyLabel(selectedScenario?.currency ?? "ILS")})`}><input aria-label={`יתרת פתיחה קופה ${index + 1}`} dir="ltr" inputMode="decimal" required value={pool.opening_balance} onChange={(event) => patchPool(index, { opening_balance: event.target.value })} /></Field>
           <Field label="נכון לתאריך"><input aria-label={`תאריך יתרת פתיחה קופה ${index + 1}`} type="date" required value={pool.as_of_date} onChange={(event) => patchPool(index, { as_of_date: event.target.value })} /></Field>
         </div>
-        {pool.net_worth_account_key && <div className={styles.sourceReference}><span>מקור חשבון: {pool.net_worth_account_key} · הערכה {pool.source_valuation_date}</span><code dir="ltr">{pool.net_worth_snapshot_revision_id}</code></div>}
+        {pool.net_worth_account_key && <div className={styles.sourceReference}><span>מקור חשבון: {pool.net_worth_account_key} · הערכה {pool.source_valuation_date ? formatHebrewDate(pool.source_valuation_date) : "לא זמין"}</span><code dir="ltr">{pool.net_worth_snapshot_revision_id}</code></div>}
         {pool.source_stale && <label className={styles.check}><input type="checkbox" checked={Boolean(pool.source_quality_acknowledged)} onChange={(event) => patchPool(index, { source_quality_acknowledged: event.target.checked })} /> אני מאשר/ת את יתרת המקור הישנה לקופה זו.</label>}
       </article>)}</div>
 
@@ -771,12 +794,12 @@ function Editor(props: EditorProps) {
         <summary>בחירת יתרות מתוך הון משפחתי מדוד</summary>
         <p>המערכת תשתמש בחשבונות נכס נזילים בלבד ותשמור את מזהה הגרסה המדויקת ואת תאריך ההערכה.</p>
         <div className={styles.formGrid}>
-          <Field label="תמונת מצב"><select aria-label="תמונת מצב ליתרות פתיחה" value={seedSnapshotId} onChange={(event) => onSeedSnapshotChange(event.target.value)}><option value="">בחירת תאריך תמונה</option>{snapshots.filter((item) => !item.archived).map((item) => <option key={item.snapshot_id} value={item.snapshot_id}>{item.snapshot_date} · גרסה {item.current_revision_number}</option>)}</select></Field>
+          <Field label="תמונת מצב"><select aria-label="תמונת מצב ליתרות פתיחה" value={seedSnapshotId} onChange={(event) => onSeedSnapshotChange(event.target.value)}><option value="">בחירת תאריך תמונה</option>{snapshots.filter((item) => !item.archived).map((item) => <option key={item.snapshot_id} value={item.snapshot_id}>{formatHebrewDate(item.snapshot_date)} · גרסה {item.current_revision_number}</option>)}</select></Field>
           <Field label="גרסת תמונת מצב"><select aria-label="גרסת תמונת מצב ליתרות פתיחה" value={seedRevision?.revision_number ?? ""} onChange={(event) => onSeedRevisionChange(Number(event.target.value))}><option value="">בחירת גרסה</option>{seedRevisionSummaries.map((revision) => <option key={revision.revision_id} value={revision.revision_number}>גרסה {revision.revision_number}</option>)}</select></Field>
         </div>
         <div className={styles.seedAccounts}>{eligibleSeedBalances.map((balance) => <label className={styles.seedAccount} key={balance.account_key}>
           <input type="checkbox" checked={seedAccountKeys.includes(balance.account_key)} onChange={(event) => setSeedAccountKeys(event.target.checked ? [...seedAccountKeys, balance.account_key] : seedAccountKeys.filter((key) => key !== balance.account_key))} />
-          <span><strong>{balance.account_name}</strong><small>{balance.account_key} · {formatMoney(balance.amount_ils, "ILS")} · הערכה {balance.valuation_date}{balance.stale ? " · הערכה ישנה" : ""}</small></span>
+          <span><strong>{balance.account_name}</strong><small>{balance.account_key} · {formatMoney(balance.amount_ils, "ILS")} · הערכה {formatHebrewDate(balance.valuation_date)}{balance.stale ? " · הערכה ישנה" : ""}</small></span>
           <select aria-label={`סוג קופה לחשבון ${balance.account_name}`} value={seedPoolTypes[balance.account_key] ?? "cash"} onChange={(event) => setSeedPoolTypes({ ...seedPoolTypes, [balance.account_key]: event.target.value as ForecastPoolType })}><option value="cash">מזומן או חיסכון</option><option value="investment">השקעה</option></select>
         </label>)}</div>
         {seedRevision && <div className={styles.sourceReference}>גרסה נעולה <code dir="ltr">{seedRevision.revision_id}</code> · תאריך {seedRevision.snapshot_date} · {!seedStartMonth ? "אפשר להשתמש ביתרה רק מתמונת מצב של תחילת חודש או מסופו." : !seedMatchesScenario ? `תאריך זה מתאים לתרחיש שמתחיל ב־${seedStartMonth}, והתרחיש הנבחר מתחיל ב־${selectedScenario?.start_month}.` : `תחזית מתחילה ב־${seedStartMonth}`}</div>}
@@ -787,10 +810,10 @@ function Editor(props: EditorProps) {
     </div>}
 
     {editor.step === 3 && <div className={styles.stepContent}>
-      <div className={styles.sectionHeading}><div><h4>הנחות בשלושה מקרי תחזית</h4><p>תשואה שנתית אפקטיבית, ניתוב הפקדות ומשיכות, העברות חד־פעמיות והתאמות חודשיות.</p></div></div>
+      <div className={styles.sectionHeading}><div><h4>הנחות בשלושה מקרי תחזית</h4><p>המספרים הם הנחות שתוכלו לשנות. התשואה השנתית חלה על כל הקופות; סוג הקופה אינו קובע שיעור נפרד.</p></div></div>
       <div className={styles.caseEditors}>{roles.map((role) => {
         const selected = editor.cases.find((item) => item.role === role)!;
-        return <CaseEditor key={role} item={selected} pools={editor.pools} items={sourceItems} currency={selectedScenario?.currency ?? "ILS"}
+        return <CaseEditor key={role} item={selected} pools={editor.pools} items={sourceItems} currency={selectedScenario?.currency ?? "ILS"} startMonth={selectedScenario?.start_month ?? editor.pools[0]?.as_of_date ?? ""}
           onChange={(next) => patchCase(role, () => next)} onConfirm={(confirmed) => patchCase(role, (item) => ({ ...item, confirmed }), false)} />;
       })}</div>
       <div className={styles.formGrid}><Field label="הערות לגרסה"><textarea rows={2} maxLength={2000} value={editor.notes} onChange={(event) => updateEditor((current) => ({ ...current, notes: event.target.value }), false)} /></Field></div>
@@ -806,11 +829,12 @@ function Editor(props: EditorProps) {
   </section>;
 }
 
-function CaseEditor({ item, pools, items, currency, onChange, onConfirm }: {
+function CaseEditor({ item, pools, items, currency, startMonth, onChange, onConfirm }: {
   item: ForecastCase;
   pools: ForecastPool[];
   items: PlanningItem[];
   currency: string;
+  startMonth: string;
   onChange: (item: ForecastCase) => void;
   onConfirm: (confirmed: boolean) => void;
 }) {
@@ -853,8 +877,8 @@ function CaseEditor({ item, pools, items, currency, onChange, onConfirm }: {
         {adjustment.target_type === "category" && <Field label="שם קטגוריה"><input value={adjustment.target} onChange={(event) => changeAdjustment(index, { target: event.target.value })} /></Field>}
         <Field label="פעולה"><select value={adjustment.operation} onChange={(event) => changeAdjustment(index, { operation: event.target.value as ForecastAdjustmentOperation })}><option value="replacement">החלפת סכום</option><option value="fixed_delta">תוספת או הפחתה</option><option value="percentage_change">שינוי באחוזים</option></select></Field>
         <Field label="ערך"><input inputMode="decimal" value={adjustment.value} onChange={(event) => changeAdjustment(index, { value: event.target.value })} /></Field>
-        <Field label="מתחיל בחודש"><input type="number" min="1" max="36" value={adjustment.start_month} onChange={(event) => changeAdjustment(index, { start_month: Number(event.target.value) })} /></Field>
-        <Field label="עד חודש"><input type="number" min="1" max="36" placeholder="36" value={adjustment.end_month ?? ""} onChange={(event) => changeAdjustment(index, { end_month: event.target.value ? Number(event.target.value) : null })} /></Field>
+        <MonthPicker label={`תחילת התאמה ${index + 1} · ${roleLabels[item.role]}`} showLabel value={forecastMonth(startMonth, adjustment.start_month)} min={forecastMonth(startMonth, 1)} max={forecastMonth(startMonth, 36)} onChange={(value) => changeAdjustment(index, { start_month: forecastMonthNumber(startMonth, value) })} />
+        <MonthPicker label={`סיום התאמה ${index + 1} · ${roleLabels[item.role]}`} showLabel value={forecastMonth(startMonth, adjustment.end_month ?? 36)} min={forecastMonth(startMonth, adjustment.start_month)} max={forecastMonth(startMonth, 36)} onChange={(value) => changeAdjustment(index, { end_month: forecastMonthNumber(startMonth, value) })} />
         <button type="button" className={styles.textButton} onClick={() => update({ adjustments: item.adjustments.filter((_, rowIndex) => rowIndex !== index) })}>הסרת התאמה</button>
       </div>)}
       <Button size="sm" variant="outline" onClick={() => update({ adjustments: [...item.adjustments, { target_type: "line", target: "", operation: "fixed_delta", value: "0", start_month: 1, end_month: null }] })}>הוספת התאמה</Button>
@@ -864,7 +888,7 @@ function CaseEditor({ item, pools, items, currency, onChange, onConfirm }: {
       <summary>אירועים חד־פעמיים או העברות ({item.events.length})</summary>
       {item.events.map((event, index) => <div className={styles.inputRow} key={`event-${index}`}>
         <Field label="סוג אירוע"><select value={event.event_type} onChange={(change) => changeEvent(index, { event_type: change.target.value as ForecastEventType })}>{eventTypes.map((type) => <option key={type} value={type}>{eventLabels[type]}</option>)}</select></Field>
-        <Field label="חודש"><input type="number" min="1" max="36" value={event.month} onChange={(change) => changeEvent(index, { month: Number(change.target.value) })} /></Field>
+        <MonthPicker label={`חודש אירוע ${index + 1} · ${roleLabels[item.role]}`} showLabel value={forecastMonth(startMonth, event.month)} min={forecastMonth(startMonth, 1)} max={forecastMonth(startMonth, 36)} onChange={(value) => changeEvent(index, { month: forecastMonthNumber(startMonth, value) })} />
         <Field label={`סכום (${currency})`}><input inputMode="decimal" value={event.amount} onChange={(change) => changeEvent(index, { amount: change.target.value })} /></Field>
         <Field label="תיאור"><input maxLength={200} value={event.label} onChange={(change) => changeEvent(index, { label: change.target.value })} /></Field>
         {(event.event_type === "contribution" || event.event_type === "withdrawal") && <Field label="קופת יעד"><select value={event.pool_name ?? ""} onChange={(change) => changeEvent(index, { pool_name: change.target.value })}>{pools.map((pool) => <option key={pool.name} value={pool.name}>{pool.name}</option>)}</select></Field>}
@@ -876,7 +900,7 @@ function CaseEditor({ item, pools, items, currency, onChange, onConfirm }: {
   </article>;
 }
 
-function ForecastResults({ draft, snapshot, horizon, setHorizon, selectedRole, setSelectedRole, compact = false }: {
+export function ForecastResults({ draft, snapshot, horizon, setHorizon, selectedRole, setSelectedRole, compact = false }: {
   draft: ForecastDraft;
   snapshot: ForecastRevisionProjection["snapshot"] | null;
   horizon: 12 | 24 | 36;
@@ -886,55 +910,76 @@ function ForecastResults({ draft, snapshot, horizon, setHorizon, selectedRole, s
   compact?: boolean;
 }) {
   const projectionByRole = draft.projections;
-  const baseline = projectionByRole.baseline;
-  const currency = baseline.currency;
-  const maxMonths = compact ? 12 : horizon;
+  const currency = projectionByRole.baseline.currency;
   const currentProjection = projectionByRole[selectedRole];
-  const currentMonths = currentProjection.months.slice(0, maxMonths);
-  const checkpoint = (role: ForecastRole, months: 12 | 24 | 36) => draft.comparison?.checkpoints[role]?.find((item) => item.horizon_month === months);
+  const currentMonths = currentProjection.months.slice(0, horizon);
+  const [selectedMonth, setSelectedMonth] = useState("");
+  const visibleMonth = currentMonths.find((month) => month.month.slice(0, 7) === selectedMonth) ?? currentMonths[0];
+  const terminal = currentMonths.at(-1);
+  const point = draft.comparison?.checkpoints[selectedRole]?.find((item) => item.horizon_month === horizon);
+  const opening = currentProjection.months[0]?.pools.length
+    ? sumDisplayAmounts(currentProjection.months[0].pools.map((pool) => pool.opening_balance)) : null;
+  const firstShortfall = currentProjection.first_shortfall_month;
+  const shortfall = firstShortfall && firstShortfall <= horizon ? currentProjection.months[firstShortfall - 1] : null;
+  const titleId = compact ? "forecast-preview-title" : "forecast-results-title";
 
-  return <section className={`${styles.section} ${compact ? styles.compactResults : ""}`} aria-labelledby={compact ? "forecast-preview-title" : "forecast-results-title"}>
-    <div className={styles.sectionHeading}><div><span className={styles.eyebrow}>יתרות ותזרימים צפויים</span><h3 id={compact ? "forecast-preview-title" : "forecast-results-title"}>{compact ? "תצוגה מקדימה לאחר חישוב" : "תוצאות ותחזית"}</h3><p>שלושת המקרים הם הנחות עבודה. הם אינם ערבות לתשואה או מדידה של יתרה בפועל.</p></div>{!compact && <label className={styles.field}><span>אופק להצגה</span><select aria-label="אופק תחזית" value={horizon} onChange={(event) => setHorizon(Number(event.target.value) as 12 | 24 | 36)}><option value={12}>12 חודשים</option><option value={24}>24 חודשים</option><option value={36}>36 חודשים</option></select></label>}</div>
-    {!compact && <div className={styles.caseSummaryGrid}>{roles.map((role) => {
-      const series = projectionByRole[role];
-      const terminal = series.months[horizon - 1];
-      const point = checkpoint(role, horizon);
-      return <article className={styles.caseSummary} key={role} style={{ borderInlineStartColor: roleColors[role] }}>
-        <span>{roleLabels[role]}</span><strong><bdi>{formatMoney(terminal?.ending_balance, currency)}</bdi></strong><small>יתרה צפויה בחודש {horizon}</small>
-        <div><span>הפקדות</span><bdi>{formatMoney(point?.contributions ?? terminal?.contributions, currency)}</bdi></div>
-        <div><span>תשואה משוערת</span><bdi>{formatMoney(point?.estimated_returns ?? terminal?.estimated_returns, currency)}</bdi></div>
-        <div><span>משיכות שבוצעו</span><bdi>{formatMoney(point?.withdrawals ?? terminal?.fulfilled_withdrawals, currency)}</bdi></div>
-        {series.first_shortfall_month && <em>פער מימון מתחיל בחודש {series.first_shortfall_month}</em>}
-      </article>;
-    })}</div>}
+  return <section className={`${styles.section} ${compact ? styles.compactResults : ""}`} aria-labelledby={titleId}>
+    <div className={styles.sectionHeading}><div><h2 id={titleId}>{compact ? "תצוגה מקדימה" : "החיסכון הצפוי"} · {horizon} חודשים</h2><p>{currentMonths[0] && formatHebrewMonth(currentMonths[0].month)} עד {terminal && formatHebrewMonth(terminal.month)} · הנחות עבודה, לא יתרה שנמדדה.</p></div>{!compact && <Field label="תקופת התחזית"><select aria-label="אופק תחזית" value={horizon} onChange={(event) => setHorizon(Number(event.target.value) as 12 | 24 | 36)}><option value={12}>12 חודשים</option><option value={24}>24 חודשים</option><option value={36}>36 חודשים</option></select></Field>}</div>
+    <div className={styles.forecastMetrics} aria-label={`הרכב תחזית ${roleLabels[selectedRole]}`}>
+      <div className={`${styles.forecastMetric} ${styles.endingMetric}`}><span>יתרה צפויה · {roleLabels[selectedRole]}</span><strong>{formatMoney(terminal?.ending_balance, currency)}</strong></div>
+      <div className={styles.forecastMetric}><span>יתרה בתחילת התחזית</span><strong>{formatMoney(opening, currency)}</strong></div>
+      <div className={styles.forecastMetric}><span>הפקדות לאורך התקופה</span><strong>{formatMoney(point?.contributions, currency)}</strong></div>
+      <div className={styles.forecastMetric}><span>תשואה משוערת לאורך התקופה</span><strong>{formatMoney(point?.estimated_returns, currency)}</strong></div>
+    </div>
+    <p className={styles.balanceExplanation}>היתרה הצפויה כוללת את יתרת הפתיחה, ההפקדות והתשואה המשוערת, בתוספת עודפים שהועברו ובניכוי משיכות. עודפים שהועברו: <bdi>{formatMoney(point?.swept_surplus, currency)}</bdi> · משיכות שמומנו בתחזית: <bdi>{formatMoney(point?.withdrawals, currency)}</bdi>.</p>
+    {shortfall && <div className={styles.warning} role="status">חלק מהמשיכות המתוכננות אינן מכוסות ביתרות הקופות. הפער הראשון מופיע ב{formatHebrewMonth(shortfall.month)}.</div>}
+    {currentProjection.provisional && <div className={styles.warning}>התחזית מבוססת על תכנון חלקי או זמני: {currentProjection.issue_codes.map(issueLabel).join(" · ") || "נדרשת בדיקת מקור"}.</div>}
+    <div className={styles.caseSummaryGrid} role="group" aria-label="השוואת הנחות תשואה">
+      {roles.map((role) => {
+        const ending = projectionByRole[role].months[horizon - 1];
+        const assumption = snapshot?.cases.find((item) => item.role === role);
+        const content = <><span>{roleLabels[role]}{assumption ? ` · ${formatRateAsPercent(assumption.annual_return_rate)}% לשנה` : ""}</span><strong>{formatMoney(ending?.ending_balance, currency)}</strong><small>יתרה צפויה בסוף התקופה</small></>;
+        return compact ? <article className={styles.caseSummary} key={role}>{content}</article> : <button type="button" aria-pressed={role === selectedRole} className={`${styles.caseSummary} ${role === selectedRole ? styles.activeCase : ""}`} key={role} onClick={() => setSelectedRole(role)}>{content}</button>;
+      })}
+    </div>
+    <p className={styles.muted}>{!compact && "בחרו מקרה כדי לעדכן את הרכב היתרה ואת הפירוט. "}שיעורי התשואה הם הנחות לשינוי בעורך; החישוב אינו מבטיח תשואה.</p>
     <div className={styles.chartCard}>
-      <div className={styles.chartHeading}><div><h4>טווח תוצאות לפי מקרה</h4><p>{horizon} חודשים · יתרה מצטברת של הקופות</p></div><span className={styles.badge}>תחזית</span></div>
-      <ForecastChart projections={projectionByRole} months={maxMonths} currency={currency} />
+      <div className={styles.chartHeading}><div><h4>התפתחות החיסכון בשלושת המקרים</h4><p>{horizon} חודשים · {currencyLabel(currency)} · א׳ = אלפים, מ׳ = מיליונים</p></div><span className={styles.badge}>תחזית</span></div>
+      <ForecastChart projections={projectionByRole} months={horizon} currency={currency} />
     </div>
-    <div className={styles.detailControls}>
-      <label className={styles.field}><span>פירוט חודשי למקרה</span><select aria-label="מקרה להצגת פירוט חודשי" value={selectedRole} onChange={(event) => setSelectedRole(event.target.value as ForecastRole)}>{roles.map((role) => <option key={role} value={role}>{roleLabels[role]}</option>)}</select></label>
-      {snapshot && <span className={styles.badge}>גרסה שמורה {snapshot.revision_number} · {snapshot.currency}</span>}
-    </div>
-    {currentProjection.provisional && <div className={styles.warning}>התחזית מבוססת על תרחיש תכנון זמני: {currentProjection.issue_codes.join(" · ") || "פערי איכות במקור"}.</div>}
-    <div className={styles.monthList} aria-label={`תזרימי ${roleLabels[selectedRole]} לפי חודש`}>
-      {currentMonths.map((month) => <MonthlyDetail key={`${selectedRole}-${month.month_number}`} month={month} currency={currency} />)}
-    </div>
+    {!compact && visibleMonth && <section className={styles.monthlySection} aria-label="פירוט חודשי של התחזית">
+      <div className={styles.sectionHeading}><div><h3>מה קורה בכל חודש?</h3><p>תזרימים לפי ההנחות במקרה {roleLabels[selectedRole]}.</p></div><MonthPicker label="חודש בתחזית" value={visibleMonth.month.slice(0, 7)} min={currentMonths[0]?.month.slice(0, 7)} max={terminal?.month.slice(0, 7)} onChange={setSelectedMonth} /></div>
+      <div className={styles.monthList} aria-label={`תזרימי ${roleLabels[selectedRole]} לפי חודש`}><MonthlyDetail key={`${selectedRole}-${visibleMonth.month_number}`} month={visibleMonth} currency={currency} expanded /></div>
+    </section>}
     {currentProjection.methodology && <details className={styles.assumptionDetails}>
       <summary>הנחות, מקורות ומתודולוגיה</summary>
       <div className={styles.referenceCard}><strong>מקור תכנון</strong><span>תרחיש <bdi dir="ltr">{currentProjection.scenario_id}</bdi> · גרסה {currentProjection.source_revision_number}</span><code dir="ltr">{currentProjection.source_revision_id}</code></div>
-      {snapshot && <div className={styles.referenceCard}><strong>מקורות יתרות הפתיחה</strong>{snapshot.starting_pools.map((pool) => <span key={pool.name}>{pool.name} · {pool.net_worth_account_key ? `חשבון מדוד ${pool.net_worth_account_key}` : "הוזן ידנית"} · {formatMoney(pool.opening_balance, currency)} נכון ל־{pool.as_of_date}</span>)}</div>}
+      {snapshot && <div className={styles.referenceCard}><strong>מקורות יתרות הפתיחה</strong>{snapshot.starting_pools.map((pool) => <span key={pool.name}>{pool.name} · {pool.net_worth_account_key ? `חשבון מדוד ${pool.net_worth_account_key}` : "הוזן ידנית"} · {formatMoney(pool.opening_balance, currency)} נכון ל־{formatHebrewDate(pool.as_of_date)}</span>)}</div>}
       <p>גרסת נוסחה: <bdi>{currentProjection.methodology.policy_version}</bdi> · גיבוב הנחות: <code dir="ltr">{currentProjection.assumption_hash}</code></p>
       <ol>{currentProjection.methodology.calculation_order.map((step) => <li key={step}>{step}</li>)}</ol>
       <p>{currentProjection.methodology.projection_disclaimer}</p>
-      {snapshot && <div className={styles.assumptionGrid}>{snapshot.cases.map((item) => <div key={item.role}><strong>{roleLabels[item.role]}</strong><p>תשואה שנתית אפקטיבית: {formatMoney(formatRateAsPercent(item.annual_return_rate), "%")}</p><p>{item.routes.length} ניתובים · {item.adjustments.length} התאמות · {item.events.length} אירועים · {item.sweep_enabled ? `עודף לקופה ${item.sweep_pool_name}` : "ללא העברת עודף"}</p>{item.events.map((event, index) => <small key={`${event.label}-${index}`}>{eventLabels[event.event_type]} · חודש {event.month} · {formatMoney(event.amount, currency)} · {event.label}</small>)}</div>)}</div>}
+      {snapshot && <div className={styles.assumptionGrid}>{snapshot.cases.map((item) => <div key={item.role}><strong>{roleLabels[item.role]}</strong><p>תשואה שנתית אפקטיבית: {`${formatRateAsPercent(item.annual_return_rate)}%`}</p><p>{item.routes.length} ניתובים · {item.adjustments.length} התאמות · {item.events.length} אירועים · {item.sweep_enabled ? `עודף לקופה ${item.sweep_pool_name}` : "ללא העברת עודף"}</p>{item.events.map((event, index) => <small key={`${event.label}-${index}`}>{eventLabels[event.event_type]} · חודש {event.month} · {formatMoney(event.amount, currency)} · {event.label}</small>)}</div>)}</div>}
     </details>}
   </section>;
 }
 
-function ForecastChart({ projections, months, currency }: { projections: Record<ForecastRole, ForecastProjection>; months: number; currency: string }) {
-  const width = 800;
-  const height = 270;
-  const left = 58;
+function ForecastChart({ projections, months }: { projections: Record<ForecastRole, ForecastProjection>; months: number; currency: string }) {
+  const chartContainer = useRef<HTMLDivElement>(null);
+  const [width, setWidth] = useState(800);
+  useEffect(() => {
+    const element = chartContainer.current;
+    if (!element || typeof ResizeObserver === "undefined") return;
+    const resize = () => {
+      const measured = element.getBoundingClientRect().width;
+      if (measured > 0) setWidth(Math.max(260, Math.round(measured)));
+    };
+    resize();
+    const observer = new ResizeObserver(resize);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+  const height = width < 500 ? 230 : 270;
+  const left = width < 500 ? 66 : 72;
   const right = 20;
   const top = 18;
   const bottom = 38;
@@ -951,41 +996,44 @@ function ForecastChart({ projections, months, currency }: { projections: Record<
   });
   const first = projections.baseline.months[0];
   const last = projections.baseline.months[months - 1];
-  return <div className={styles.chartScroll}>
-    <svg className={styles.chart} viewBox={`0 0 ${width} ${height}`} role="img" aria-label={`גרף יתרות צפויות בשלושה מקרי תחזית, ${months} חודשים`}>
+  return <div ref={chartContainer} className={styles.chartScroll}>
+    <svg className={styles.chart} viewBox={`0 0 ${width} ${height}`} direction="ltr" role="img" aria-label={`גרף יתרות צפויות בשלושה מקרי תחזית, ${months} חודשים`}>
       {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
         const y = top + (height - top - bottom) * ratio;
         const value = maxValue * (1 - ratio);
-        return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} className={styles.gridLine} /><text x={left - 8} y={y + 4} textAnchor="end" className={styles.axisLabel}>{compactAxisMoney(value, currency)}</text></g>;
+        return <g key={ratio}><line x1={left} y1={y} x2={width - right} y2={y} className={styles.gridLine} /><text x={left - 8} y={y + 4} textAnchor="end" className={styles.axisLabel}>{compactAxisMoney(value)}</text></g>;
       })}
       {paths.map(({ role, path }) => <path key={role} d={path} fill="none" stroke={roleColors[role]} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />)}
-      <text x={left} y={height - 10} className={styles.axisLabel}>{first ? monthLabel(first.month) : ""}</text>
-      <text x={width - right} y={height - 10} textAnchor="end" className={styles.axisLabel}>{last ? monthLabel(last.month) : ""}</text>
+      <text x={left} y={height - 10} className={styles.axisLabel}>{first ? new Intl.DateTimeFormat("he-IL", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${first.month.slice(0, 7)}-01T00:00:00Z`)) : ""}</text>
+      <text x={width - right} y={height - 10} textAnchor="end" className={styles.axisLabel}>{last ? new Intl.DateTimeFormat("he-IL", { month: "short", year: "numeric", timeZone: "UTC" }).format(new Date(`${last.month.slice(0, 7)}-01T00:00:00Z`)) : ""}</text>
     </svg>
     <div className={styles.legend}>{roles.map((role) => <span key={role}><i style={{ background: roleColors[role] }} />{roleLabels[role]}</span>)}</div>
   </div>;
 }
 
-function compactAxisMoney(value: number, currency: string) {
-  if (!Number.isFinite(value)) return "—";
-  return `${new Intl.NumberFormat("he-IL", { notation: "compact", maximumFractionDigits: 1 }).format(value)} ${currency}`;
+function compactAxisMoney(value: number) {
+  if (!Number.isFinite(value)) return "-";
+  const format = (number: number) => new Intl.NumberFormat("he-IL", { maximumFractionDigits: 1 }).format(number);
+  if (Math.abs(value) >= 1_000_000) return `${format(value / 1_000_000)} מ׳`;
+  if (Math.abs(value) >= 1_000) return `${format(value / 1_000)} א׳`;
+  return format(value);
 }
 
-function MonthlyDetail({ month, currency }: { month: ForecastMonth; currency: string }) {
+function MonthlyDetail({ month, currency, expanded = false }: { month: ForecastMonth; currency: string; expanded?: boolean }) {
   const values: Array<[string, string]> = [
     ["הכנסות תכנון ואירועים", month.income], ["הוצאות תכנון ואירועים", month.expenses],
     ["הפקדות לקופות", month.contributions], ["תשואה משוערת", month.estimated_returns],
-    ["משיכות שבוצעו", month.fulfilled_withdrawals], ["עודף שהועבר", month.swept_surplus],
+    ["משיכות שמומנו בתחזית", month.fulfilled_withdrawals], ["עודף שהועבר", month.swept_surplus],
     ["פער מימון", month.unmet_funding_gap], ["יתרה צפויה בסוף החודש", month.ending_balance],
   ];
-  return <details className={styles.monthCard}>
-    <summary><span><strong>חודש {month.month_number}</strong><small>{monthLabel(month.month)} · {month.month.slice(0, 10)}</small></span><span className={styles.monthBalance}><small>יתרה צפויה</small><bdi>{formatMoney(month.ending_balance, currency)}</bdi></span><span className={styles.expandHint}>פירוט</span></summary>
+  return <details className={styles.monthCard} open={expanded || undefined}>
+    <summary><span><strong>חודש {month.month_number}</strong><small>{monthLabel(month.month)}</small></span><span className={styles.monthBalance}><small>יתרה צפויה</small><bdi>{formatMoney(month.ending_balance, currency)}</bdi></span><span className={styles.expandHint}>פירוט</span></summary>
     <div className={styles.monthFlowGrid}>{values.map(([label, value]) => <div key={label}><span>{label}</span><bdi>{formatMoney(value, currency)}</bdi></div>)}</div>
     <div className={styles.poolMonthlyList}><strong>תנועות לפי קופה</strong>{month.pools.map((pool) => <div className={styles.poolMonth} key={pool.pool_id}>
       <div><strong>{pool.pool_name}</strong><span>{pool.pool_type === "cash" ? "מזומן או חיסכון" : "השקעה"}</span></div>
       <div><small>פתיחה</small><bdi>{formatMoney(pool.opening_balance, currency)}</bdi></div>
       <div><small>תשואה צפויה</small><bdi>{formatMoney(pool.estimated_return, currency)}</bdi></div>
-      <div><small>הפקדות / עודף</small><bdi>{formatMoney(pool.contributions, currency)}</bdi></div>
+      <div><small>הפקדות</small><bdi>{formatMoney(pool.contributions, currency)}</bdi></div><div><small>עודף שהועבר</small><bdi>{formatMoney(pool.swept_surplus, currency)}</bdi></div>
       <div><small>משיכות</small><bdi>{formatMoney(pool.fulfilled_withdrawal, currency)}</bdi></div>
       <div><small>סגירה צפויה</small><bdi>{formatMoney(pool.closing_balance, currency)}</bdi></div>
     </div>)}</div>
@@ -993,7 +1041,7 @@ function MonthlyDetail({ month, currency }: { month: ForecastMonth; currency: st
 }
 
 function VerificationCard({ title, value }: { title: string; value: { scenario_id: string; revision_id: string; revision_number: number; provisional: boolean; issue_codes: string[] } }) {
-  return <div className={styles.verificationCard}><strong>{title}</strong><span>גרסה {value.revision_number} · {value.provisional ? "זמנית" : "איכות מאומתת"}</span><code dir="ltr">{value.revision_id}</code><small>{value.issue_codes.length ? value.issue_codes.join(" · ") : "לא נשמרו קודי איכות פתוחים"}</small></div>;
+  return <div className={styles.verificationCard}><strong>{title}</strong><span>גרסה {value.revision_number} · {value.provisional ? "זמנית" : "איכות מאומתת"}</span><details><summary>פרטי אימות</summary><code dir="ltr">{value.revision_id}</code><small>{value.issue_codes.length ? value.issue_codes.join(" · ") : "לא נשמרו קודי איכות פתוחים"}</small></details></div>;
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {

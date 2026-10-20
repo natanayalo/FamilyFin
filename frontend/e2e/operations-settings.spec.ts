@@ -28,6 +28,7 @@ test("mobile operations and settings workflows keep backup gate and session cont
     } } });
     else await route.fulfill({ status: 200, json: { data: { items: [] } } });
   });
+  await page.route("**/api/v1/automation/attention-files", (route) => route.fulfill({ status: 200, json: { data: { items: [] } } }));
   await page.route("**/api/v1/insights/preferences", (route) => route.fulfill({ status: 200, json: { data: {
     planning_scenario_id: null, planning_revision_id: null, forecast_id: null, forecast_revision_id: null,
     forecast_role: null, apartment_study_id: null, apartment_revision_id: null,

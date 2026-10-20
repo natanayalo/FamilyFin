@@ -1,5 +1,5 @@
 import { apiRequest } from "@/lib/api";
-import type { ClassificationRule, Coverage, ReviewItem, RuleDraft, RulePreview } from "./types";
+import type { ClassificationRule, Coverage, ResolutionValues, ReviewItem, RuleDraft, RulePreview } from "./types";
 
 function query(values: Record<string, string | boolean | undefined>, cursor?: string) {
   const params = new URLSearchParams();
@@ -30,16 +30,16 @@ export function getRules(cursor?: string) {
   return apiRequest<ClassificationRule[]>(`/classification/rules${query({}, cursor)}`);
 }
 
-export function saveOverride(item: ReviewItem, values: {
-  economic_class: string;
-  analysis_category: string | null;
-  expense_behavior: string;
-}) {
+export function getAnalysisCategories(currency: string) {
+  return apiRequest<string[]>(`/planning/categories?currency=${encodeURIComponent(currency)}`);
+}
+
+export function saveOverride(item: ReviewItem, values: ResolutionValues) {
   return apiRequest<{ result: ReviewItem["effective_classification"]; override_version: number; expected_classification_state: string }>(
     `/classification/transactions/${item.transaction_id}/override`,
     {
       method: "POST",
-      body: JSON.stringify({ expected_override_version: item.expected_override_version, expected_classification_state: item.expected_classification_state, ...values, reason: "Saved from classification review" }),
+      body: JSON.stringify({ expected_override_version: item.expected_override_version, expected_classification_state: item.expected_classification_state, reason: "Saved from classification review", ...values }),
     },
   );
 }

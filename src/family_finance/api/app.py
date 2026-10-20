@@ -530,7 +530,7 @@ def create_app(
             value=credentials.token,
             max_age=resolved_settings.api_session_hours * 60 * 60,
             path="/api/v1",
-            secure=True,
+            secure=resolved_settings.api_secure_cookie,
             httponly=True,
             samesite="strict",
         )
@@ -577,7 +577,7 @@ def create_app(
         response.delete_cookie(
             SESSION_COOKIE_NAME,
             path="/api/v1",
-            secure=True,
+            secure=resolved_settings.api_secure_cookie,
             httponly=True,
             samesite="strict",
         )

@@ -75,7 +75,7 @@ class BackupService:
         temporary.mkdir()
         try:
             self._online_backup(temporary / database.path.name, database)
-            self._copy_archives(temporary, database)
+            self.copy_snapshot_archives(temporary, database)
             manifest = self._manifest(temporary)
             (temporary / "manifest.json").write_text(
                 manifest.model_dump_json(indent=2), encoding="utf-8"
@@ -236,7 +236,12 @@ class BackupService:
         with sqlite3.connect(str(database.path)) as source, sqlite3.connect(str(destination)) as target:
             source.backup(target)
 
-    def _copy_archives(self, root: Path, database: Database) -> None:
+    def copy_snapshot_archives(self, root: Path, database: Database) -> None:
+        """Copy referenced files and relocate paths in an already-created snapshot.
+
+        The source database is only queried; updates apply to the snapshot under
+        ``root``. Local development also uses this before upgrading older copies.
+        """
         archive_target = root / "imports"
         archive_target.mkdir()
         planning_archive_target = root / "planning-imports"
@@ -253,6 +258,9 @@ class BackupService:
             planning_source_files = session.query(PlanningSourceFileRow).all()
             net_worth_source_files = session.query(NetWorthSourceFileRow).all()
             automation_outcomes = session.query(AutomationFileOutcomeRow).all()
+        if database.path.resolve() == database_path.resolve():
+            # Close staged snapshot readers before changing its journal mode.
+            database.engine.dispose()
         with sqlite3.connect(str(database_path)) as connection:
             for source_file in source_files:
                 source = Path(source_file.archived_path)

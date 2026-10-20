@@ -1,4 +1,4 @@
-"""Deterministic, non-persisted dashboard insight detectors."""
+"""Deterministic insight detectors, saved summaries and household review decisions."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from itertools import pairwise
 from statistics import median
+from typing import Literal
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -25,6 +26,7 @@ from family_finance.models import (
     MonthlyMetrics,
     MonthlySummaryRevision,
     PotentialRecurringSpending,
+    RecurringPatternReview,
     UnusualCategorySpending,
 )
 from family_finance.persistence.db import Database, json_dumps, utc_now
@@ -35,6 +37,7 @@ from family_finance.persistence.models import (
     InsightAlertRow,
     MonthlySummaryIdentityRow,
     MonthlySummaryRevisionRow,
+    RecurringPatternReviewRow,
 )
 from family_finance.persistence.repositories import FinancialRepository
 
@@ -564,7 +567,9 @@ class InsightsService:
                 continue
             rows = self.repository.contributor_rows(recurring.contributor_transaction_ids)
             by_month_amount = {
-                date.fromisoformat(str(row["booking_date"])) .replace(day=1): abs(Decimal(str(row["amount"])))
+                date.fromisoformat(str(row["booking_date"])).replace(day=1): abs(
+                    self.classifier._classify_row(row).amount
+                )
                 for row in rows
             }
             latest_month = max(by_month_amount)
@@ -611,6 +616,46 @@ class InsightsService:
             "anomalies": "category_anomalies",
         }
 
+    def list_recurring_reviews(self, currency: str) -> list[RecurringPatternReview]:
+        with self.database.session() as session:
+            rows = session.scalars(select(RecurringPatternReviewRow).where(
+                RecurringPatternReviewRow.currency == currency.upper()
+            ).order_by(RecurringPatternReviewRow.updated_at.desc(), RecurringPatternReviewRow.pattern_id)).all()
+            return [RecurringPatternReview(
+                pattern=PotentialRecurringSpending.model_validate_json(row.pattern_json),
+                status=row.status, updated_at=row.updated_at,
+            ) for row in rows]
+
+    def review_recurring_pattern(
+        self, pattern_id: str, *, status: Literal["approved", "dismissed", "stopped", "pending"],
+        start_month: date, end_month: date, currency: str, actor_id: str,
+    ) -> RecurringPatternReview:
+        # Identity excludes the selected range, amounts and transaction IDs, so
+        # decisions survive new imports and different historical windows.
+        with self.database.write_session() as session:
+            row = session.get(RecurringPatternReviewRow, pattern_id)
+            if row is not None and row.currency != currency:
+                raise LookupError("Recurring pattern not found")
+            if status == "stopped" and (row is None or row.status not in {"approved", "stopped"}):
+                raise ValueError("Only approved patterns can stop being tracked")
+            detected = next((item for item in self.potential_recurring_spending(
+                start_month, end_month, currency
+            ) if item.pattern_id == pattern_id), None)
+            if detected is None and row is None:
+                raise LookupError("Recurring pattern not found")
+            pattern = detected or PotentialRecurringSpending.model_validate_json(row.pattern_json)
+            now = utc_now()
+            if row is None:
+                row = RecurringPatternReviewRow(
+                    pattern_id=pattern_id, currency=currency, created_at=now,
+                )
+                session.add(row)
+            row.status = status
+            row.pattern_json = pattern.model_dump_json()
+            row.updated_by = actor_id
+            row.updated_at = now
+            return RecurringPatternReview(pattern=pattern, status=status, updated_at=now)
+
     def potential_recurring_spending(
         self,
         start_month: date | str | None = None,
@@ -654,6 +699,9 @@ class InsightsService:
             amounts = [item[1] for item in ordered]
             results.append(
                 PotentialRecurringSpending(
+                    pattern_id=hashlib.sha256(json_dumps([
+                        description, category, scoped_currency, account_kind,
+                    ]).encode()).hexdigest(),
                     normalized_description=description,
                     analysis_category=category,
                     currency=scoped_currency,
@@ -856,7 +904,7 @@ def _summary_model(row: MonthlySummaryRevisionRow) -> MonthlySummaryRevision:
 def _summary_markdown(content: dict[str, object]) -> str:
     headline = content["headline_cash_flow"]
     return "\n".join([
-        f"# Household summary — {content['month']}",
+        f"# Household summary - {content['month']}",
         "",
         "## Headline cash flow",
         f"- Income: {headline['income']} {content['currency']}",

@@ -3,14 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev",
+    "dev": "NEXT_TELEMETRY_DISABLED=1 next dev --hostname 127.0.0.1",
     "build": "NEXT_TELEMETRY_DISABLED=1 next build",
     "start": "NEXT_TELEMETRY_DISABLED=1 next start --hostname 127.0.0.1",
-    "lint": "eslint src e2e tests playwright.config.ts vitest.config.mts",
+    "lint": "eslint src e2e tests playwright*.ts vitest.config.mts",
     "typecheck": "tsc --noEmit --incremental false",
     "test:health": "node --experimental-strip-types --test tests/*.test.mjs",
     "test:components": "vitest run",
     "test:e2e": "playwright test",
+    "test:live": "playwright test --config playwright.live.config.ts",
     "test": "npm run test:health && npm run test:components"
   },
   "dependencies": {

@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+from decimal import Decimal
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from family_finance.models import (
     ClassificationReviewItem,
@@ -21,12 +22,13 @@ class OverrideBody(BaseModel):
     economic_class: EconomicClass | None = None
     analysis_category: str | None = Field(default=None, max_length=200)
     expense_behavior: ExpenseBehavior | None = None
+    effective_amount: Decimal | None = Field(default=None, allow_inf_nan=False, max_digits=24, decimal_places=8)
     reason: str = Field(default="Saved from classification review", max_length=500)
 
     def decision_fields(self) -> dict[str, object]:
         return {
             name: getattr(self, name)
-            for name in ("economic_class", "analysis_category", "expense_behavior")
+            for name in ("economic_class", "analysis_category", "expense_behavior", "effective_amount")
             if getattr(self, name) is not None
         }
 
@@ -37,14 +39,20 @@ class OverrideBody(BaseModel):
             raise ValueError("analysis_category must be omitted or cleared")
         return value
 
+    @model_validator(mode="after")
+    def correction_reason(self):
+        if self.effective_amount is not None and not self.reason.strip():
+            raise ValueError("An amount correction requires a reason")
+        return self
+
 
 class ClearOverrideBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     expected_override_version: int = Field(ge=0)
     expected_classification_state: str = Field(pattern=r"^[0-9a-f]{64}$")
-    fields: list[Literal["economic_class", "analysis_category", "expense_behavior"]] | None = Field(
-        default=None, min_length=1, max_length=3
+    fields: list[Literal["economic_class", "analysis_category", "expense_behavior", "effective_amount"]] | None = Field(
+        default=None, min_length=1, max_length=4
     )
     reason: str = Field(default="Override cleared", max_length=500)
 

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiRequestError, apiRequest } from "@/lib/api";
 import { getAccountHistory, getAccounts, getRevisions, getSummary, getSnapshots, getTrend } from "@/features/net-worth/api";
@@ -62,6 +62,11 @@ const latestRevision = {
   balances: revision.balances.map((balance) => ({ ...balance, amount_ils: "1200" })),
 };
 
+function openManagement() {
+  const details = screen.getByText("ניהול חשבונות ומדידות", { exact: true }).closest("details")!;
+  if (!details.open) fireEvent.click(details.querySelector("summary")!);
+}
+
 describe("Net Worth feature", () => {
   beforeEach(() => {
     vi.mocked(getAccounts).mockResolvedValue([account]);
@@ -89,11 +94,90 @@ describe("Net Worth feature", () => {
   it("shows service totals, observed trend, and the forecast comparison section", async () => {
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
-    expect(document.body.textContent).toContain("9,007,199,254,740,993.12345 ₪");
+    openManagement();
+    expect(document.body.textContent).toContain("\u2067\u20669,007,199,254,740,993.12345\u2069 ש״ח\u2069");
     expect(screen.getByRole("heading", { name: "רשימת חשבונות" })).toBeVisible();
     expect(screen.getByText("מגמת הון שנמדד")).toBeVisible();
     expect(screen.getByRole("heading", { name: "השוואה לתחזית חיסכון" })).toBeVisible();
     expect(screen.getByText("אין תחזיות שמורות להשוואה")).toBeVisible();
+  });
+
+  it("leads with dated balances while management and gross breakdowns start collapsed", async () => {
+    render(<NetWorthPage />);
+    const selector = await screen.findByRole("combobox", { name: "תמונת מצב לסיכום" });
+    expect(selector).toHaveValue("snapshot-id");
+    expect(screen.getByRole("region", { name: "יתרות נכסים" })).toBeVisible();
+    expect(screen.getByText("ניהול חשבונות ומדידות").closest("details")).not.toHaveAttribute("open");
+    expect(screen.getByRole("heading", { name: "רשימת חשבונות" })).not.toBeVisible();
+    expect(screen.getByText("פילוח היתרות").closest("details")).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("פילוח היתרות"));
+    expect(screen.getByText("סכום יתרות הנכסים והחובות יחד, לפני קיזוז התחייבויות.")).toBeVisible();
+  });
+
+  it("guides the first account into the first dated balance entry without inventing zeros", async () => {
+    vi.mocked(getAccounts).mockResolvedValue([]);
+    vi.mocked(getSnapshots).mockResolvedValue([]);
+    vi.mocked(getTrend).mockResolvedValue([]);
+    render(<NetWorthPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "הוספת החשבון הראשון" }));
+    expect(screen.getByLabelText("שם החשבון")).toHaveFocus();
+    expect(screen.getByText("ניהול חשבונות ומדידות").closest("details")).toHaveAttribute("open");
+    fireEvent.change(screen.getByLabelText("שם החשבון"), { target: { value: "מזומן" } });
+    vi.mocked(getAccounts).mockResolvedValue([account]);
+    fireEvent.click(screen.getByRole("button", { name: "שמירת חשבון" }));
+    fireEvent.click(await screen.findByRole("button", { name: "רישום היתרות הראשונות" }));
+    expect(await screen.findByLabelText("יתרה: מזומן")).toHaveValue("");
+    expect(screen.getByRole("button", { name: "שמירת תמונת מצב" })).toBeVisible();
+    expect(screen.getByText(/יתרה חסרה אינה אפס/)).toBeVisible();
+  });
+
+  it("offers a revision instead of submitting a duplicate measurement date", async () => {
+    render(<NetWorthPage />);
+    fireEvent.click(await screen.findByRole("button", { name: "רישום יתרות לתאריך חדש" }));
+    fireEvent.change(screen.getByLabelText("תאריך התמונה"), { target: { value: snapshot.snapshot_date } });
+    expect(screen.getByRole("button", { name: "שמירת תמונת מצב" })).toBeDisabled();
+    fireEvent.click(screen.getByRole("button", { name: "עדכון המדידה הקיימת" }));
+    await screen.findByText("גרסה חדשה ל־31 באוגוסט 2026");
+    expect(await screen.findByLabelText("יתרה: מזומן")).toHaveValue("9007199254740993.12345");
+    expect(apiRequest).not.toHaveBeenCalled();
+  });
+
+  it("ignores late summary responses when choosing a different dated snapshot", async () => {
+    const base = await getSummary("snapshot-id");
+    const older = { ...snapshot, snapshot_id: "older", snapshot_date: "2026-07-31" };
+    const newer = { ...snapshot, snapshot_id: "newer", snapshot_date: "2026-09-30" };
+    vi.mocked(getSnapshots).mockResolvedValue([snapshot, older, newer]);
+    render(<NetWorthPage />);
+    const select = await screen.findByRole("combobox", { name: "תמונת מצב לסיכום" });
+    let resolveOlder!: (value: typeof base) => void;
+    let resolveNewer!: (value: typeof base) => void;
+    vi.mocked(getSummary).mockImplementation((id) => new Promise((resolve) => {
+      if (id === "older") resolveOlder = resolve;
+      else resolveNewer = resolve;
+    }));
+    fireEvent.change(select, { target: { value: "older" } });
+    fireEvent.change(select, { target: { value: "newer" } });
+    expect(screen.getByText("טוענים את המדידה שנבחרה…")).toBeVisible();
+    await act(async () => resolveNewer({ ...base, snapshot_id: "newer", snapshot_date: "2026-09-30", net_worth: "222.00" }));
+    await act(async () => resolveOlder({ ...base, snapshot_id: "older", snapshot_date: "2026-07-31", net_worth: "111.00" }));
+    const summary = screen.getByRole("region", { name: "השווי הנקי לפי המדידה שנבחרה" });
+    expect(within(summary).getByText("\u2067\u2066222.00\u2069 ש״ח\u2069")).toBeVisible();
+    expect(within(summary).queryByText("\u2067\u2066111.00\u2069 ש״ח\u2069")).not.toBeInTheDocument();
+    expect(select).toHaveValue("newer");
+  });
+
+  it("keeps snapshot source context visible and places identifiers inside expandable diagnostics", async () => {
+    render(<NetWorthPage />);
+    await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    openManagement();
+
+    expect(screen.getByText((_, element) => element?.tagName === "P" && Boolean(element.textContent?.includes("מקור: ידנית")))).toBeVisible();
+    const diagnostics = screen.getByText("פרטי זיהוי ואימות").closest("details");
+    expect(diagnostics).not.toHaveAttribute("open");
+    fireEvent.click(screen.getByText("פרטי זיהוי ואימות"));
+    expect(diagnostics).toHaveAttribute("open");
+    expect(screen.getByText("revision-id")).toBeVisible();
+    expect(screen.getByText("hash-1")).toBeVisible();
   });
 
   it("compares an exact observed and forecast revision and displays the service result", async () => {
@@ -116,6 +200,7 @@ describe("Net Worth feature", () => {
 
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    openManagement();
     await waitFor(() => expect(getForecastRevisions).toHaveBeenCalledWith("forecast-id"));
     fireEvent.change(screen.getByLabelText("גרסה להשוואה"), { target: { value: "1" } });
     fireEvent.click(screen.getByRole("button", { name: "השוואה לתחזית" }));
@@ -131,6 +216,7 @@ describe("Net Worth feature", () => {
   it("sends snapshot amounts as exact decimal strings with the current expected revision", async () => {
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    openManagement();
     fireEvent.click(screen.getAllByRole("button", { name: "שמירת גרסה חדשה" }).at(-1)!);
     const amount = await screen.findByLabelText("יתרה: מזומן");
     fireEvent.change(amount, { target: { value: "12345678901234567890.123456" } });
@@ -150,6 +236,7 @@ describe("Net Worth feature", () => {
   it("keeps a revision draft blocked after STALE_REVISION and refresh until explicitly reopened", async () => {
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    openManagement();
     fireEvent.click(screen.getByRole("button", { name: "שמירת גרסה חדשה" }));
     fireEvent.change(await screen.findByLabelText("יתרה: מזומן"), { target: { value: "950" } });
 
@@ -188,6 +275,7 @@ describe("Net Worth feature", () => {
   it("sends the account version from the loaded row when editing account metadata", async () => {
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    openManagement();
     fireEvent.click(screen.getByRole("button", { name: "עריכה" }));
     fireEvent.change(screen.getByLabelText("שם החשבון"), { target: { value: "יתרת מזומן" } });
     fireEvent.click(screen.getByRole("button", { name: "שמירת חשבון" }));
@@ -207,6 +295,7 @@ describe("Net Worth feature", () => {
     vi.mocked(getAccounts).mockResolvedValue([{ ...account, active_to }]);
     render(<NetWorthPage />);
     await screen.findByRole("heading", { name: "רשימת חשבונות" });
+    openManagement();
     fireEvent.click(screen.getByRole("button", { name: button }));
 
     await waitFor(() => expect(apiRequest).toHaveBeenCalledWith(

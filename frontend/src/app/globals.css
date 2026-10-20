@@ -113,6 +113,10 @@
 /* Desktop keeps every destination visible in a short, labeled hierarchy. */
 .desktop-navigation{display:grid;gap:22px}.nav-group{display:grid;gap:4px}.mobile-nav{display:none}.topbar{background:color-mix(in srgb,var(--card) 84%,transparent)}.connection-pill,.user-chip{background:var(--card);color:var(--card-foreground)}.signin-page,.signin-form-wrap{background:var(--background)}
 .nav-link:focus-visible,.mobile-nav-link:focus-visible,.mobile-more-trigger:focus-visible,.logout:focus-visible,.secondary-button:focus-visible{outline:3px solid var(--ring);outline-offset:2px}
+.nav-link{position:relative}
+.nav-availability{margin-inline-start:auto;padding:2px 6px;border:1px solid var(--warning-border);border-radius:999px;background:var(--warning);color:var(--warning-foreground);font-size:10px;white-space:nowrap}
+.unavailable-actions{display:flex;flex-wrap:wrap;justify-content:center;gap:10px}
+@media(min-width:621px) and (max-width:900px){.nav-link .nav-availability{position:absolute;inset:2px auto auto 2px;font-size:8px;padding:0 3px;line-height:1.3}}
 @media(max-width:620px){
   .desktop-sidebar{display:none}
   .app-layout{display:block;padding-bottom:calc(74px + env(safe-area-inset-bottom))}
@@ -137,8 +141,22 @@
   .topbar-actions .logout{padding-inline:5px}
   .content{padding:25px 17px}
 }
-.dark .form-error,.dark .form-error-summary{background:#382422;color:#f2c4bf;border-color:#63413d}
+.dark .form-error,.dark .form-error-summary,.dark .operations-error,.dark .settings-error{background:#382422;color:#f2c4bf;border-color:#63413d}
 .dark .form-error-summary a{color:#ffd4ce}
 .dark .responsive-data-table tbody tr:hover{background:color-mix(in oklab,var(--card),var(--foreground) 4%)}
 .dark .signin-aside{color:#f7f4ec}
 .dark .signin-aside .brand-title{color:#f7f4ec}
+
+.connection-pill[data-state="offline"] .status-dot{background:var(--danger)}
+
+.signin-form-column{width:min(100%,440px);min-width:0}
+.signin-toolbar{display:flex;justify-content:flex-end;margin-bottom:16px}
+.signin-panel{padding:clamp(20px,3vw,32px)}
+.signin-form{width:100%}
+
+.workspace-classification .content{padding:28px 32px}
+.workspace-classification .page-heading{margin-bottom:18px}
+.workspace-classification .page-heading .eyebrow{display:none}
+.workspace-classification .page-heading h1{font-size:30px}
+@media(min-width:1100px){.workspace-classification{grid-template-columns:210px minmax(0,1fr)}}
+@media(max-width:620px){.workspace-classification .content{padding:20px 17px}.workspace-classification .page-heading h1{font-size:26px}}

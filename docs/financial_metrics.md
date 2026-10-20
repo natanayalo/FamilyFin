@@ -7,7 +7,9 @@ included in the default ILS metrics.
 ## Signs and formulas
 
 Source amounts retain their source sign: debits are negative and credits are
-positive. The metrics layer reports positive magnitudes for expense-like
+positive. The authoritative source is FamilyBiz's `סכום` column. The optional
+`תנועה מקורית` value is retained as source metadata; its sign does not determine
+classification or reverse the reporting amount. The metrics layer reports positive magnitudes for expense-like
 values.
 
 | Value | Formula |
@@ -53,8 +55,33 @@ For an otherwise generic negative bank or card row, a description-only transfer
 signal is retained as a review warning and keeps the row unclassified; stronger
 source labels, reusable rules, and explicit overrides retain precedence.
 If an override or rule requests a class whose direction is impossible for the
-source sign, the result receives `INVALID_CLASS_SIGN` and is explicitly marked
+effective sign, the result receives `INVALID_CLASS_SIGN` and is explicitly marked
 `unclassified`; it cannot silently disappear from metrics.
+
+The classification editor can resolve a source-direction conflict with an explicit
+transaction-specific `effective_amount` correction when independent verification
+shows `סכום` itself is wrong. A different sign in `תנועה מקורית` is not evidence
+for changing it. The user confirms debit or credit and records a reason. The correction
+and classification commit together in the existing append-only override history;
+source transaction fields and archived exports remain unchanged. Reports and their
+transaction contributors use the same effective amount. New API decisions that still
+conflict with direction are rejected without writes.
+
+Undo clears the active decision with history tombstones and restores the imported
+amount. An amount correction is bound to the imported amount/currency and original
+amount/currency at confirmation time. If those source fields change on a later import,
+the correction stops applying and `STALE_AMOUNT_CORRECTION` keeps the transaction in
+review until the user confirms a new decision. Reusable rules cannot correct amounts.
+
+An explicitly reviewed zero-value row may use `no_financial_effect` (displayed as
+“נבדק - ללא השפעה כספית”). Both the imported reporting amount and the effective
+amount must be zero. The decision contributes to no income, expense, savings or
+category total and completes classification for that row. It resolves the
+`ZERO_AMOUNT_WITH_ORIGINAL_VALUE` warning in the effective classification while
+preserving it in source provenance; other source-quality checks remain independent.
+No zero row is approved automatically. A later nonzero reporting amount makes the
+saved decision incompatible and returns the row to review. Undo restores normal
+classification through the existing override history.
 
 ## Completeness and comparisons
 

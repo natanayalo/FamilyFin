@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from collections.abc import Iterable
 from datetime import date
@@ -41,6 +43,11 @@ def _direction(amount: Decimal) -> str:
     return "zero"
 
 
+def _amount_source_fingerprint(row: dict[str, Any]) -> str:
+    value = {field: str(row.get(field)) for field in ("amount", "currency", "original_amount", "original_currency")}
+    return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
+
+
 def _enum_or(value: Any, enum_type, fallback):
     try:
         return enum_type(value)
@@ -63,6 +70,8 @@ def _class_sign_issue(economic_class: EconomicClass, amount: Decimal) -> str | N
         return f"{economic_class.value} requires a negative debit amount"
     if economic_class == EconomicClass.SAVINGS_TRANSFER and amount == 0:
         return "savings_transfer requires a non-zero amount"
+    if economic_class == EconomicClass.NO_FINANCIAL_EFFECT and amount != 0:
+        return "no_financial_effect requires a zero reporting amount"
     return None
 
 
@@ -123,14 +132,15 @@ class ClassificationService:
         self._row_cache[transaction_id] = result
         return result
 
-    def _classify_uncached_row(self, row: dict[str, Any]) -> ClassificationResult:
-        amount = Decimal(str(row["amount"]))
+    def _classify_uncached_row(
+        self, row: dict[str, Any], *, proposed_overrides: dict[str, Any] | None = None
+    ) -> ClassificationResult:
+        imported_amount = Decimal(str(row["amount"]))
         source_category = str(row["category"])
         source_movement_type = row.get("movement_type")
         normalized_movement = source_movement_type or ""
         account_kind = str(row.get("account_kind") or "")
         currency = str(row["currency"]).upper()
-        direction = _direction(amount)
         issues = self._source_issues(row["id"])
         source_info = self.repository.source_info(row["id"])
         normalized = source_info.get("normalized", {})
@@ -140,6 +150,22 @@ class ClassificationService:
         effective_override = {
             item["field_name"]: item for item in overrides if item["value"] is not None
         }
+        amount_source = effective_override.pop("effective_amount_source", None)
+        stale_amount = bool(
+            "effective_amount" in effective_override
+            and amount_source
+            and amount_source["value"] != _amount_source_fingerprint(row)
+            and not (proposed_overrides and "effective_amount" in proposed_overrides)
+        )
+        if stale_amount:
+            effective_override.pop("effective_amount")
+            issues.append(DataQualityIssue(code="STALE_AMOUNT_CORRECTION", message="The imported amounts changed after the correction. Confirm a new amount decision.", severity="error"))
+        if proposed_overrides:
+            effective_override.update({
+                field: {"value": value, "id": 0} for field, value in proposed_overrides.items()
+            })
+        amount = Decimal(str(effective_override.get("effective_amount", {}).get("value", imported_amount)))
+        direction = _direction(amount)
         rule = self.repository.latest_rule(
             account_kind=account_kind,
             direction=direction,
@@ -191,7 +217,7 @@ class ClassificationService:
             source = ClassificationSource.OVERRIDE
             explanation = "A transaction-specific override is the effective decision."
             rule_id = int(rule["id"]) if active_rule and rule else None
-            override_ids = [int(item["id"]) for item in effective_override.values()]
+            override_ids = [int(item["id"]) for item in effective_override.values() if int(item["id"]) > 0]
         elif active_rule:
             economic_class = base_class
             behavior = base_behavior
@@ -258,19 +284,23 @@ class ClassificationService:
             behavior = ExpenseBehavior.UNKNOWN
 
         sign_issue = _class_sign_issue(economic_class, amount)
-        if sign_issue:
-            issues.append(
-                DataQualityIssue(
-                    code="INVALID_CLASS_SIGN",
-                    message=f"Effective classification is invalid: {sign_issue}.",
-                    severity="error",
+        if economic_class == EconomicClass.NO_FINANCIAL_EFFECT and imported_amount != 0:
+            sign_issue = "no_financial_effect requires a zero imported reporting amount"
+        if sign_issue or stale_amount:
+            if sign_issue:
+                issues.append(
+                    DataQualityIssue(
+                        code="INVALID_CLASS_SIGN",
+                        message=f"Effective classification is invalid: {sign_issue}.",
+                        severity="error",
+                    )
                 )
-            )
             economic_class = EconomicClass.UNCLASSIFIED
             behavior = ExpenseBehavior.NOT_APPLICABLE
             analysis_category = None
             explanation = (
-                "The effective class conflicts with the transaction direction and was "
+                "The imported amounts changed after the correction and require review."
+                if stale_amount else "The effective class conflicts with the transaction direction and was "
                 "marked unclassified."
             )
 
@@ -283,10 +313,20 @@ class ClassificationService:
                 )
             )
 
+        if economic_class == EconomicClass.NO_FINANCIAL_EFFECT:
+            behavior = ExpenseBehavior.NOT_APPLICABLE
+            explanation = "The zero reporting amount was reviewed and has no financial effect."
+            # Keep the original import warning in source provenance. An explicit
+            # zero-value decision resolves this warning in classification only.
+            issues = [issue for issue in issues if issue.code != "ZERO_AMOUNT_WITH_ORIGINAL_VALUE"]
+
         return ClassificationResult(
             transaction_id=int(row["id"]),
             booking_date=date.fromisoformat(str(row["booking_date"])),
             amount=amount,
+            imported_amount=imported_amount,
+            original_amount=original_amount,
+            original_currency=normalized.get("original_currency", row.get("original_currency")),
             currency=currency,
             account_kind=account_kind,
             source_category=source_category,
@@ -547,6 +587,7 @@ class ClassificationService:
                     source_category=classification.source_category,
                     source_movement_type=classification.source_movement_type,
                     effective_classification=classification,
+                    saved_override=self.saved_override(int(row["id"])),
                     source_fields={
                         "category": row["category"],
                         "movement_type": row["movement_type"],
@@ -567,20 +608,15 @@ class ClassificationService:
         override: ClassificationOverride | dict[str, Any],
     ) -> ClassificationResult:
         values = self._override_values(override)
-        current = self.classify_one(transaction_id)
-        return current.model_copy(
-            update={
-                "economic_class": values.get("economic_class", current.economic_class),
-                "analysis_category": values.get(
-                    "analysis_category", current.analysis_category
-                ),
-                "expense_behavior": values.get(
-                    "expense_behavior", current.expense_behavior
-                ),
-                "source": ClassificationSource.OVERRIDE,
-                "explanation": "Preview of the proposed transaction-specific override.",
-            }
-        )
+        row = self.repository.transaction(transaction_id)
+        if row is None:
+            raise ValueError(f"Transaction {transaction_id} not found")
+        return self._classify_uncached_row(row, proposed_overrides=values)
+
+    def saved_override(self, transaction_id: int) -> ClassificationOverride | None:
+        rows = [item for item in self.repository.latest_overrides(transaction_id) if item["value"] is not None]
+        fields = {item["field_name"]: item["value"] for item in rows if item["field_name"] in {"economic_class", "analysis_category", "expense_behavior", "effective_amount"}}
+        return ClassificationOverride(transaction_id=transaction_id, reason=rows[0]["reason"], **fields) if fields else None
 
     def save_override(
         self,
@@ -590,6 +626,7 @@ class ClassificationService:
         economic_class: EconomicClass | str | None = None,
         analysis_category: str | None = None,
         expense_behavior: ExpenseBehavior | str | None = None,
+        effective_amount: Decimal | str | None = None,
         reason: str = "",
     ) -> ClassificationResult:
         if override is None:
@@ -598,15 +635,27 @@ class ClassificationService:
                 "economic_class": economic_class,
                 "analysis_category": analysis_category,
                 "expense_behavior": expense_behavior,
+                "effective_amount": effective_amount,
                 "reason": reason,
             }
         values = self._override_values(override)
         if not values:
             raise ValueError("At least one override value is required")
+        if "effective_amount" in values:
+            if not self._override_reason(override, reason).strip():
+                raise ValueError("An amount correction requires a reason")
+            proposed = self.preview_override(transaction_id, values)
+            if any(issue.code == "INVALID_CLASS_SIGN" for issue in proposed.issues):
+                raise ValueError("The corrected amount conflicts with the classification")
         serialized = {
             field: (value.value if hasattr(value, "value") else str(value))
             for field, value in values.items()
         }
+        if "effective_amount" in values:
+            row = self.repository.transaction(transaction_id)
+            if row is None:
+                raise ValueError(f"Transaction {transaction_id} not found")
+            serialized["effective_amount_source"] = _amount_source_fingerprint(row)
         self.repository.append_overrides(
             transaction_id,
             serialized,
@@ -640,7 +689,9 @@ class ClassificationService:
         *,
         reason: str = "Override cleared",
     ) -> ClassificationResult:
-        names = list(fields or ("economic_class", "analysis_category", "expense_behavior"))
+        names = list(fields or ("economic_class", "analysis_category", "expense_behavior", "effective_amount"))
+        if "effective_amount" in names:
+            names.append("effective_amount_source")
         self.repository.append_overrides(
             transaction_id, {field: None for field in names}, reason
         )
@@ -774,14 +825,13 @@ class ClassificationService:
             )
         return ClassificationRule.model_validate(payload)
 
-    @staticmethod
-    def _rule_matches(rule: ClassificationRule, row: dict[str, Any]) -> bool:
+    def _rule_matches(self, rule: ClassificationRule, row: dict[str, Any]) -> bool:
         return (
             _text(row.get("account_kind")) == _text(rule.account_kind)
-            and _direction(Decimal(str(row["amount"]))) == rule.direction
             and str(row.get("category")) == rule.source_category
             and (row.get("movement_type") or "") == (rule.source_movement_type or "")
             and str(row.get("currency")).upper() == rule.currency.upper()
+            and _direction(self._classify_row(row).amount) == rule.direction
         )
 
     @staticmethod
@@ -794,13 +844,17 @@ class ClassificationService:
             payload = dict(override)
         values = {
             field: payload[field]
-            for field in ("economic_class", "analysis_category", "expense_behavior")
+            for field in ("economic_class", "analysis_category", "expense_behavior", "effective_amount")
             if field in payload and payload[field] is not None
         }
         if "economic_class" in values:
             values["economic_class"] = EconomicClass(values["economic_class"])
         if "expense_behavior" in values:
             values["expense_behavior"] = ExpenseBehavior(values["expense_behavior"])
+        if "effective_amount" in values:
+            values["effective_amount"] = ClassificationOverride(
+                transaction_id=0, effective_amount=values["effective_amount"]
+            ).effective_amount
         return values
 
     @staticmethod

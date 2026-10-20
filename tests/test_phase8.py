@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import UTC, datetime
+from decimal import Decimal
 from types import SimpleNamespace
 
 import pytest
@@ -19,6 +20,57 @@ from family_finance.persistence.models import (
     TransactionRow,
 )
 from family_finance.services import ImportService
+
+from .conftest import make_workbook
+
+
+@pytest.mark.parametrize(
+    ("imported_amounts", "corrections", "expected_evidence"),
+    [
+        ([-100, -100, -100, -300], {4: "-100"}, None),
+        ([-100, -100, -100, -100], {4: "-300"}, ("300", "100")),
+        ([-300, -300, -300, -300], {1: "-100", 2: "-100", 3: "-100"}, ("300", "100")),
+    ],
+)
+def test_recurring_increase_alerts_use_corrected_latest_and_historical_amounts(
+    tmp_path, monkeypatch, imported_amounts, corrections, expected_evidence
+):
+    class OctoberDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 16, tzinfo=UTC)
+
+    monkeypatch.setattr("family_finance.insights.datetime", OctoberDateTime)
+    app = ImportService(Settings(data_root=tmp_path / "local"))
+    rows = [
+        [f"15/{month:02d}/2026", amount, "Cloud subscription", f"15/{month:02d}/2026",
+         "purchase", "food", "ILS", "ILS", amount]
+        for month, amount in zip(range(6, 10), imported_amounts, strict=True)
+    ]
+    workbook = make_workbook(rows, provider="בנק", reference="recurring-corrections")
+    preview = app.preview_import(workbook)
+    app.commit_import(workbook, preview.preview_token, "recurring.xlsx")
+    insights = app.insights_service
+    insights.reconcile_alerts()
+
+    for transaction_id, amount in corrections.items():
+        app.classification_service.save_override(
+            transaction_id, effective_amount=amount, reason="Verified subscription charge"
+        )
+    insights.reconcile_alerts()
+    alerts = insights.list_alerts(state="open", condition_type="recurring_expense_increase")
+
+    if expected_evidence is None:
+        assert alerts == []
+        resolved = insights.list_alerts(
+            state="resolved", condition_type="recurring_expense_increase"
+        )
+        assert len(resolved) == 1
+    else:
+        assert len(alerts) == 1
+        latest, prior_median = expected_evidence
+        assert Decimal(alerts[0].evidence["latest"]) == Decimal(latest)
+        assert Decimal(alerts[0].evidence["prior_median"]) == Decimal(prior_median)
 
 
 def _attention_database_snapshot(database):

@@ -96,7 +96,7 @@ test("mobile RTL planning wizard saves assumptions and reports a current-revisio
   await editor.getByLabel("סכום במטבע התרחיש").fill("1250.25");
   await editor.getByRole("button", { name: "המשך" }).click();
   await editor.getByLabel("תדירות").selectOption("one_time");
-  await expect(editor.getByLabel("חודש ההתרחשות")).toHaveValue("2026-10");
+  await expect(editor.getByRole("button", { name: "חודש ההתרחשות", exact: true })).toHaveText("אוקטובר 2026");
   await editor.getByRole("button", { name: "המשך" }).click();
   await expect(editor.getByText("סקירת הנחות לפני שמירה")).toBeVisible();
   await editor.getByRole("button", { name: "יצירת תרחיש" }).click();

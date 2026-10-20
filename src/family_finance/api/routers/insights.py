@@ -10,6 +10,7 @@ from fastapi import Query, Request
 
 from family_finance.api.app import ApiError, _envelope, authenticated_router
 from family_finance.api.audit import record_actor_audit
+from family_finance.api.schemas.insights import RecurringPatternReviewBody
 from family_finance.api.schemas.operations import InsightPreferencesBody
 from family_finance.persistence.models import MonthlySummaryRevisionRow
 
@@ -35,6 +36,25 @@ def _record_review_event(request: Request, event_type: str, target_type: str) ->
 @router.get("/preferences")
 def get_preferences(request: Request):
     value = _service(request).get_preferences()
+    return _envelope(value.model_dump(mode="json"), request.state.request_id)
+
+
+@router.put("/recurring-patterns/{pattern_id}")
+def review_recurring_pattern(pattern_id: str, body: RecurringPatternReviewBody, request: Request):
+    try:
+        with request.app.state.database.api_write_unit_of_work() as session:
+            value = _service(request).review_recurring_pattern(
+                pattern_id, **body.model_dump(), actor_id=request.state.authenticated_user.user_id,
+            )
+            record_actor_audit(
+                session, actor_id=request.state.authenticated_user.user_id,
+                event_type=f"insights.recurring.{body.status}", target_type="recurring_pattern",
+                request_id=request.state.request_id,
+            )
+    except LookupError as exc:
+        raise ApiError(404, "PATTERN_NOT_FOUND", "The recurring pattern is no longer available") from exc
+    except ValueError as exc:
+        raise ApiError(409, "INVALID_STATE", "The recurring pattern cannot be moved to that state") from exc
     return _envelope(value.model_dump(mode="json"), request.state.request_id)
 
 

@@ -71,6 +71,18 @@ def test_data_quality_is_authenticated_and_reports_incomplete_month_and_currenci
         assert data["incomplete_months"] == [month.isoformat() for month in expected.incomplete_months]
         assert data["incomplete_months"]
         assert data["source_coverage"] == expected.source_coverage
+        assert len(data["monthly_checks"]) == len(expected.monthly_checks)
+        for check, metrics in zip(data["monthly_checks"], expected.monthly_checks):
+            assert check == {
+                "month": metrics.month.isoformat(),
+                "source_period_complete": metrics.source_period_completeness.source_period_complete,
+                "classification_complete": metrics.completeness.classification_complete,
+                "unclassified_transaction_count": metrics.completeness.unclassified_transaction_count,
+                "open_reconciliation_count": metrics.completeness.open_reconciliation_count,
+                "complete": metrics.completeness.complete,
+            }
+        # A full monthly check does not establish which household accounts exist.
+        assert data["source_coverage"] == "unknown"
         assert data["latest_import"]["id"] == result.json()["data"]["batch_id"]
         assert response.headers["cache-control"] == "private, no-store"
         with app.state.database.session() as session:

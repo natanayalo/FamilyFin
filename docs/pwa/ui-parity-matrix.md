@@ -6,14 +6,14 @@ Inventory baseline: merged master, inspected 2026-09-29. The T07 PWA implements 
 
 Shared shell requirements for every row: Hebrew labels and help text, root lang=he and dir=rtl, usable at 360 px wide and desktop, authenticated API requests, exact Decimal display/input, visible loading/error states, no financial browser persistence, and reconnect required after loss of network. See [api-contracts.md](api-contracts.md) for common transport behavior.
 
-## Overview — route /dashboard
+## Overview - route /dashboard
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
 | Select currency and start/end months; current dashboard defaults and remembers filters in Streamlit session | DashboardService.default_filters; DashboardFilters validation | GET /api/v1/dashboard/overview and /expenses and /quality with start_month, end_month, currency query values | Read-only. Reject start month after end month. Normalize month dates to first of month. Preserve separate currencies and ILS default; client preference may remain in memory only. | API foundation; dashboard UI | Choose a month range and non-ILS currency; each page shows only that currency, dates are inclusive, and no cross-currency total appears. |
 | Headline income, net consumption, operating surplus/deficit, savings rate, observed savings transfers; monthly series, comparison months, rolling averages, completeness/freshness banner and charts | DashboardService.overview; MetricsService through DashboardService | GET /api/v1/dashboard/overview | Read-only. Use returned values and completeness status as-is; an incomplete month is provisional and comparison values may be unavailable. | Dashboard UI; chart components | An incomplete month displays issue codes and provisional state; chart series and exact headline values match the service response. |
 
-## Expenses — route /expenses
+## Expenses - route /expenses
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -21,7 +21,7 @@ Shared shell requirements for every row: Hebrew labels and help text, root lang=
 | Filter exact transaction contributors by month, category, and metric; view transaction rows contributing to a metric | DashboardService.expenses; DashboardService.contributors | GET /api/v1/dashboard/expenses; POST /api/v1/dashboard/contributors/query with transaction_ids in JSON body | Read-only. Accept 1–100 distinct integer IDs; validate every ID exists before calling the service. Contributor IDs come only from selected service metric. Never place IDs in URLs, logs, or copied links; no-store response. | Expenses UI; API pagination/response limits | Select one metric and verify every displayed contributor ID is in its returned contributor set; reject malformed/duplicate/nonexistent IDs; changing metric changes the set. |
 | Deterministic potential recurring-spending and unusual-category insights with contributor drill-down | DashboardService.expenses; MetricsService insight results; DashboardService.contributors | GET /api/v1/dashboard/expenses; POST /api/v1/dashboard/contributors/query with transaction_ids in JSON body | Read-only and heuristic only. Apply the same bounded ID/existence checks; retain labels and caveat that patterns are not accounting classifications. | Expenses UI | A detected insight shows its contributors and the non-classification caveat; reject malformed/duplicate/nonexistent IDs; no qualifying pattern shows the empty state. |
 
-## Data Quality — route /data-quality
+## Data Quality - route /data-quality
 
 T04 implementation: the authenticated routes and the Data Quality page are registered. FamilyBiz commit does not advertise replay safety and the UI marks network/5xx outcomes unknown, refreshes history, and requires a fresh preview before another commit. Reconciliation resolution uses `Idempotency-Key` with an atomic database response record.
 
@@ -33,7 +33,7 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | View import history and open reconciliation cases | ImportService.history; ImportService.reconciliation_cases | GET /api/v1/imports/history; GET /api/v1/reconciliation/cases | Read-only, paginated collections. Keep status, counts, issue codes, and source linkage. | Data Quality UI; API pagination | History and case lists match service state; cursor pages neither duplicate nor skip stable IDs. |
 | Resolve a reconciliation case as accept-as-new, dismiss, or link to one listed candidate | ImportService.resolve_reconciliation | POST /api/v1/reconciliation/cases/{case_id}/resolution with resolution, optional transaction_id, and required Idempotency-Key | Mutation joins the API-owned database transaction. Matching keys replay the stored result; key reuse with another request returns 409. Link target must be a current candidate; case must still be open; dismissal marks source dismissed; accept/link update batch status and provenance. | Reconciliation workflow; conflict/error UI | Resolve each supported choice; replay the same key; reject key reuse with a changed body, a transaction outside the candidate list, and a second resolution with a new key. |
 
-## Classification — route /classification
+## Classification - route /classification
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -42,7 +42,7 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | Save or clear a transaction override | ClassificationService.save_override; clear_override | POST /api/v1/classification/transactions/{transaction_id}/override; DELETE same route | Implemented and authenticated. Append classification decision history. Queue supplies `expected_override_version` and an effective-state hash; API checks both under `BEGIN IMMEDIATE` before saving or clearing and returns 409 `STALE_CLASSIFICATION` without a write on mismatch. Preserve default reason “Saved from classification review”, domain sign/issue behavior, and clear tombstones. These writes are not idempotent; timeout outcome is unknown. | Classification UI; serialized conditional-write protocol | Save and clear valid overrides; two concurrent submissions using one state produce one success and one 409, with one decision append; no automatic retry after transport failure. |
 | Preview exact reusable-rule impact, create rule, review rule history, disable current active rule | ClassificationService.preview_rule; create_rule; list_rules; disable_rule | POST /api/v1/classification/rules/previews; POST /api/v1/classification/rules; GET /api/v1/classification/rules; POST /api/v1/classification/rules/{rule_id}/disable | Implemented and authenticated. Preview is read-only and returns exact affected accepted-transaction count plus nullable `expected_current_rule_id`. Create checks that exact-match key's current revision under `BEGIN IMMEDIATE`; disable checks the expected current active ID. Mismatch returns 409 `STALE_RULE`. Create/supersede/disable remain append-only; no arbitrary backfill or rewrite. Mutations are not idempotent. | Classification UI; serialized conditional-write protocol | Preview count equals service; create/supersede exact rule; disable current rule; reject a concurrent stale create and a superseded-rule disable. |
 
-## Planning — route /planning
+## Planning - route /planning
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -52,7 +52,7 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | Edit/add/remove assumptions, preview projection, save immutable revision, inspect and restore any prior revision | PlanningService.get_scenario/get_revision/project_draft/save_revision/list_revisions/restore_revision | GET scenario/revisions/revision/projection; POST projections/revisions/revisions/{n}/restore | T06 implemented. Expected revision is mandatory; stale saves return 409 with current_revision_number. Existing item provenance and completeness evidence are copied by the server from the referenced item in the expected base revision; new items receive manual origin. Projection comes from Python. | Revision protocol; Planning editor | Compare draft projection to service; attempt forged lineage fields and verify rejection; save an edited source item and verify its provenance carries forward; save then verify old history unchanged; stale edits from either account conflict without overwriting current data. |
 | Clone; archive/unarchive; compare two to four same-currency scenarios; compare selected plan with actuals | PlanningService.clone_scenario; archive_scenario/unarchive_scenario; compare_scenarios; compare_actual | POST clone/archive; POST /api/v1/planning/comparisons; GET /api/v1/planning/scenarios/{id}/actual-comparison | T06 implemented. Restore/clone preserve source quality; archive is reversible. Actual variances for incomplete months remain unavailable, never zero. | Planning list; comparison and history screens | Clone/archive/restore; compare same-currency scenarios and verify service parity; incomplete actual month retains null values and issue codes. |
 
-## Savings Forecast — route /savings-forecast
+## Savings Forecast - route /savings-forecast
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -63,7 +63,7 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | Show 12/24/36-month projections, selected baseline/conservative/optimistic case, shortfall, case comparison, formula/assumption inspector, pinned plan revision and hash | SavingsForecastService.project_draft; ForecastEngine | POST /api/v1/forecasts/previews; GET saved revision projection | Read-only draft output. Preserve 36-month service horizon, methodology, policy version, exact Decimal output, assumption hash, and disclaimer. Historical revision projection uses that revision's saved assumptions and source pin. | Forecast UI; charts | All 3 cases show the service result at selected horizon; first shortfall and formula inspector match response. |
 | Save, inspect, list, restore, clone, archive, and reactivate a forecast | SavingsForecastService.create_forecast/list_forecasts/get_revision/save_revision/restore_revision/clone_forecast/archive_forecast/unarchive_forecast | POST/GET /api/v1/forecasts and /api/v1/forecasts/{id}/... | Mutations use expected current revision; restore appends a new revision; source plan pin cannot move. Require all three case confirmations, provisional-plan acknowledgement, and stale Net Worth acknowledgement. Writes are actor-audited. Create and clone are not replay-safe; after an outcome-unknown response, refresh to reconcile and require explicit closure of the uncertain operation before another create/clone. | Forecast editor; immutable revision history | Create, save, restore, clone, archive, and reactivate through the PWA/API; prior revisions remain unchanged and concurrent stale writes return 409. Simulate committed create/clone requests with lost responses; refresh and confirm each remains locked against another submission until explicit closure. |
 
-## Net Worth — route /net-worth
+## Net Worth - route /net-worth
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -74,7 +74,7 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | View account history, current ILS net-worth totals and liquidity/category/owner breakdown, stale valuation warnings, trend | NetWorthService.account_history/current_summary/trend | GET /api/v1/net-worth/accounts/{key}/history; GET /api/v1/net-worth/summary; GET /api/v1/net-worth/trend | Read-only. Only observed account balances; preserve missing/stale warnings, snapshot date, ownership and liquidity. | Net Worth UI | Summary categories add up to service totals; stale account keys and snapshot freshness match the service result. |
 | Compare a pinned forecast revision and role to a selected observed snapshot revision | NetWorthService.compare_forecast_actual; SavingsForecastService.list_revisions | POST /api/v1/net-worth/forecast-comparisons | Read-only. Use exact selected forecast/snapshot revision and case; show timing and valuation-date warnings and keep observations distinct from projections. | Forecast read API; Net Worth UI | Compare matching revisions and verify per-account and aggregate deltas plus warnings against the service response. |
 
-## Apartment Plan — route /apartment-plan
+## Apartment Plan - route /apartment-plan
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -83,7 +83,7 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | Edit guardrails and 2–4 alternatives, compare purchase month, price, gift, equity, costs, mortgage, pool draws, housing lines, stopped planning expense IDs | ApartmentPlanningService.available_pool_balances/project_draft; Apartment domain validation | POST /api/v1/apartment/studies/projections with pinned forecast revision, guardrails, alternatives | Draft only; enforce 2–4 alternatives, exact decimals, mortgage term 12–480 months, percent-to-ratio conversion once at boundary, valid pool/line IDs, funds, and all current domain rules. Do not add financial calculations in JS. | Planning expenses; Forecast; Apartment form | Two valid alternatives produce the service comparison; invalid mortgage term, unknown pool, or malformed decimal is rejected before save. |
 | Show sources/uses, readiness/failures, monthly results, mortgage schedule/formulas and assumption hash; confirm alternatives; acknowledge provisional source; save new study/revision | ApartmentPlanningService.project_draft/create_study/save_revision | POST projection; POST /api/v1/apartment/studies; POST /api/v1/apartment/studies/{id}/revisions | Require every alternative’s reviewed confirmation; require inherited provisional-source acknowledgement. Save is append-only; existing study revision sends expected_revision_number. Preserve estimate disclaimer, exact forecast pin, and hashes. Do not advertise retry safety until the route passes the atomic replay-safety gate. | Preview protocol; atomic replay-safety gate; revision protocol | Editing any assumption clears its confirmation; save is blocked until all confirmations and required source acknowledgement are current; saved hash matches preview. Inject a crash around commit and verify a retry cannot create a second study/revision before enabling automatic retries. |
 
-## Automation & Insights — route /automation-insights
+## Automation & Insights - route /automation-insights
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
@@ -93,13 +93,13 @@ T04 implementation: the authenticated routes and the Data Quality page are regis
 | Filter alert state; inspect evidence; acknowledge open alert; resolve unresolved alert | InsightsService.list_alerts/acknowledge_alert/resolve_alert | GET /api/v1/insights/alerts?state=...; POST acknowledge/resolve | Keep alert state machine; open alerts may be acknowledged, non-resolved alerts may be resolved; actions are authenticated, actor-audited, and repeat safely. | Insights UI | Filter each state and verify allowed transitions; repeat transition returns current result or safe conflict, never duplicates alert. |
 | List immutable monthly summary revisions; inspect a saved result | InsightsService.list_summary_revisions/summary_markdown/summary_json | GET /api/v1/insights/monthly-summaries; GET /{revision_id} | Read-only; preserve the exact saved revision and content; do not regenerate when opened. | Insights UI | Open a selected revision and verify its month, content hash, and saved Markdown. |
 
-## CLI and operations adjacent to Streamlit — route /settings/operations only if the PWA owns operator actions
+## CLI and operations adjacent to Streamlit - route /settings/operations only if the PWA owns operator actions
 
 | Existing capability | Python service | Proposed API contract | Mutation and validation semantics | Dependencies | Acceptance test |
 | --- | --- | --- | --- | --- | --- |
 | CLI inspect, audit, create verified backup, verify backup, automate; documented manual restore | ImportService.inspect_familybiz; AuditService.run; BackupService.create/verify; AutomationService.run; CLI commands inspect, audit, backup, verify-backup, automate | Local inspect, backup create/verify, and restore remain host-side. The PWA exposes only GET /api/v1/operations/audit and GET /api/v1/operations/backup-readiness. There is no web backup destination or restore endpoint. | Never accept arbitrary filesystem paths. BackupService refuses overwrite and verifies a temporary backup before publish. Restore remains manual, stopped-service, verified, preserve-current-data procedure. | Host backup destination/retention; operations module | Existing CLI commands remain callable; PWA health views do not expose paths or provide create/verify-by-path/restore operations. |
 
-## Settings — PWA route /settings
+## Settings - PWA route /settings
 
 | Capability | API contract | Mutation and privacy semantics | Acceptance test |
 | --- | --- | --- | --- |

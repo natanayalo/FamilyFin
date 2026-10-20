@@ -1,15 +1,71 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 
 from sqlalchemy import select
 
-from family_finance.persistence.models import ActorAuditEventRow
+from family_finance.dashboard import DashboardService
+from family_finance.persistence.models import ActorAuditEventRow, TransactionRow
 from tests.conftest import make_workbook
 from tests.test_api_auth import ApiTestClient, make_api
 
 ORIGIN = "https://testserver"
 LOGIN = {"username": "sam", "password": "Long-test-password-One!"}
+
+
+def test_amount_resolution_is_atomic_audited_reversible_and_updates_reports(tmp_path):
+    _, database, _, app = make_api(tmp_path)
+    with ApiTestClient(app, base_url=ORIGIN) as client:
+        csrf = _sign_in(client)
+        service = app.state.services
+        payload = make_workbook([["15/09/2026", 72.4, "Cloud fixture", "15/09/2026", None, "הכנסות מעסק", "ILS", "ILS", -72.4]], provider="בנק", reference="resolution-fixture")
+        preview = service.preview_import(payload)
+        service.commit_import(payload, preview.preview_token, "resolution.xlsx")
+        classifier = service.classification_service
+        classifier.save_override(1, economic_class="consumption", analysis_category="אחסון ענן", reason="Legacy conflicting decision")
+        source_before = classifier.repository.source_info(1)
+        transaction_before = classifier.repository.transaction(1)
+        item = client.get("/api/v1/classification/review-queue").json()["data"][0]
+        assert item["saved_override"]["analysis_category"] == "אחסון ענן"
+        assert item["saved_override"]["economic_class"] == "consumption"
+        assert item["effective_classification"]["original_amount"] == "-72.4"
+        headers = {"Origin": ORIGIN, "X-CSRF-Token": csrf}
+        body = {"expected_override_version": item["expected_override_version"], "expected_classification_state": item["expected_classification_state"], "economic_class": "consumption", "analysis_category": "אחסון ענן", "expense_behavior": "fixed", "reason": "Confirmed debit against original"}
+        count_before = database.count("analysis_overrides")
+        bad = client.post("/api/v1/classification/transactions/1/override", headers=headers, json=body)
+        assert bad.status_code == 422
+        assert database.count("analysis_overrides") == count_before
+        for amount in ("NaN", "Infinity", "1.000000001", "1e30"):
+            invalid = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={**body, "effective_amount": amount})
+            assert invalid.status_code == 422
+        no_reason = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={**body, "effective_amount": "-72.4", "reason": " "})
+        assert no_reason.status_code == 422
+        assert database.count("analysis_overrides") == count_before
+        saved = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={**body, "effective_amount": "-72.4"})
+        assert saved.status_code == 200
+        data = saved.json()["data"]
+        assert data["result"]["amount"] == "-72.4"
+        assert data["result"]["imported_amount"] == "72.4"
+        assert data["result"]["economic_class"] == "consumption"
+        assert client.get("/api/v1/classification/review-queue").json()["data"] == []
+        dashboard = DashboardService(database)
+        metrics = dashboard.metrics.calculate_monthly_metrics("2026-09")
+        assert metrics.gross_consumption == Decimal("72.4")
+        assert metrics.spending_by_category == {"אחסון ענן": Decimal("72.4")}
+        assert dashboard.contributors([1])[0].amount == Decimal("-72.4")
+        assert classifier.repository.source_info(1) == source_before
+        assert classifier.repository.transaction(1) == transaction_before
+        stale = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={**body, "effective_amount": "-72.4"})
+        assert stale.status_code == 409
+        cleared = client.loop.run_until_complete(client.client.request("DELETE", "/api/v1/classification/transactions/1/override", headers=headers, json={"expected_override_version": data["override_version"], "expected_classification_state": data["expected_classification_state"]}))
+        assert cleared.status_code == 200
+        assert cleared.json()["data"]["result"]["amount"] == "72.4"
+        assert classifier.repository.transaction(1) == transaction_before
+        assert all(item["value"] is None for item in classifier.repository.latest_overrides(1))
+        with database.session() as session:
+            events = session.scalars(select(ActorAuditEventRow)).all()
+        assert {item.event_type for item in events} >= {"classification.override_saved", "classification.override_cleared"}
 
 
 def _rows():
@@ -181,22 +237,9 @@ def test_classification_queue_filters_coverage_override_clear_and_rules(tmp_path
                 "economic_class": "income",
             },
         )
-        assert invalid_sign.status_code == 200
-        invalid_result = invalid_sign.json()["data"]["result"]
-        assert invalid_result["economic_class"] == "unclassified"
-        assert "INVALID_CLASS_SIGN" in {issue["code"] for issue in invalid_result["issues"]}
-        cleared_invalid = client.loop.run_until_complete(
-            client.client.request(
-                "DELETE",
-                "/api/v1/classification/transactions/1/override",
-                headers=headers,
-                json={
-                    "expected_override_version": invalid_sign.json()["data"]["override_version"],
-                    "expected_classification_state": invalid_sign.json()["data"]["expected_classification_state"],
-                },
-            )
-        )
-        assert cleared_invalid.status_code == 200
+        assert invalid_sign.status_code == 422
+        assert invalid_sign.json()["error"]["code"] == "CLASSIFICATION_DIRECTION_CONFLICT"
+        assert client.get("/api/v1/classification/review-queue", params={"include_resolved": "true"}).json()["data"][0]["expected_override_version"] == cleared_version
 
         rule_body = {
             "account_kind": "bank",
@@ -344,3 +387,54 @@ def test_classification_routes_require_authenticated_session(tmp_path):
         response = client.get("/api/v1/classification/coverage")
         assert response.status_code == 401
         assert response.json()["error"]["code"] == "AUTHENTICATION_REQUIRED"
+
+
+def test_zero_amount_can_be_reviewed_without_financial_effect_and_undone(tmp_path):
+    _, database, _, app = make_api(tmp_path)
+    with ApiTestClient(app, base_url=ORIGIN) as client:
+        headers = {"Origin": ORIGIN, "X-CSRF-Token": _sign_in(client)}
+        service = app.state.services
+        payload = make_workbook([["15/09/2026", 0, "Synthetic waived card fee", "15/09/2026", "fee", "שונות", "ILS", "ILS", -17.9]])
+        preview = service.preview_import(payload)
+        service.commit_import(payload, preview.preview_token, "waived-fee.xlsx")
+        classifier = service.classification_service
+        classifier.save_override(1, economic_class="consumption", expense_behavior="fixed", reason="Legacy fee decision")
+        source_before = classifier.repository.source_info(1)
+        transaction_before = classifier.repository.transaction(1)
+        item = client.get("/api/v1/classification/review-queue").json()["data"][0]
+        preconditions = {"expected_override_version": item["expected_override_version"], "expected_classification_state": item["expected_classification_state"]}
+        saved = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={**preconditions, "economic_class": "no_financial_effect", "reason": "Confirmed the fee was waived"})
+        assert saved.status_code == 200
+        data = saved.json()["data"]
+        assert data["result"]["amount"] == "0"
+        assert data["result"]["economic_class"] == "no_financial_effect"
+        assert data["result"]["expense_behavior"] == "not_applicable"
+        assert data["result"]["issues"] == []
+        assert client.get("/api/v1/classification/review-queue").json()["data"] == []
+        metrics = DashboardService(database).metrics.calculate_monthly_metrics("2026-09")
+        assert metrics.gross_consumption == metrics.gross_income == metrics.refunds == 0
+        assert metrics.unclassified_transaction_count == 0
+        assert metrics.completeness.classification_complete
+        assert metrics.contributors_for("gross_consumption") == []
+        assert classifier.repository.source_info(1) == source_before
+        assert classifier.repository.transaction(1) == transaction_before
+        assert any(issue["code"] == "ZERO_AMOUNT_WITH_ORIGINAL_VALUE" for issue in source_before["issues"])
+        cleared = client.loop.run_until_complete(client.client.request("DELETE", "/api/v1/classification/transactions/1/override", headers=headers, json={"expected_override_version": data["override_version"], "expected_classification_state": data["expected_classification_state"]}))
+        assert cleared.status_code == 200
+        assert cleared.json()["data"]["result"]["economic_class"] == "unclassified"
+        item = client.get("/api/v1/classification/review-queue").json()["data"][0]
+        # Confirm again, then simulate changed source data. The saved zero decision
+        # must never suppress a subsequently charged fee.
+        saved = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={"expected_override_version": item["expected_override_version"], "expected_classification_state": item["expected_classification_state"], "economic_class": "no_financial_effect"})
+        assert saved.status_code == 200
+        with database.write_session() as session:
+            session.get(TransactionRow, 1).amount = "-17.9"
+        item = client.get("/api/v1/classification/review-queue").json()["data"][0]
+        assert item["effective_classification"]["economic_class"] == "unclassified"
+        count_before = database.count("analysis_overrides")
+        bad = client.post("/api/v1/classification/transactions/1/override", headers=headers, json={"expected_override_version": item["expected_override_version"], "expected_classification_state": item["expected_classification_state"], "economic_class": "no_financial_effect", "effective_amount": "0", "reason": "Must not hide a charge"})
+        assert bad.status_code == 422
+        assert database.count("analysis_overrides") == count_before
+        with database.session() as session:
+            events = session.scalars(select(ActorAuditEventRow)).all()
+        assert {event.event_type for event in events} >= {"classification.override_saved", "classification.override_cleared"}

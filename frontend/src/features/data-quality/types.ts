@@ -34,6 +34,14 @@ export type DataQualitySummary = {
   currencies: Record<string, number>;
   issue_counts: Record<string, number>;
   incomplete_months: string[];
+  monthly_checks?: Array<{
+    month: string;
+    source_period_complete: boolean;
+    classification_complete: boolean;
+    unclassified_transaction_count: number;
+    open_reconciliation_count: number;
+    complete: boolean;
+  }>;
   open_reconciliation_cases: number;
   unclassified_transaction_count: number;
   unclassified_absolute_amount: string;

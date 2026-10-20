@@ -87,7 +87,8 @@ test("authenticated Net Worth route shows observed account history and exact ser
   });
 
   await page.goto("/net-worth");
-  await expect(page.getByRole("heading", { name: "תמונת מצב נבחרת" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "השווי הנקי לפי המדידה שנבחרה" })).toBeVisible();
+  await page.locator('details[aria-label="ניהול חשבונות ומדידות"] > summary').click();
   await expect(page.getByRole("heading", { name: "רשימת חשבונות" })).toBeVisible();
   await expect(page.getByText("מזומן", { exact: true }).first()).toBeVisible();
   await expect(page.getByText(/900\.25/).first()).toBeVisible();

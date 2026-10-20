@@ -1,0 +1,88 @@
+/* Monthly Clarity: figures first, review next, detail on demand. */
+.workspace-overview{--overview-income:#3c8564;--overview-expense:#b95b55;--overview-surplus:#2b785c}
+.dark .workspace-overview{--overview-income:#77ba92;--overview-expense:#dd8d87;--overview-surplus:#b0e7c8}
+.overview-feature{gap:18px}
+.overview-heading{display:flex;align-items:center;justify-content:space-between;gap:24px;min-width:0}
+.overview-heading h1{margin:0;font-size:30px;letter-spacing:-.035em;font-weight:600;line-height:1.3}
+.overview-heading p{margin:6px 0 0;font-size:14px;line-height:1.6;color:var(--muted-foreground)}
+.overview-primary-action:focus-visible,.overview-transactions a:focus-visible,.overview-disclosure>summary:focus-visible{outline:3px solid var(--ring);outline-offset:3px}
+.overview-feature .dashboard-headlines{gap:14px}
+.overview-metric{padding:23px 24px;min-height:158px;border-radius:13px;display:flex;flex-direction:column}
+.overview-metric h3{font-size:14px;font-weight:500;color:var(--ink)}
+.overview-metric .dashboard-value{margin-top:13px;font-size:clamp(26px,2.65vw,38px);line-height:1.25;letter-spacing:-.035em;white-space:normal}
+.overview-metric-operating_surplus_or_deficit .dashboard-value{color:var(--overview-surplus)}
+.overview-metric .dashboard-subvalue{font-size:13px;line-height:1.6;margin-top:12px}
+.overview-data-status{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:5px 16px;margin-top:-9px;font-size:12px;color:var(--muted-foreground)}
+.overview-data-status>span{display:flex;align-items:center;gap:7px}.overview-data-status svg{flex-shrink:0}
+.overview-trend{position:relative;padding:20px 24px 15px}
+.overview-trend>header{align-items:center;margin-bottom:0;gap:16px}
+.overview-trend h2{font-size:16px;line-height:1.5}
+.overview-trend .dashboard-filter-wrap{position:static}
+.overview-trend .dashboard-filter-toggle{display:flex;min-height:36px;padding:5px 9px;gap:8px;border:0;background:transparent;font-size:12px}
+.overview-trend .dashboard-filter-toggle strong{flex-basis:auto}
+.overview-trend .dashboard-filter:not(.expanded){display:none}
+.overview-trend .dashboard-filter.expanded{position:absolute;inset-inline:24px;top:66px;z-index:4;box-shadow:0 8px 24px #0002}
+.overview-chart{display:flex;flex-direction:column}
+.overview-chart .dashboard-legend{order:-1;margin:7px 0 0;font-size:12px}
+.overview-chart .dashboard-chart-data{margin-top:0}
+.overview-chart .dashboard-chart-data summary{font-size:11px;color:var(--muted-foreground);text-decoration:none}
+.overview-review{display:flex;align-items:center;justify-content:space-between;gap:20px;padding:19px 22px;border:1px solid var(--line);border-radius:13px;background:var(--card)}
+.overview-review.needs-review{background:var(--warning);border-color:var(--warning-border);color:var(--warning-foreground)}
+.overview-review>div{display:flex;align-items:flex-start;gap:12px}.overview-review>div>svg{width:22px;height:22px;flex-shrink:0;margin-top:1px}
+.overview-review h2{font-size:16px;font-weight:600;margin:0}.overview-review p{font-size:13px;line-height:1.65;margin:5px 0 0}
+.overview-primary-action{display:inline-flex;align-items:center;justify-content:center;gap:9px;flex-shrink:0;min-height:44px;padding:10px 16px;border-radius:9px;background:var(--primary);color:var(--primary-foreground);text-decoration:none;font-size:14px;font-weight:600}
+.overview-primary-action:hover{filter:brightness(.95)}
+.overview-transactions{min-width:0;padding-top:2px}
+.overview-transactions>header{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:0 0 12px}
+.overview-transactions h2{font-size:17px;font-weight:600;margin:0}
+.overview-transactions a{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--primary);text-decoration:none}.overview-transactions a:hover{text-decoration:underline;text-underline-offset:4px}
+.overview-transactions-scroll{overflow-x:auto;max-width:100%}
+.overview-transactions-table{width:100%;border-collapse:collapse;text-align:right;font-size:14px}
+.overview-transactions-table th,.overview-transactions-table td{padding:13px 12px;border-bottom:1px solid var(--line);font-weight:400}
+.overview-transactions-table thead th{font-size:12px;color:var(--muted-foreground);padding-block:8px}
+.overview-transactions-table tr>*:first-child{padding-inline-start:0;white-space:nowrap;color:var(--muted-foreground);font-size:12px}
+.overview-transactions-table tr>*:last-child{padding-inline-end:0;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+.overview-transactions-table tbody th{font-weight:500;min-width:160px;max-width:360px;overflow-wrap:anywhere}
+.overview-transactions-table small{display:block;margin-top:3px;font-size:11px;color:var(--warning-foreground)}
+.overview-category{display:inline-block;padding:4px 9px;border-radius:20px;background:var(--secondary);color:var(--secondary-foreground);font-size:12px}
+.overview-transaction-amount{font-weight:500!important}.overview-transaction-amount.debit{color:var(--overview-expense)}.overview-transaction-amount.credit{color:var(--overview-surplus)}
+.overview-analysis{display:grid;gap:0;min-width:0;margin-top:12px}.overview-analysis>h2{font-size:15px;margin:0 0 10px;color:var(--muted-foreground)}
+.overview-disclosure{min-width:0;border-top:1px solid var(--line)}.overview-disclosure>summary,.overview-disclosure>details>summary{padding:17px 0;font-size:14px;cursor:pointer}
+.overview-disclosure[open],.overview-disclosure:has(>details[open]){display:grid;gap:14px;padding-bottom:16px}
+.overview-disclosure>details[open]>summary{margin-bottom:10px}.overview-disclosure .dashboard-panel{margin-top:12px}
+.overview-scope-note{font-size:13px;line-height:1.7;color:var(--muted-foreground);margin:0}
+.overview-feature .overview-secondary-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}.overview-secondary-metrics .dashboard-value{font-size:26px}
+@media(min-width:1100px){
+.workspace-overview{grid-template-columns:210px minmax(0,1fr)}.workspace-overview .sidebar{padding:28px 14px;gap:30px}.workspace-overview .nav-label{font-size:11px}.workspace-overview .desktop-navigation{gap:22px}
+.workspace-overview .content{padding:26px 32px 40px;max-width:1500px}.workspace-overview .topbar{height:0;border:0;padding:0;background:transparent}.workspace-overview .topbar>div:first-child{display:none}
+.workspace-overview .topbar-actions{position:absolute;top:24px;inset-inline-end:32px;gap:8px;z-index:3}.workspace-overview .connection-pill{font-size:0;padding:9px;border:0;background:transparent}.workspace-overview .user-chip{padding:0;border:0;background:transparent}.workspace-overview .user-name{display:none}
+.overview-heading{padding-inline-end:190px;min-height:58px}
+}
+@media(max-width:1099px){.overview-heading{flex-wrap:wrap}.overview-heading h1{font-size:28px}.overview-heading p{font-size:13px}}
+@media(max-width:700px){
+.workspace-overview .content{padding:20px 17px 30px}.overview-feature{gap:14px}.overview-heading{gap:14px}.overview-heading h1{font-size:26px}.overview-heading p{font-size:13px}
+.overview-feature .dashboard-headlines{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.overview-metric{min-height:122px;padding:15px}.overview-metric h3{font-size:13px}.overview-metric .dashboard-value{font-size:24px;margin-top:10px}.overview-metric .dashboard-subvalue{font-size:12px;margin-top:9px}
+.overview-metric-operating_surplus_or_deficit{grid-column:1/-1;min-height:0;display:grid;grid-template-columns:1fr auto;gap:3px 12px;align-items:center}.overview-metric-operating_surplus_or_deficit h3{font-size:13px}.overview-metric-operating_surplus_or_deficit .dashboard-value{margin:0;font-size:27px}.overview-metric-operating_surplus_or_deficit .dashboard-subvalue{grid-column:1/-1;margin-top:4px}
+.overview-data-status{font-size:11px;margin-top:-4px;gap:4px}.overview-data-status .dashboard-link-button{font-size:11px}
+.overview-trend{padding:16px 12px 12px}.overview-trend>header{align-items:flex-start;flex-direction:column;gap:4px}.overview-trend h2{font-size:15px}.overview-trend .dashboard-filter-toggle{padding-inline:0;text-align:start}.overview-trend .dashboard-filter-wrap{width:100%}.overview-trend .dashboard-filter.expanded{position:static;grid-template-columns:1fr;padding:12px;gap:12px}.overview-trend .dashboard-chart{min-height:170px}
+.overview-review{align-items:stretch;flex-direction:column;gap:13px;padding:16px}.overview-review h2{font-size:15px}.overview-review p{font-size:13px}
+.overview-transactions>header{align-items:flex-start}.overview-transactions h2{font-size:15px}.overview-transactions a{font-size:11px;gap:3px}.overview-transactions-table{font-size:13px}.overview-transactions-table th,.overview-transactions-table td{padding:12px 5px}.overview-transactions-table tr>*:first-child{font-size:10px}.overview-transactions-table tbody th{min-width:110px}.overview-transactions-table tr>*:nth-child(3){display:none}
+.overview-secondary-metrics .overview-metric{grid-column:auto;display:flex}
+}
+@media(max-width:360px){.overview-metric{padding:13px 10px}.overview-metric .dashboard-value{font-size:21px}.overview-metric-operating_surplus_or_deficit{grid-template-columns:1fr}.overview-metric-operating_surplus_or_deficit .dashboard-value{font-size:25px}.overview-transactions a svg{display:none}}
+
+.overview-metric-operating_surplus_or_deficit.overview-metric-negative .dashboard-value{color:var(--overview-expense)}
+.overview-comparisons{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;padding-block:16px}
+.overview-comparisons h3{grid-column:1/-1;margin:0;font-size:15px}.overview-comparisons h4{margin:0;font-size:13px}
+@media(min-width:701px){
+.overview-chart .dashboard-legend{position:absolute;top:24px;inset-inline-end:24px;margin:0}
+.overview-trend>header{padding-inline-end:300px;min-height:24px}
+.overview-trend .dashboard-filter-wrap{position:absolute;bottom:6px;inset-inline-end:24px}
+.overview-trend .dashboard-filter.expanded{position:absolute;inset-inline:auto 0;width:min(650px,calc(100vw - 120px));top:auto;bottom:44px}
+}
+
+@media(max-width:700px){.overview-metric .dashboard-value{font-size:20px;white-space:nowrap;letter-spacing:-.04em}.overview-metric-operating_surplus_or_deficit .dashboard-value{font-size:25px}}
+@media(max-width:360px){.overview-metric .dashboard-value{font-size:18px}.overview-metric-operating_surplus_or_deficit .dashboard-value{font-size:25px}}
+.overview-transactions-table tbody th,.overview-transactions-table tbody td{padding-block:10px}
+.overview-month-selection{min-width:230px;flex-shrink:0}
+@media(max-width:700px){.overview-month-selection{width:100%}}

@@ -5,9 +5,11 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 API_MAX_JSON_BODY_BYTES = 1 * 1024 * 1024
+LOCAL_API_HOSTS = {"localhost", "127.0.0.1", "::1"}
 
 
 @dataclass(frozen=True)
@@ -35,12 +37,44 @@ class Settings:
     api_max_request_bytes: int = 1 * 1024 * 1024
     api_public_origin: str | None = None
     api_trusted_hosts: tuple[str, ...] = ("localhost", "127.0.0.1")
+    api_local_dev: bool = False
 
     def __post_init__(self) -> None:
         if not 1 <= self.api_session_hours <= 24:
             raise ValueError("API session lifetime must be between 1 and 24 hours")
         if not 1024 <= self.api_max_request_bytes <= API_MAX_JSON_BODY_BYTES:
             raise ValueError("API JSON request limit must be between 1 KiB and 1 MiB")
+        if self.api_local_dev and any(host not in LOCAL_API_HOSTS for host in self.api_trusted_hosts):
+            raise ValueError("Local API mode permits only exact loopback trusted hosts")
+        if self.api_public_origin:
+            origin = urlsplit(self.api_public_origin)
+            # Accessing port also validates malformed/out-of-range port strings.
+            port = origin.port
+            if (
+                not origin.hostname
+                or origin.username is not None
+                or origin.password is not None
+                or origin.path not in {"", "/"}
+                or origin.query
+                or origin.fragment
+                or port == 0
+            ):
+                raise ValueError("API public origin must be an origin without credentials or a path")
+            if self.api_local_dev:
+                if origin.scheme not in {"http", "https"} or origin.hostname not in LOCAL_API_HOSTS:
+                    raise ValueError("Local API origin must use HTTP or HTTPS on an exact loopback host")
+                if origin.hostname not in self.api_trusted_hosts:
+                    raise ValueError("Local API origin host must also be trusted")
+            elif origin.scheme != "https":
+                raise ValueError("API public origin requires HTTPS outside explicit local mode")
+
+    @property
+    def api_secure_cookie(self) -> bool:
+        return not (
+            self.api_local_dev
+            and self.api_public_origin
+            and urlsplit(self.api_public_origin).scheme == "http"
+        )
 
     @property
     def database_path(self) -> Path:
@@ -112,6 +146,7 @@ class Settings:
             ),
             api_public_origin=os.environ.get("FAMILY_FINANCE_API_PUBLIC_ORIGIN", "").strip() or None,
             api_trusted_hosts=trusted_hosts or ("localhost", "127.0.0.1"),
+            api_local_dev=os.environ.get("FAMILY_FINANCE_LOCAL_DEV") == "1",
         )
 
     def ensure_directories(self) -> None:

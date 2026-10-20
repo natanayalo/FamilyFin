@@ -23,6 +23,7 @@ export type MetricBreakdown = {
 export type MonthlyMetrics = {
   month: string;
   currency: string;
+  accepted_transaction_count?: number;
   completeness: {
     complete: boolean;
     classification_complete: boolean;
@@ -33,6 +34,7 @@ export type MonthlyMetrics = {
     issues: string[];
   };
   source_period_completeness: {
+    source_period_complete?: boolean;
     complete: boolean;
     classification_complete: boolean;
     source_coverage: string;
@@ -73,9 +75,31 @@ export type DashboardOverview = {
   series: MonthlySeriesPoint[];
   headline: Record<string, string | null>;
   comparisons: DashboardComparison[];
+  period_statistics?: PeriodStatistics;
   freshness_date: string | null;
+  last_import_at?: string | null;
   source_coverage: string;
   currency: string;
+};
+
+export type PeriodStatisticMetric = {
+  mean: string | null;
+  p25: string | null;
+  median: string | null;
+  p75: string | null;
+};
+
+export type StatisticsPopulation = {
+  included_months: string[];
+  partial_months: string[];
+  excluded_months: string[];
+  sample_count: number;
+  metrics: Record<"gross_income" | "net_consumption" | "operating_surplus_or_deficit", PeriodStatisticMetric>;
+};
+
+export type PeriodStatistics = {
+  observed: StatisticsPopulation;
+  complete: StatisticsPopulation;
 };
 
 export type CategorySummary = {
@@ -85,6 +109,7 @@ export type CategorySummary = {
 };
 
 export type PotentialRecurringSpending = {
+  pattern_id: string;
   label: string;
   normalized_description: string;
   analysis_category: string;
@@ -96,6 +121,12 @@ export type PotentialRecurringSpending = {
   amount_range: [string, string];
   occurrence_months: string[];
   contributor_transaction_ids: number[];
+};
+
+export type RecurringPatternReview = {
+  pattern: PotentialRecurringSpending;
+  status: "approved" | "dismissed" | "stopped" | "pending";
+  updated_at: string;
 };
 
 export type UnusualCategorySpending = {
@@ -119,6 +150,7 @@ export type DashboardExpenses = {
   behavior_totals: Record<string, string>;
   category_comparisons: DashboardComparison[];
   potential_recurring_spending: PotentialRecurringSpending[];
+  recurring_pattern_reviews?: RecurringPatternReview[];
   unusual_category_spending: UnusualCategorySpending[];
   currency: string;
 };

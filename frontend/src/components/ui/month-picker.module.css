@@ -1,0 +1,25 @@
+.field{min-width:0;display:grid;gap:8px}
+.field>label{font-size:13px;color:var(--muted-foreground)}
+.control{display:flex;align-items:center;width:100%;min-width:0;padding:4px;border:1px solid var(--border);border-radius:12px;background:var(--card);color:var(--foreground)}
+.control button,.popup button{font:inherit;cursor:pointer;border:0}
+.control .trigger{display:flex;align-items:center;justify-content:center;gap:10px;flex:1;min-width:0;min-height:38px;padding:0 10px;border-radius:7px;background:transparent;color:inherit;font-size:14px;font-weight:500;white-space:nowrap}
+.arrow,.icon{display:grid;place-items:center;flex-shrink:0;width:32px;height:38px;border-radius:7px;background:transparent;color:var(--muted-foreground)}
+.control button:hover:not(:disabled),.icon:hover:not(:disabled){background:var(--muted);color:var(--foreground)}
+.control button:focus-visible,.popup button:focus-visible{outline:3px solid var(--ring);outline-offset:2px}
+.control button:disabled,.popup button:disabled{opacity:.35;cursor:default}
+.trigger[aria-invalid=true]{outline:2px solid var(--destructive)}
+.positioner{z-index:80}
+.popup{width:min(300px,calc(100vw - 24px));max-width:var(--available-width);max-height:var(--available-height);overflow-y:auto;overscroll-behavior:contain;padding:14px;border:1px solid var(--border);border-radius:14px;background:var(--popover);color:var(--popover-foreground);box-shadow:0 12px 40px #0004;outline:none}
+.heading{display:flex;align-items:center;justify-content:space-between;gap:8px;padding-bottom:6px;border-bottom:1px solid var(--border)}
+.heading h2{font-size:14px;font-weight:500;margin:0;color:var(--muted-foreground)}
+.heading .icon{width:30px;height:30px}
+.year{display:flex;align-items:center;justify-content:space-between;margin:8px 0}
+.year strong{font-size:18px;font-variant-numeric:tabular-nums}
+.months{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}
+.months button{min-height:42px;padding:7px 3px;background:transparent;color:inherit;border-radius:8px;font-size:13px}
+.months button:hover:not(:disabled){background:var(--muted)}
+.months button[aria-pressed=true]{background:var(--primary);color:var(--primary-foreground);font-weight:600}
+.months button[aria-pressed=true]:hover{background:var(--primary);filter:brightness(.95)}
+.footer{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border)}
+.footer button{min-height:36px;padding:4px 7px;border-radius:7px;background:transparent;color:var(--foreground);font-size:12px}
+.footer button:hover:not(:disabled){background:var(--muted)}
