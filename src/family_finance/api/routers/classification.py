@@ -311,7 +311,7 @@ def save_override(
             proposed = service.preview_override(transaction_id, fields)
             if any(issue.code == "INVALID_CLASS_SIGN" for issue in proposed.issues):
                 raise ApiError(422, "CLASSIFICATION_DIRECTION_CONFLICT", "הסכום לחישוב אינו מתאים לסיווג שנבחר. יש לתקן את כיוון הסכום לפני השמירה.")
-            result = service.save_override(transaction_id, **fields, reason=body.reason)
+            result = service.save_override(transaction_id, override=fields, reason=body.reason)
             new_version = _override_version(service, transaction_id)
             record_actor_audit(
                 session,

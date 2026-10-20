@@ -30,6 +30,7 @@ class OverrideBody(BaseModel):
             name: getattr(self, name)
             for name in ("economic_class", "analysis_category", "expense_behavior", "effective_amount")
             if getattr(self, name) is not None
+            or (name == "analysis_category" and name in self.model_fields_set)
         }
 
     @field_validator("analysis_category")
@@ -69,6 +70,13 @@ class RuleFields(BaseModel):
     analysis_category: str | None = Field(default=None, max_length=200)
     expense_behavior: ExpenseBehavior | None = None
     reason: str = Field(default="Saved from classification review", max_length=500)
+
+    @field_validator("economic_class")
+    @classmethod
+    def require_transaction_review(cls, value: EconomicClass) -> EconomicClass:
+        if value == EconomicClass.NO_FINANCIAL_EFFECT:
+            raise ValueError("no_financial_effect requires a transaction-specific review")
+        return value
 
     @field_validator("account_kind")
     @classmethod

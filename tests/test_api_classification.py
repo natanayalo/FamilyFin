@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from decimal import Decimal
 
+import pytest
 from sqlalchemy import select
 
 from family_finance.dashboard import DashboardService
@@ -438,3 +439,79 @@ def test_zero_amount_can_be_reviewed_without_financial_effect_and_undone(tmp_pat
         with database.session() as session:
             events = session.scalars(select(ActorAuditEventRow)).all()
         assert {event.event_type for event in events} >= {"classification.override_saved", "classification.override_cleared"}
+
+
+@pytest.mark.parametrize("rule_category", [None, "Rule default"])
+def test_explicit_null_clears_only_category_and_restores_underlying_default(tmp_path, rule_category):
+    _, _, _, app = make_api(tmp_path)
+    with ApiTestClient(app, base_url=ORIGIN) as client:
+        headers = {"Origin": ORIGIN, "X-CSRF-Token": _sign_in(client)}
+        _import_rows(client)
+        classifier = app.state.services.classification_service
+        if rule_category:
+            classifier.create_rule(account_kind="bank", direction="debit", source_category="food", source_movement_type="purchase", currency="ILS", economic_class="consumption", analysis_category=rule_category)
+        classifier.save_override(1, economic_class="consumption", analysis_category="Groceries", expense_behavior="fixed")
+        item = next(item for item in client.get("/api/v1/classification/review-queue", params={"include_resolved": True}).json()["data"] if item["transaction_id"] == 1)
+        path = "/api/v1/classification/transactions/1/override"
+        preconditions = {key: item[key] for key in ("expected_override_version", "expected_classification_state")}
+        # Omission preserves the previous category decision.
+        omitted = client.post(path, headers=headers, json={**preconditions, "expense_behavior": "variable"})
+        assert omitted.status_code == 200
+        data = omitted.json()["data"]
+        assert data["result"]["analysis_category"] == "Groceries"
+        preview = classifier.preview_override(1, {"analysis_category": None})
+        assert preview.analysis_category == (rule_category or "food")
+        assert classifier.saved_override(1).analysis_category == "Groceries"
+        # A category-only explicit null is a valid decision and appends a tombstone.
+        cleared = client.post(path, headers=headers, json={"expected_override_version": data["override_version"], "expected_classification_state": data["expected_classification_state"], "analysis_category": None})
+        assert cleared.status_code == 200, cleared.text
+        result = cleared.json()["data"]["result"]
+        assert result["analysis_category"] == (rule_category or "food")
+        assert result["economic_class"] == "consumption"
+        assert result["expense_behavior"] == "variable"
+        category = next(row for row in classifier.repository.latest_overrides(1) if row["field_name"] == "analysis_category")
+        assert category["value"] is None
+        assert classifier.saved_override(1).analysis_category is None
+        # The old screen cannot replay a clear over a newer decision.
+        assert client.post(path, headers=headers, json={**preconditions, "analysis_category": None}).status_code == 409
+
+
+def test_zero_review_rules_are_rejected_and_legacy_rules_cannot_review_future_imports(tmp_path):
+    _, database, _, app = make_api(tmp_path)
+    with ApiTestClient(app, base_url=ORIGIN) as client:
+        headers = {"Origin": ORIGIN, "X-CSRF-Token": _sign_in(client)}
+        service = app.state.services
+        def import_zero(day):
+            payload = make_workbook([[f"{day}/09/2026", 0, f"Synthetic waived fee {day}", f"{day}/09/2026", "fee", "שונות", "ILS", "ILS", -17.9]])
+            preview = service.preview_import(payload)
+            service.commit_import(payload, preview.preview_token, f"fee-{day}.xlsx")
+        import_zero("15")
+        item = client.get("/api/v1/classification/review-queue").json()["data"][0]
+        fields = {"account_kind": item["account_kind"], "direction": "zero", "source_category": item["source_category"], "source_movement_type": item["source_movement_type"], "currency": "ILS", "economic_class": "no_financial_effect"}
+        body = {**fields, "expected_current_rule_id": None}
+        assert client.post("/api/v1/classification/rules", headers=headers, json=body).status_code == 422
+        assert client.post("/api/v1/classification/rules/previews", headers=headers, json=fields).status_code == 422
+        classifier = service.classification_service
+        with pytest.raises(ValueError, match="transaction-specific"):
+            classifier.create_rule(fields)
+        with pytest.raises(ValueError, match="transaction-specific"):
+            classifier.preview_rule(fields)
+        # Simulate a persisted rule from before this restriction.
+        legacy = classifier.repository.save_rule(classifier._rule_model(fields))
+        import_zero("16")
+        queue = client.get("/api/v1/classification/review-queue").json()["data"]
+        assert len(queue) == 2
+        for item in queue:
+            result = item["effective_classification"]
+            assert result["economic_class"] == "unclassified"
+            assert "ZERO_AMOUNT_WITH_ORIGINAL_VALUE" in {issue["code"] for issue in result["issues"]}
+            assert item["saved_override"] is None
+        metrics = DashboardService(database).metrics.calculate_monthly_metrics("2026-09")
+        assert metrics.unclassified_transaction_count == 2
+        assert not metrics.completeness.classification_complete
+        # Transaction-specific review remains available; legacy rules can be disabled.
+        item = queue[0]
+        reviewed = client.post(f"/api/v1/classification/transactions/{item['transaction_id']}/override", headers=headers, json={"expected_override_version": item["expected_override_version"], "expected_classification_state": item["expected_classification_state"], "economic_class": "no_financial_effect"})
+        assert reviewed.status_code == 200
+        assert len(client.get("/api/v1/classification/review-queue").json()["data"]) == 1
+        assert classifier.disable_rule(legacy.id).tombstone

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ClassificationFeature } from "@/features/classification/ClassificationFeature";
 
@@ -365,4 +365,43 @@ it("keeps secondary tools collapsed and opens only the selected transaction edit
   expect(edit[0]).toHaveAttribute("aria-expanded", "false");
   fireEvent.click(screen.getByText("מסננים נוספים", { exact: true }));
   expect(screen.getByLabelText("קוד בדיקה")).toBeVisible();
+});
+
+
+it("offers zero-value review only in the transaction editor, not reusable rules", async () => {
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL) => {
+    const url = String(input);
+    if (url.includes("/classification/coverage")) return response(coverage);
+    if (url.includes("/classification/review-queue")) return response([queueItem]);
+    return response([]);
+  }));
+  render(<ClassificationFeature />);
+  fireEvent.click(await screen.findByRole("button", { name: "עריכת סיווג" }));
+  const transactionClass = screen.getByLabelText("סיווג כלכלי", { selector: "#class-1" });
+  expect(within(transactionClass).getByRole("option", { name: "נבדק - ללא השפעה כספית" })).toBeInTheDocument();
+  fireEvent.click(screen.getByText("כללי סיווג חוזרים", { exact: true }));
+  const ruleClass = screen.getByLabelText("סיווג כלכלי", { selector: "#rule-class" });
+  expect(within(ruleClass).queryByRole("option", { name: "נבדק - ללא השפעה כספית" })).not.toBeInTheDocument();
+});
+
+it("submits an explicit null when clearing a saved category", async () => {
+  const item = { ...queueItem, saved_override: { economic_class: "consumption", analysis_category: "Groceries", expense_behavior: "unknown" }, effective_classification: { ...queueItem.effective_classification, analysis_category: "Groceries", source: "override" } };
+  let submitted: Record<string, unknown> | undefined;
+  vi.stubGlobal("fetch", vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input);
+    if (url.includes("/classification/coverage")) return response(coverage);
+    if (url.includes("/classification/review-queue")) return response([item]);
+    if (url.includes("/transactions/1/override") && init?.method === "POST") {
+      submitted = JSON.parse(String(init.body));
+      return response({ result: { ...item.effective_classification, analysis_category: "food" }, override_version: 15, expected_classification_state: "b".repeat(64) });
+    }
+    return response([]);
+  }));
+  render(<ClassificationFeature />);
+  fireEvent.click(await screen.findByRole("button", { name: "עריכת סיווג" }));
+  const category = screen.getByLabelText("קטגוריית ניתוח", { selector: "#category-1" });
+  expect(category).toHaveValue("Groceries");
+  fireEvent.change(category, { target: { value: "" } });
+  fireEvent.click(screen.getByRole("button", { name: "שמירת תיקון" }));
+  await waitFor(() => expect(submitted).toMatchObject({ analysis_category: null, economic_class: "consumption" }));
 });

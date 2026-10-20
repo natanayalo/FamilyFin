@@ -25,6 +25,7 @@ from family_finance.persistence.repositories import FinancialRepository
 
 CLASSIFICATION_POLICY_VERSION = "classification-v1"
 _SPACE_RE = re.compile(r"\s+")
+_UNSET = object()
 
 
 def _text(value: Any) -> str:
@@ -161,9 +162,11 @@ class ClassificationService:
             effective_override.pop("effective_amount")
             issues.append(DataQualityIssue(code="STALE_AMOUNT_CORRECTION", message="The imported amounts changed after the correction. Confirm a new amount decision.", severity="error"))
         if proposed_overrides:
-            effective_override.update({
-                field: {"value": value, "id": 0} for field, value in proposed_overrides.items()
-            })
+            for field, value in proposed_overrides.items():
+                if value is None:
+                    effective_override.pop(field, None)
+                else:
+                    effective_override[field] = {"value": value, "id": 0}
         amount = Decimal(str(effective_override.get("effective_amount", {}).get("value", imported_amount)))
         direction = _direction(amount)
         rule = self.repository.latest_rule(
@@ -183,6 +186,7 @@ class ClassificationService:
             rule
             and int(rule.get("is_active", 0))
             and not int(rule.get("is_tombstone", 0))
+            and rule.get("economic_class") != EconomicClass.NO_FINANCIAL_EFFECT.value
         )
         if active_rule:
             base_class = _enum_or(
@@ -624,7 +628,7 @@ class ClassificationService:
         override: ClassificationOverride | dict[str, Any] | None = None,
         *,
         economic_class: EconomicClass | str | None = None,
-        analysis_category: str | None = None,
+        analysis_category: str | None | object = _UNSET,
         expense_behavior: ExpenseBehavior | str | None = None,
         effective_amount: Decimal | str | None = None,
         reason: str = "",
@@ -633,7 +637,7 @@ class ClassificationService:
             override = {
                 "transaction_id": transaction_id,
                 "economic_class": economic_class,
-                "analysis_category": analysis_category,
+                **({"analysis_category": analysis_category} if analysis_category is not _UNSET else {}),
                 "expense_behavior": expense_behavior,
                 "effective_amount": effective_amount,
                 "reason": reason,
@@ -648,7 +652,7 @@ class ClassificationService:
             if any(issue.code == "INVALID_CLASS_SIGN" for issue in proposed.issues):
                 raise ValueError("The corrected amount conflicts with the classification")
         serialized = {
-            field: (value.value if hasattr(value, "value") else str(value))
+            field: (None if value is None else value.value if hasattr(value, "value") else str(value))
             for field, value in values.items()
         }
         if "effective_amount" in values:
@@ -709,6 +713,7 @@ class ClassificationService:
         **values: Any,
     ) -> dict[str, Any]:
         parsed = self._rule_model(rule if rule is not None else values)
+        self._validate_rule_decision(parsed)
         rows = self.repository.accepted_transactions(
             currency=parsed.currency,
         )
@@ -728,7 +733,9 @@ class ClassificationService:
         rule: ClassificationRule | dict[str, Any] | None = None,
         **values: Any,
     ) -> ClassificationRule:
-        saved = self.repository.save_rule(self._rule_model(rule if rule is not None else values))
+        parsed = self._rule_model(rule if rule is not None else values)
+        self._validate_rule_decision(parsed)
+        saved = self.repository.save_rule(parsed)
         self._row_cache.clear()
         return saved
 
@@ -798,6 +805,11 @@ class ClassificationService:
     def list_rules(self) -> list[dict[str, Any]]:
         return self.repository.all_rules()
 
+    @staticmethod
+    def _validate_rule_decision(rule: ClassificationRule) -> None:
+        if rule.economic_class == EconomicClass.NO_FINANCIAL_EFFECT:
+            raise ValueError("no_financial_effect requires a transaction-specific review")
+
     def _rule_model(self, value: ClassificationRule | dict[str, Any]) -> ClassificationRule:
         if isinstance(value, ClassificationRule):
             return value
@@ -839,13 +851,13 @@ class ClassificationService:
         override: ClassificationOverride | dict[str, Any],
     ) -> dict[str, Any]:
         if isinstance(override, ClassificationOverride):
-            payload = override.model_dump()
+            payload = override.model_dump(exclude_unset=True)
         else:
             payload = dict(override)
         values = {
             field: payload[field]
             for field in ("economic_class", "analysis_category", "expense_behavior", "effective_amount")
-            if field in payload and payload[field] is not None
+            if field in payload and (payload[field] is not None or field == "analysis_category")
         }
         if "economic_class" in values:
             values["economic_class"] = EconomicClass(values["economic_class"])

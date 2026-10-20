@@ -12,6 +12,7 @@ from family_finance.api.app import ApiError, _envelope, authenticated_router
 from family_finance.api.audit import record_actor_audit
 from family_finance.api.schemas.insights import RecurringPatternReviewBody
 from family_finance.api.schemas.operations import InsightPreferencesBody
+from family_finance.insights import StaleRecurringReviewError
 from family_finance.persistence.models import MonthlySummaryRevisionRow
 
 router = authenticated_router(prefix="/insights")
@@ -51,6 +52,8 @@ def review_recurring_pattern(pattern_id: str, body: RecurringPatternReviewBody, 
                 event_type=f"insights.recurring.{body.status}", target_type="recurring_pattern",
                 request_id=request.state.request_id,
             )
+    except StaleRecurringReviewError as exc:
+        raise ApiError(409, "STALE_RECURRING_REVIEW", "The recurring review changed. Reload before saving.") from exc
     except LookupError as exc:
         raise ApiError(404, "PATTERN_NOT_FOUND", "The recurring pattern is no longer available") from exc
     except ValueError as exc:

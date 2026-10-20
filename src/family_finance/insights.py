@@ -6,7 +6,7 @@ import hashlib
 import json
 import re
 from collections import defaultdict
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 from statistics import median
@@ -40,6 +40,11 @@ from family_finance.persistence.models import (
     RecurringPatternReviewRow,
 )
 from family_finance.persistence.repositories import FinancialRepository
+
+
+class StaleRecurringReviewError(ValueError):
+    """A household decision changed after the client loaded it."""
+
 
 _SPACE_RE = re.compile(r"\s+")
 
@@ -629,6 +634,7 @@ class InsightsService:
     def review_recurring_pattern(
         self, pattern_id: str, *, status: Literal["approved", "dismissed", "stopped", "pending"],
         start_month: date, end_month: date, currency: str, actor_id: str,
+        expected_updated_at: str | None,
     ) -> RecurringPatternReview:
         # Identity excludes the selected range, amounts and transaction IDs, so
         # decisions survive new imports and different historical windows.
@@ -636,6 +642,8 @@ class InsightsService:
             row = session.get(RecurringPatternReviewRow, pattern_id)
             if row is not None and row.currency != currency:
                 raise LookupError("Recurring pattern not found")
+            if (row.updated_at if row is not None else None) != expected_updated_at:
+                raise StaleRecurringReviewError("The recurring review changed; reload before saving")
             if status == "stopped" and (row is None or row.status not in {"approved", "stopped"}):
                 raise ValueError("Only approved patterns can stop being tracked")
             detected = next((item for item in self.potential_recurring_spending(
@@ -645,6 +653,8 @@ class InsightsService:
                 raise LookupError("Recurring pattern not found")
             pattern = detected or PotentialRecurringSpending.model_validate_json(row.pattern_json)
             now = utc_now()
+            if row is not None and datetime.fromisoformat(now) <= datetime.fromisoformat(row.updated_at):
+                now = (datetime.fromisoformat(row.updated_at) + timedelta(microseconds=1)).isoformat()
             if row is None:
                 row = RecurringPatternReviewRow(
                     pattern_id=pattern_id, currency=currency, created_at=now,

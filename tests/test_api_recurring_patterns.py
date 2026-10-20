@@ -50,9 +50,11 @@ def test_recurring_decisions_persist_across_ranges_and_household_logins(tmp_path
         # new months join or leave the detector's window.
         narrower = report(client, {**SCOPE, "start_month": "2026-07-01"})
         assert narrower["potential_recurring_spending"][0]["pattern_id"] == pattern_id
+        expected_updated_at = None
         for status in ("approved", "approved", "stopped", "pending", "dismissed", "pending", "approved"):
-            response = client.put(path, json={**SCOPE, "status": status}, headers=headers)
+            response = client.put(path, json={**SCOPE, "status": status, "expected_updated_at": expected_updated_at}, headers=headers)
             assert response.status_code == 200, response.text
+            expected_updated_at = response.json()["data"]["updated_at"]
             assert response.headers["cache-control"] == "private, no-store"
             assert response.json()["data"]["status"] == status
         after = report(client)
@@ -74,7 +76,7 @@ def test_recurring_decisions_persist_across_ranges_and_household_logins(tmp_path
             assert len(events) == 7
         # A household member can undo a saved decision outside its detection
         # window without inventing a new pattern or reclassifying transactions.
-        response = client.put(path, json={**SCOPE, "start_month": "2026-09-01", "status": "pending"}, headers=headers)
+        response = client.put(path, json={**SCOPE, "start_month": "2026-09-01", "status": "pending", "expected_updated_at": expected_updated_at}, headers=headers)
         assert response.status_code == 200
 
 
@@ -82,17 +84,17 @@ def test_recurring_review_requires_auth_csrf_real_pattern_and_valid_state(tmp_pa
     database, app = seed(tmp_path)
     with ApiTestClient(app, base_url="https://testserver") as client:
         path = "/api/v1/insights/recurring-patterns/unknown"
-        assert client.put(path, json={**SCOPE, "status": "approved"}, headers={"Origin": "https://testserver"}).status_code == 401
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "approved"}, headers={"Origin": "https://testserver"}).status_code == 401
         headers = sign_in(client)
         pattern_id = report(client)["potential_recurring_spending"][0]["pattern_id"]
         path = f"/api/v1/insights/recurring-patterns/{pattern_id}"
-        assert client.put(path, json={**SCOPE, "status": "approved"}, headers={"Origin": "https://testserver"}).status_code == 403
-        assert client.put(path, json={**SCOPE, "status": "stopped"}, headers=headers).status_code == 409
-        assert client.put(path, json={**SCOPE, "status": "bogus"}, headers=headers).status_code == 422
-        assert client.put(path, json={**SCOPE, "status": "approved", "median_amount": "1"}, headers=headers).status_code == 422
-        assert client.put(path, json={**SCOPE, "status": "approved", "start_month": "2027-01-01"}, headers=headers).status_code == 422
-        assert client.put(path, json={**SCOPE, "status": "approved", "currency": "USD"}, headers=headers).status_code == 404
-        assert client.put(path, json={**SCOPE, "status": "approved", "start_month": "2026-09-01"}, headers=headers).status_code == 404
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "approved"}, headers={"Origin": "https://testserver"}).status_code == 403
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "stopped"}, headers=headers).status_code == 409
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "bogus"}, headers=headers).status_code == 422
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "approved", "median_amount": "1"}, headers=headers).status_code == 422
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "approved", "start_month": "2027-01-01"}, headers=headers).status_code == 422
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "approved", "currency": "USD"}, headers=headers).status_code == 404
+        assert client.put(path, json={**SCOPE, "expected_updated_at": None, "status": "approved", "start_month": "2026-09-01"}, headers=headers).status_code == 404
         assert report(client)["recurring_pattern_reviews"] == []
         with database.session() as session:
             assert session.scalars(select(RecurringPatternReviewRow)).all() == []
@@ -108,5 +110,49 @@ def test_recurring_review_rolls_back_if_actor_audit_fails(tmp_path, monkeypatch)
         monkeypatch.setattr("family_finance.api.routers.insights.record_actor_audit", fail_audit)
         with pytest.raises(RuntimeError, match="audit unavailable"):
             client.put(f"/api/v1/insights/recurring-patterns/{pattern_id}",
-                       json={**SCOPE, "status": "approved"}, headers=headers)
+                       json={**SCOPE, "expected_updated_at": None, "status": "approved"}, headers=headers)
         assert report(client)["recurring_pattern_reviews"] == []
+
+
+@pytest.mark.parametrize("existing", [False, True])
+def test_stale_recurring_decision_is_rejected_across_household_sessions(tmp_path, existing):
+    database, app = seed(tmp_path)
+    with ApiTestClient(app, base_url="https://testserver") as first, ApiTestClient(app, base_url="https://testserver") as second:
+        first_headers = sign_in(first)
+        second_headers = sign_in(second, "lee", "Long-test-password-Two!")
+        pattern_id = report(first)["potential_recurring_spending"][0]["pattern_id"]
+        path = f"/api/v1/insights/recurring-patterns/{pattern_id}"
+        expected = None
+        if existing:
+            saved = first.put(path, headers=first_headers, json={**SCOPE, "status": "pending", "expected_updated_at": None})
+            assert saved.status_code == 200
+            expected = saved.json()["data"]["updated_at"]
+        assert report(first)["recurring_pattern_reviews"] == report(second)["recurring_pattern_reviews"]
+        approved = first.put(path, headers=first_headers, json={**SCOPE, "status": "approved", "expected_updated_at": expected})
+        assert approved.status_code == 200
+        stale = second.put(path, headers=second_headers, json={**SCOPE, "status": "dismissed", "expected_updated_at": expected})
+        assert stale.status_code == 409
+        assert stale.json()["error"]["code"] == "STALE_RECURRING_REVIEW"
+        assert report(second)["recurring_pattern_reviews"][0]["status"] == "approved"
+        with database.session() as session:
+            events = session.scalars(select(ActorAuditEventRow).where(ActorAuditEventRow.event_type.like("insights.recurring.%"))).all()
+            assert len(events) == (2 if existing else 1)
+        # Reloading supplies the new precondition and permits an intentional change.
+        current = report(second)["recurring_pattern_reviews"][0]
+        dismissed = second.put(path, headers=second_headers, json={**SCOPE, "status": "dismissed", "expected_updated_at": current["updated_at"]})
+        assert dismissed.status_code == 200
+
+
+def test_recurring_precondition_is_required_and_advances_with_a_fixed_clock(tmp_path, monkeypatch):
+    _, app = seed(tmp_path)
+    monkeypatch.setattr("family_finance.insights.utc_now", lambda: "2026-10-20T12:00:00+00:00")
+    with ApiTestClient(app, base_url="https://testserver") as client:
+        headers = sign_in(client)
+        pattern_id = report(client)["potential_recurring_spending"][0]["pattern_id"]
+        path = f"/api/v1/insights/recurring-patterns/{pattern_id}"
+        assert client.put(path, headers=headers, json={**SCOPE, "status": "approved"}).status_code == 422
+        first = client.put(path, headers=headers, json={**SCOPE, "status": "approved", "expected_updated_at": None}).json()["data"]
+        second = client.put(path, headers=headers, json={**SCOPE, "status": "pending", "expected_updated_at": first["updated_at"]}).json()["data"]
+        assert second["updated_at"] != first["updated_at"]
+        stale = client.put(path, headers=headers, json={**SCOPE, "status": "dismissed", "expected_updated_at": first["updated_at"]})
+        assert stale.status_code == 409

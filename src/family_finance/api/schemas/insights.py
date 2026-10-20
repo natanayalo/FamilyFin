@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 class RecurringPatternReviewBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    expected_updated_at: str | None = Field(..., min_length=1, max_length=64)
     status: Literal["approved", "dismissed", "stopped", "pending"]
     start_month: date
     end_month: date

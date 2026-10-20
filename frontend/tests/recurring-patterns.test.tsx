@@ -29,12 +29,13 @@ describe("recurring pattern decisions", () => {
     await waitFor(() => expect(screen.getByRole("status")).toHaveFocus());
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/insights/recurring-patterns/pattern-fixture");
     expect(fetchMock.mock.calls[0][1]?.method).toBe("PUT");
-    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ ...filters, status: "approved" });
+    expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toEqual({ ...filters, status: "approved", expected_updated_at: null });
     expect(screen.queryByRole("button", { name: "אישור כהוצאה חוזרת" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "הוצאות מאושרות (1)" }));
     expect(screen.getByText("הוצאה חוזרת מאושרת")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "הפסקת מעקב" }));
     await screen.findByText("המעקב הופסק. ההחלטה נשמרה בהחלטות קודמות.");
+    expect(JSON.parse(String(fetchMock.mock.calls[1][1]?.body))).toMatchObject({ expected_updated_at: saved("approved").updated_at });
     fireEvent.click(screen.getByRole("button", { name: "החלטות קודמות (1)" }));
     expect(screen.getByText("המעקב הופסק")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "החזרה לבדיקה" }));
@@ -79,4 +80,19 @@ describe("recurring pattern decisions", () => {
     expect(screen.getByRole("button", { name: "לבדיקה (1)" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("הוצאה חוזרת מאושרת")).not.toBeInTheDocument();
   });
+});
+
+
+it("preserves the displayed decision after a stale write and requests a reload", async () => {
+  const fetchMock = vi.fn<typeof fetch>(async () => new Response(JSON.stringify({ error: { code: "STALE_RECURRING_REVIEW", message: "Reload before saving" } }), { status: 409 }));
+  vi.stubGlobal("fetch", fetchMock);
+  const onSaved = vi.fn();
+  render(<RecurringPatterns data={data([saved("approved")])} onSaved={onSaved} />);
+  fireEvent.click(screen.getByRole("button", { name: "הוצאות מאושרות (1)" }));
+  fireEvent.click(screen.getByRole("button", { name: "הפסקת מעקב" }));
+  expect(await screen.findByRole("alert")).toHaveTextContent("ההחלטה השתנתה מאז שהעמוד נטען");
+  expect(JSON.parse(String(fetchMock.mock.calls[0][1]?.body))).toMatchObject({ status: "stopped", expected_updated_at: saved("approved").updated_at });
+  expect(screen.getByText("הוצאה חוזרת מאושרת")).toBeVisible();
+  expect(onSaved).not.toHaveBeenCalled();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });

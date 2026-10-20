@@ -257,9 +257,9 @@ class ClassificationRule(BaseModel):
 class ClassificationOverride(BaseModel):
     """Transaction-specific append-only decisions.
 
-    ``None`` means no value was supplied when creating an override.  A clear is
-    represented in persistence by a separate tombstone row and is exposed by
-    the service's ``clear_override`` method.
+    Omitted fields preserve saved decisions. Explicit ``analysis_category=None``
+    clears that category decision through an append-only tombstone. Other fields
+    can be cleared through the service's ``clear_override`` method.
     """
 
     model_config = ConfigDict(extra="forbid")

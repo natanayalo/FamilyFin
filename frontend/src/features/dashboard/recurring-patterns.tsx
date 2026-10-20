@@ -40,7 +40,7 @@ export function RecurringPatterns({ data, onSaved }: { data: DashboardExpenses; 
     try {
       const response = await apiRequest<RecurringPatternReview>(`/insights/recurring-patterns/${pattern.pattern_id}`, {
         method: "PUT",
-        body: JSON.stringify({ ...data.filters, status }),
+        body: JSON.stringify({ ...data.filters, status, expected_updated_at: decisions.get(pattern.pattern_id)?.updated_at ?? null }),
       });
       // Finish server writes when navigating away. Update the parent report's
       // cache too, so changing the report month cannot resurrect an old suggestion.
@@ -55,7 +55,9 @@ export function RecurringPatterns({ data, onSaved }: { data: DashboardExpenses; 
       };
       setNotice(messages[status]);
     } catch (cause) {
-      if (mounted.current) setError(cause instanceof ApiRequestError && cause.status === 404
+      if (mounted.current) setError(cause instanceof ApiRequestError && cause.apiError?.code === "STALE_RECURRING_REVIEW"
+        ? "ההחלטה השתנתה מאז שהעמוד נטען. רעננו את העמוד ובדקו את ההחלטה העדכנית לפני שמירה."
+        : cause instanceof ApiRequestError && cause.status === 404
         ? "הדפוס כבר אינו זמין לבדיקה. רעננו את העמוד כדי לעדכן את הרשימה."
         : "לא התקבל אישור לשמירת ההחלטה. נסו שוב או רעננו את העמוד.");
     } finally {

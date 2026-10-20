@@ -214,7 +214,13 @@ DELETE without `fields` clears the four public decision fields plus that interna
 fingerprint using append-only tombstones. Undo restores the imported amount and
 reclassifies; optimistic preconditions, authentication and CSRF remain required.
 
+Explicit `analysis_category: null` clears the saved category override with an
+append-only tombstone and restores the source/reusable-rule default. Omitting the
+field preserves the saved override; this also applies to preview behavior.
+
 `economic_class` also accepts `no_financial_effect` for explicit zero-value review.
+This decision is transaction-specific: reusable-rule previews and writes reject it,
+and legacy reusable rules with this class are ignored during classification.
 Both `imported_amount` and effective `amount` must be zero; an amount override cannot
 turn a nonzero source row into an eligible zero decision. The result has
 `expense_behavior=not_applicable`, no financial contributors, and no unresolved
@@ -300,7 +306,12 @@ in the selected range. The UI uses current detection evidence when available and
 labels saved evidence when outside the range.
 
 `PUT /insights/recurring-patterns/{pattern_id}` accepts only `status`, `start_month`,
-`end_month` (ISO dates) and `currency` (three uppercase letters). Supported statuses:
+`end_month` (ISO dates), `currency` (three uppercase letters), and required
+`expected_updated_at` (the exact saved review timestamp, or explicit null when no
+review was loaded). The precondition is checked inside the write transaction;
+stale decisions return HTTP 409 `STALE_RECURRING_REVIEW` without changing the review
+or adding an audit event. Clients must reload before making a new decision.
+Supported statuses:
 `approved`, `dismissed`, `stopped`, `pending`. Only approved patterns may be stopped;
 `pending` reverses a decision. First-time decisions must match an actual detection
 in the submitted range. Existing decisions remain reversible outside that range.
