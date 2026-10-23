@@ -36,3 +36,8 @@ data/*.csv
 
 # Streamlit state
 .streamlit/secrets.toml
+
+# Private Windows deployment state, test evidence and image/build artifacts
+deploy/docker/.state/
+deploy/docker/reports/
+deploy/docker/*.log

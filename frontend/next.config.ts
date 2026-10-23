@@ -23,6 +23,9 @@ const contentSecurityPolicy = [
 ].join("; ");
 
 const nextConfig: NextConfig = {
+  // Docker's standalone server carries the complete compiled production config.
+  // The existing Linux npm start deployment keeps its original output mode.
+  output: process.env.FAMILY_FINANCE_DOCKER === "1" ? "standalone" : undefined,
   poweredByHeader: false,
   distDir: localDev ? ".next-local" : ".next",
   async rewrites() {
