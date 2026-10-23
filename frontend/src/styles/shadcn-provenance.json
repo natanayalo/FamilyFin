@@ -1,0 +1,8 @@
+{
+  "package": "shadcn",
+  "version": "4.21.0",
+  "source": "npm package tailwind.css",
+  "sha256": "bc7d83425702955b4cb67cb14ede9d603f9d912376d57a2d81d661094d2a782a",
+  "license": "../../licenses/shadcn-MIT.txt",
+  "purpose": "Exact stylesheet copy; omit unused generator/network tooling from builds"
+}

@@ -19,7 +19,7 @@ Use Ctrl-C or repository-root `./dev stop` to stop the local servers. See the
 [local runbook](../docs/local_development.md) for debugging, accounts, and data
 refresh. For frontend-only work:
 
-Use Node `22.22.2` (see the repository `.nvmrc`) and npm:
+Use Node `22.23.4` (see the repository `.nvmrc`) and npm:
 
 ```sh
 npm ci
@@ -55,3 +55,5 @@ bootstrap/recovery is host-local. Production supervision is documented in
 `docs/pwa/deployment.md`; static export is not configured.
 
 See [ATTRIBUTION.md](ATTRIBUTION.md) for the pinned MIT visual reference and notice. FamilyFin's theme, RTL copy, module navigation, privacy controls, and financial workflows are custom; no demo records or demo product routes are included.
+
+The shadcn 4.21.0 Tailwind stylesheet is vendored unchanged in `src/styles/shadcn.css`, with its hash and source in `src/styles/shadcn-provenance.json` and MIT license in `licenses/shadcn-MIT.txt`. The generator CLI is not installed. Review upstream CSS changes explicitly instead of adding its network/tooling dependency tree to every build.
