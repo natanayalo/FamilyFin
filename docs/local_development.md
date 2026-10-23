@@ -1,6 +1,6 @@
 # Local development and disconnected QA
 
-The native stack runs on macOS or Linux with Python 3.12 and Node **22.22.2**
+The native stack runs on macOS or Linux with Python 3.12 and Node **22.23.4**
 (see `.nvmrc`). The real PWA and API are available at
 **http://127.0.0.1:3000**. All listeners stay on loopback. This workflow needs
 no Tailscale, DNS, certificates, Docker, or Caddy.

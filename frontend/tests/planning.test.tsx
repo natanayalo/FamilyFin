@@ -214,9 +214,9 @@ describe("Planning feature presentation", () => {
     vi.mocked(getScenarios).mockResolvedValue({ data: [] });
     render(<PlanningPage />);
     fireEvent.click(await screen.findByRole("button", { name: "בניית התכנון הראשון" }));
-    expect(await screen.findByRole("textbox", { name: "שם התרחיש" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("textbox", { name: "שם התרחיש" })).toHaveFocus());
     fireEvent.click(screen.getByRole("button", { name: "ביטול וזריקת טיוטה" }));
-    expect(screen.getByRole("button", { name: "תרחיש חדש" })).toHaveFocus();
+    await waitFor(() => expect(screen.getByRole("button", { name: "תרחיש חדש" })).toHaveFocus());
   });
 
 });
