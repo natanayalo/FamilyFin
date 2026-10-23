@@ -17,7 +17,9 @@ and their listeners remain unchanged by this deployment change.
 | Transport/authentication | TLS proxy, same-origin auth/CSRF | Existing Tailscale HTTPS terminator, Caddy and unchanged app checks |
 | Secret custody | Protected host files | Runtime owner-only signing key, excluded from images/backup; operator-controlled external recovery identity |
 | Backups | Application snapshot, audit and verify | Same application services in bounded networkless maintenance containers; independent encrypted export required |
-| Recovery | Matching schema/release and reauthentication | New empty Docker volume/project, verification/audit, new signing key and old-session rejection |
+| Recovery | Matching schema/release and reauthentication | New empty volume; pre-copy key/link/special-file rejection, no-follow copy, staged verification/audit, incomplete-restore startup block, new signing key and old-session rejection |
+| Verification | Unit health/maintenance checks | Explicit runtime/management errors survive Python optimization; assertion-based lab imports reject optimized Python |
+| Snapshot growth | Operator retention policy | Read-only inventory and snapshot admission limits; no automatic deletion; review permanent retention/capacity policy before production |
 | Host encryption | Host policy | Separately verify system-volume encryption/recovery; Docker is not an encryption boundary |
 | Scheduled work | systemd timer | Explicitly approved least-privilege Windows task; signed-in/Docker/media availability must be tested |
 

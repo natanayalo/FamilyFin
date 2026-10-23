@@ -16,6 +16,12 @@ REPORTS = ROOT / "reports"
 PROJECTS = {"familyfin-m1-synthetic": 8090, "familyfin-m1-restore": 8091}
 
 
+def require(condition, message):
+    """Operational verification must remain active under Python optimization."""
+    if not condition:
+        raise RuntimeError(message)
+
+
 def run(*args, stdin=None, check=True):
     result = subprocess.run(list(args), input=stdin, text=True, encoding="utf-8", check=False,
                             capture_output=True)
@@ -128,50 +134,49 @@ def verify(project, *, origin="https://familyfin.test", host="familyfin.test"):
     items = [i for i in inspect_all() if (i["Config"].get("Labels") or {}).get("com.docker.compose.project") == project]
     services = {(i["Config"]["Labels"])["com.docker.compose.service"]: i for i in items
                 if (i["Config"]["Labels"]).get("com.docker.compose.oneoff", "False").lower() == "false"}
-    assert set(services) == {"api", "web", "caddy"}, "Expected three runtime services"
+    require(set(services) == {"api", "web", "caddy"}, "Expected three runtime services")
     environment = dict(value.split("=", 1) for value in services["api"]["Config"]["Env"] if "=" in value)
-    assert environment["FAMILY_FINANCE_API_PUBLIC_ORIGIN"] == origin
-    assert environment["FAMILY_FINANCE_API_TRUSTED_HOSTS"] == host + ",127.0.0.1"
-    assert not environment.get("FAMILY_FINANCE_LOCAL_DEV"), "Development mode forbidden"
+    require(environment["FAMILY_FINANCE_API_PUBLIC_ORIGIN"] == origin, "API origin mismatch")
+    require(environment["FAMILY_FINANCE_API_TRUSTED_HOSTS"] == host + ",127.0.0.1", "Trusted host mismatch")
+    require(not environment.get("FAMILY_FINANCE_LOCAL_DEV"), "Development mode forbidden")
     financial = f"{project}_financial"
     for name, item in services.items():
         hc = item["HostConfig"]
-        assert item["State"]["Health"]["Status"] == "healthy", name + " unhealthy"
-        assert item["Config"]["User"] == {"api":"10001:10001", "web":"10002:10002", "caddy":"10003:10003"}[name]
-        assert hc["ReadonlyRootfs"] and not hc["Privileged"] and hc["CapDrop"] == ["ALL"]
-        assert "no-new-privileges:true" in hc["SecurityOpt"]
-        assert hc["Memory"] > 0 and hc["NanoCpus"] > 0 and hc["PidsLimit"] > 0
-        assert hc["RestartPolicy"]["Name"] == "unless-stopped"
-        assert all("docker.sock" not in m["Destination"] for m in item["Mounts"])
-        assert all(m["Type"] != "bind" for m in item["Mounts"]), "Unexpected host bind"
+        require(item["State"]["Health"]["Status"] == "healthy", name + " unhealthy")
+        require(item["Config"]["User"] == {"api":"10001:10001", "web":"10002:10002", "caddy":"10003:10003"}[name], name + " user mismatch")
+        require(hc["ReadonlyRootfs"] and not hc["Privileged"] and hc["CapDrop"] == ["ALL"], name + " filesystem/capability mismatch")
+        require("no-new-privileges:true" in hc["SecurityOpt"], name + " privilege guard missing")
+        require(hc["Memory"] > 0 and hc["NanoCpus"] > 0 and hc["PidsLimit"] > 0, name + " limits missing")
+        require(hc["RestartPolicy"]["Name"] == "unless-stopped", name + " restart policy mismatch")
+        require(all("docker.sock" not in m["Destination"] for m in item["Mounts"]), "Docker socket mount forbidden")
+        require(all(m["Type"] != "bind" for m in item["Mounts"]), "Unexpected host bind")
         bindings = hc.get("PortBindings") or {}
         if name == "caddy":
-            assert bindings == {"8080/tcp": [{"HostIp":"127.0.0.1", "HostPort":str(PROJECTS[project])}]}
+            require(bindings == {"8080/tcp": [{"HostIp":"127.0.0.1", "HostPort":str(PROJECTS[project])}]}, "Caddy binding mismatch")
         else:
-            assert not bindings
+            require(not bindings, name + " must not publish ports")
         mounts = [m.get("Name") for m in item["Mounts"] if m["Type"] == "volume"]
-        assert (financial in mounts) == (name == "api")
+        require((financial in mounts) == (name == "api"), "Financial volume isolation mismatch")
     for item in inspect_all():
         if item["Id"] != services["api"]["Id"]:
-            assert financial not in [m.get("Name") for m in item["Mounts"]], "Data shared outside API"
+            require(financial not in [m.get("Name") for m in item["Mounts"]], "Data shared outside API")
     network = json.loads(run("docker", "network", "inspect", f"{project}_private").stdout)[0]
-    assert network["Internal"]
-    assert set(network["Containers"]) == {i["Id"] for i in services.values()}
+    require(network["Internal"], "Private network must be internal")
+    require(set(network["Containers"]) == {i["Id"] for i in services.values()}, "Private network membership mismatch")
     edge = json.loads(run("docker", "network", "inspect", f"{project}_edge").stdout)[0]
-    assert set(edge["Containers"]) == {services["caddy"]["Id"]}
-    assert services["caddy"]["NetworkSettings"]["Ports"]["8080/tcp"] == [
-        {"HostIp":"127.0.0.1", "HostPort":str(PROJECTS[project])}]
+    require(set(edge["Containers"]) == {services["caddy"]["Id"]}, "Edge network membership mismatch")
+    require(services["caddy"]["NetworkSettings"]["Ports"]["8080/tcp"] == [
+        {"HostIp":"127.0.0.1", "HostPort":str(PROJECTS[project])}], "Published Caddy port mismatch")
     volume = json.loads(run("docker", "volume", "inspect", financial).stdout)[0]
-    assert volume["Driver"] == "local" and not volume.get("Options"), "Expected Linux-managed local volume"
+    require(volume["Driver"] == "local" and not volume.get("Options"), "Expected Linux-managed local volume")
     for path in ("/", "/api/v1/health", "/sw.js", "/manifest.webmanifest"):
         status, headers, _body = request(PROJECTS[project], path, origin=origin, host=host)
-        assert status == 200, path
-        assert headers["cache-control"] == "private, no-store", path
-        assert headers["strict-transport-security"] == "max-age=31536000"
-        assert "server" not in headers
-        assert "x-powered-by" not in headers
-        assert "content-security-policy" in headers
-    assert request(PROJECTS[project], "/api/v1/health", origin=origin, host="evil.example")[0] == 400
+        require(status == 200, "HTTP health failed: " + path)
+        require(headers["cache-control"] == "private, no-store", "Cache policy mismatch: " + path)
+        require(headers["strict-transport-security"] == "max-age=31536000", "HSTS mismatch")
+        require("server" not in headers and "x-powered-by" not in headers, "Unexpected server metadata")
+        require("content-security-policy" in headers, "CSP missing")
+    require(request(PROJECTS[project], "/api/v1/health", origin=origin, host="evil.example")[0] == 400, "Untrusted host accepted")
     return {"status":"PASS", "checks":"health, hardening, headers, exact ports, storage and network membership"}
 
 
@@ -222,7 +227,7 @@ def main():
     else:
         result = verify(args.project)
         if receipt.exists():
-            assert baseline_equal(json.loads(receipt.read_text(encoding="utf-8")), baseline()), "Unrelated service/Serve drift"
+            require(baseline_equal(json.loads(receipt.read_text(encoding="utf-8")), baseline()), "Unrelated service/Serve drift")
             result["unrelated_services_and_serve"] = "PASS"
         else:
             result["unrelated_services_and_serve"] = "UNVERIFIED: no pre-start baseline"

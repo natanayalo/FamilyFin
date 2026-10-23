@@ -4,6 +4,38 @@ This document contains shareable validation scope; private host receipts, detail
 scan exports, real network identifiers and key material are intentionally excluded.
 Never treat build success or a generic report as host-specific production approval.
 
+## Review cleanup — 24 October 2026
+
+- Restore now rejects signing keys, symlinks, hardlinks and special files before
+  writing the destination. A Linux descriptor-relative copy refuses link traversal;
+  copied bytes are application-verified in staging before publication. A failed
+  restore retains an incomplete marker that blocks API startup. Tests include a
+  deliberately altered, otherwise verified manifest and an outside-directory link.
+- Management/health verification uses explicit errors under optimized Python.
+  Acceptance harness imports refuse optimization so their assertions cannot be
+  removed while still producing a report. Lab config/evidence paths are explicit;
+  fixed topology/fixture requirements are documented separately from runtime tools.
+- The unused BitLocker-only export route is retired. Age remains the supported
+  Windows export. Snapshot inventory/admission guards and a manual retention
+  review procedure bound further growth without deleting retained data.
+- Locked Python suite: 328 passed, four documented skips, 40 subtests. Native
+  Windows safety tests: 53 passed. Lint passed. Actual age long-filename encrypted
+  round trips and clean application restores executed in the suite.
+- A separately tagged production API and fresh localhost stack/clean restore
+  passed all eight integration groups. All existing services and Serve were
+  preserved; only candidate containers/networks were removed. No image promotion,
+  task change, external-media writes, live endpoint or real-data activation.
+- The changed API was scanned: 44 HIGH OS findings and one UNKNOWN remain FAIL;
+  its Python/Node package sections had no findings. Web/Caddy were unchanged, and
+  their prior raw scans were reused by verified immutable image/config identity
+  and raw-report hash, explicitly recorded as reused rather than fresh scans.
+  Their unresolved findings remain FAIL too. No new security exception is implied.
+
+The new snapshot guard can refuse a preexisting full backup volume. Review its
+inventory and retention policy before adopting this candidate. Production key
+custody, physical/device acceptance and permanent cadence/retention/alert delivery
+remain separate gates. The prior frozen trial and its helpers were not updated.
+
 ## Candidate validation — 23 October 2026
 
 ### PR #22 recovery-review follow-up

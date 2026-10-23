@@ -4,6 +4,7 @@ Creates one uniquely named, temporary time-trigger probe with the same approved
 action. Removes that probe after testing. The approved daily task remains active.
 No logoff/reboot, media disconnection, drive-setting change or Serve mutation.
 """
+import argparse
 import copy
 import json
 import time
@@ -16,6 +17,9 @@ import mobile
 import portable_backup as backup
 import validate
 import validate_portable_backup as recovery
+from lab_profile import require_lab_python
+
+require_lab_python()
 
 TASK = "FamilyFin-M1-SyntheticBackup"
 
@@ -50,7 +54,9 @@ def run_task(name):
 
 
 def main():
-    config_path = backup.ROOT / ".state/portable-backup-synthetic-20261023/config.json"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True, type=Path)
+    config_path = parser.parse_args().config
     config = backup.read_config(config_path)
     if not config.get("synthetic") or config["project"] != mobile.PROJECT:
         raise ValueError("Only the approved synthetic task may be exercised")

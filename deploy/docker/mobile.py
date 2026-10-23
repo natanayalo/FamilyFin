@@ -19,12 +19,15 @@ from pathlib import Path
 
 import manage
 import validate
+from lab_profile import require_lab_python
+
+require_lab_python()
 
 PROJECT = "familyfin-m1-synthetic"
 PORT = 8090
 STATE = manage.STATE / "mobile-acceptance"
-REPORT = manage.REPORTS / "mobile-preparation-20261023"
-TAG = "mobile-20261023"
+REPORT = manage.REPORTS / "mobile-preparation"
+TAG = "mobile-reviewed"
 
 
 def private_hostname(serve):
@@ -103,9 +106,11 @@ def fixture():
 import sqlite3
 from pathlib import Path
 root=Path('/var/lib/familyfin')
-assert (root/'.synthetic-lab').read_text()=='Disposable FamilyFin M1 validation only'
+if (root/'.synthetic-lab').read_text()!='Disposable FamilyFin M1 validation only':
+    raise RuntimeError('Synthetic fixture marker mismatch')
 with sqlite3.connect(root/'family_finance.sqlite3') as db:
-    assert sorted(r[0] for r in db.execute('SELECT username FROM api_users'))==['qa-one','qa-two']
+    if sorted(r[0] for r in db.execute('SELECT username FROM api_users'))!=['qa-one','qa-two']:
+        raise RuntimeError('Synthetic fixture users mismatch')
 """)
     return current
 
@@ -255,7 +260,9 @@ def verify(receipt, *, reviewed_preservation=None):
     fixture()
     result = manage.verify(PROJECT, origin="https://"+hostname, host=hostname)
     serving = preserved(expected_preservation, preservation(), hostname, allow_trial=True)
-    expected_configs = json.loads((manage.REPORTS / "security-review-6/tested-configs.json").read_text())
+    expected_configs = json.loads((REPORT / "tested-configs.json").read_text())
+    if set(expected_configs) != {"api", "web", "caddy"}:
+        raise RuntimeError("Selected report lacks the reviewed image configuration identities")
     for item in manage.inspect_all():
         labels=item["Config"].get("Labels") or {}
         if labels.get("com.docker.compose.project")==PROJECT:
@@ -283,6 +290,9 @@ def prepare():
     fixture_state = fixture()
     manage.verify(PROJECT)
     images=json.loads((REPORT / "reviewed-images.json").read_text())
+    configs=json.loads((REPORT / "tested-configs.json").read_text())
+    if set(configs) != {"api", "web", "caddy"} or any(not re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in configs.values()):
+        raise RuntimeError("Select complete tested image-configuration evidence before preparation")
     check_images(images,"local")
     check_images(images,"security-review")
     for name,value in images.items():
@@ -352,9 +362,15 @@ def set_test_passwords(receipt):
 
 
 def main():
+    global REPORT, TAG
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action",choices=("prepare","verify","restore-lab","set-test-passwords"))
+    parser.add_argument("--report-name", default="mobile-preparation")
+    parser.add_argument("--image-tag", default="mobile-reviewed")
     args=parser.parse_args()
+    if not all(re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", value) for value in (args.report_name, args.image_tag)):
+        parser.error("Select explicit lowercase report and reviewed image names")
+    REPORT, TAG = manage.REPORTS / args.report_name, args.image_tag
     manage.engine()
     if args.action=="prepare":
         prepare()

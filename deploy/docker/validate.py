@@ -9,6 +9,7 @@ import secrets
 import socket
 from datetime import UTC, datetime
 
+from lab_profile import require_lab_python
 from manage import (
     PROJECTS,
     REPORTS,
@@ -23,6 +24,8 @@ from manage import (
     run,
     verify,
 )
+
+require_lab_python()
 
 PRIMARY = "familyfin-m1-synthetic"
 RESTORED = "familyfin-m1-restore"

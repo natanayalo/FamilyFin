@@ -34,3 +34,17 @@ Do not force-add receipts, private hostnames, key material, financial files, ima
 exports or host scan logs. Publish only separately reviewed summaries. Mobile,
 portable and host-recovery helpers are guarded synthetic POC workflows; their
 private receipts must be prepared on the target host, never copied from another PC.
+
+## Tool boundaries
+
+| Scope | Files and contract |
+| --- | --- |
+| Container runtime | Compose, Dockerfiles, Caddyfile, `runtime.py`, `operations.py`; no lab receipts required |
+| Windows backup core | `portable_backup.py`, `portable_stream.py`, media/task helpers, `backup_readiness.py`; explicit reviewed config, pinned image and independent key/media |
+| Local lab operations | `manage.py` and start/stop/verify/backup wrappers; fixed disposable projects and loopback ports, never a household installer |
+| Synthetic acceptance | `validate*.py`, `mobile.py`, `host_recovery.py`, `portable_setup.py`, `rollout_reviewed.py` and task registration; see [lab prerequisites](lab-workflows.md) |
+
+Runtime and management security checks use explicit failures and remain active
+with Python optimization. Synthetic acceptance harnesses retain test assertions
+and reject optimized Python at import, preventing incomplete tests from producing
+a PASS report. The retired BitLocker-only backup route is not supported; use age.

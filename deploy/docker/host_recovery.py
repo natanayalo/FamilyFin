@@ -21,6 +21,9 @@ import portable_backup as backup
 import validate
 import validate_portable_backup as recovery
 import validate_scheduled_backup as scheduled
+from lab_profile import require_lab_python
+
+require_lab_python()
 
 
 def boot_time():
@@ -95,8 +98,7 @@ def after_restart_receipt(mobile_receipt, prepared, observed):
     return result
 
 
-def prepare():
-    config_path = backup.ROOT / ".state/portable-backup-synthetic-20261023/config.json"
+def prepare(config_path):
     config = backup.read_config(config_path)
     if not config.get("synthetic") or config["project"] != mobile.PROJECT:
         raise ValueError("Only the approved synthetic trial may be prepared")
@@ -192,10 +194,13 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("prepare", "verify"))
     parser.add_argument("--receipt", type=Path)
+    parser.add_argument("--config", type=Path)
     args = parser.parse_args()
+    if args.action == "prepare" and not args.config:
+        parser.error("prepare requires the protected synthetic --config")
     manage.engine()
     if args.action == "prepare":
-        prepare()
+        prepare(args.config)
     elif args.receipt:
         verify(args.receipt)
     else:

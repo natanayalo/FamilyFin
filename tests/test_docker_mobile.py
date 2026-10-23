@@ -74,6 +74,7 @@ class MobileGuards(unittest.TestCase):
             report=Path(folder);state=report/"private";state.mkdir()
             images={name:"sha256:"+str(index)*64 for index,name in enumerate(("api","web","caddy"),1)}
             (report/"reviewed-images.json").write_text(json.dumps(images))
+            (report/"tested-configs.json").write_text(json.dumps(images))
             for name,value in images.items():
                 (report/f"trivy-familyfin-m1-{name}-security-review-summary.json").write_text(json.dumps({"docker_image_id":value}))
             (state/"baseline.json").write_text(json.dumps({"containers":[],"serve":original()}))

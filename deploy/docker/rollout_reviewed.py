@@ -3,11 +3,16 @@
 Local labs only. Preserve previous images, verified backups and failure evidence;
 never automatically downgrade a database, delete a volume, or modify Serve.
 """
+import argparse
 import json
 from datetime import UTC, datetime
+from pathlib import Path
 
 import manage
 import validate
+from lab_profile import require_lab_python
+
+require_lab_python()
 
 
 def image_id(reference):
@@ -28,8 +33,11 @@ def backup(project):
 
 
 def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--evidence-directory", required=True, type=Path)
+    args = parser.parse_args()
     manage.engine()
-    tested = manage.REPORTS / "security-review-5"
+    tested = args.evidence_directory
     images = json.loads((tested / "tested-images.json").read_text(encoding="utf-8"))
     configs = json.loads((tested / "tested-configs.json").read_text(encoding="utf-8"))
     drill = json.loads((tested / "synthetic-validation.json").read_text(encoding="utf-8"))

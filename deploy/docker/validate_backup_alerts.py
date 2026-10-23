@@ -3,6 +3,7 @@
 No scheduler/popup, live config/status, Serve or drive-setting changes. A single
 verified synthetic encrypted backup is added to the already approved directory.
 """
+import argparse
 import json
 import subprocess
 import sys
@@ -15,10 +16,15 @@ import mobile
 import portable_backup as backup
 import validate_portable_backup as recovery
 import validate_scheduled_backup as scheduled
+from lab_profile import require_lab_python
+
+require_lab_python()
 
 
 def main():
-    live = backup.ROOT / ".state/portable-backup-synthetic-20261023/config.json"
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", required=True, type=Path)
+    live = parser.parse_args().config
     config = backup.read_config(live)
     if not config.get("synthetic") or config["project"] != mobile.PROJECT:
         raise ValueError("Only the existing synthetic configuration is allowed")

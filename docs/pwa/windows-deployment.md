@@ -81,8 +81,9 @@ an exception for a different digest. Review findings and authorize exact promoti
 
 The default backup volume shares Docker's virtual disk and cannot protect against
 loss of that disk. Use the [file-encrypted portable procedure](portable-backup.md)
-or the separately guarded BitLocker-volume wrapper only after selecting/approving
-independent media. Existing drive files/settings must never be modified to satisfy
+after selecting/approving independent media. The older BitLocker-only export
+wrapper and Compose overrides have been retired; existing encrypted drives and
+their contents are unaffected. Existing drive files/settings must never be modified to satisfy
 a deployment guard. Neither path may silently fall back to local Docker storage.
 
 Use the matching release/schema to verify and restore into a new empty financial
@@ -109,7 +110,7 @@ guard can skip a daily trigger after a manual backup; review calendar frequency,
 retention/capacity and a permanent policy before real data. Before-login, signed-out,
 locked and sleep/resume availability require their own evidence.
 
-`host_recovery.py prepare` creates a fresh verified backup and private baseline;
+`host_recovery.py prepare --config CONFIG.json` creates a fresh verified backup and private baseline;
 it never restarts Windows. After separately approved restart, `verify --receipt PATH`
 requires a changed boot and checks all original identities/configurations/states/
 ports/Serve plus data/key persistence. Empty DNS null/list normalization is accepted

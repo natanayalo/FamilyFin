@@ -26,7 +26,9 @@ verification stages are eligible for exact-name cleanup; no retention pruning oc
 The selected destination must be a new dedicated private NTFS directory on a separate
 physical disk, with matching volume/disk IDs and marker, no redirects, private ACLs
 and at least 8 GiB free. There is no local fallback. Existing drive files/settings
-remain untouched. The BitLocker-volume wrapper is separate and still fails closed.
+remain untouched. File-encrypted age export is the supported Windows backup path;
+the earlier BitLocker-only wrapper is retired. Drive encryption remains useful
+additional protection and is not reconfigured by these tools.
 The recovery identity requires protected file/directory ACLs and a different physical
 disk from the archive. Never keep its only copy beside archives, in chat, Git or an
 image. The synthetic identity is disposable; establish independent production custody
@@ -103,3 +105,37 @@ unattended inspection/delivery policy. Registration requires explicit approval,
 reviewed task XML/hash, current operator/least privilege, no saved Windows password
 and expiry for synthetic trials. Test actual trigger, failure, recovery and restart
 ordering. No recurring task is registered by copying/building these artifacts.
+
+## Plaintext snapshot capacity and retention
+
+Application snapshots in the Linux `backups` volume are plaintext, just like the
+active financial database. File encryption protects the exported copies; it does
+not encrypt Docker's virtual disk. The API/web/Caddy runtime services do not mount
+the backup volume. Use the host-encryption policy for local disk protection.
+
+Before creating another snapshot, Docker maintenance now refuses when the volume
+already holds 32 entries, at least 16 GiB of snapshot content, or has less than
+8 GiB free. These conservative admission limits count incomplete/unknown entries
+too and never delete anything. They are capacity guards, not a filesystem quota:
+one newly created snapshot can cross the byte threshold, and concurrent writers
+must be excluded by the operational policy. A refusal becomes a backup failure
+and persistent alert in the portable task. Inspect the mounted Linux volume with
+the reviewed image's `operations inventory` command (read-only); its JSON reports
+snapshot names, bytes and filesystem free space.
+
+Retention review is required before the limits are reached:
+
+1. Identify exact snapshot names from inventory and their matching successful
+   ciphertext receipts. Preserve failed/incomplete entries for investigation.
+2. Recheck media identity, key availability and ciphertext integrity. Perform a
+   clean restore using the independently retained recovery key before declaring
+   a local snapshot redundant. Keep at least two independently recoverable
+   generations, including one matching the current release/schema.
+3. Record the selected generations and obtain approval for exact-name removal
+   inside the dedicated Linux backup volume. No automatic cleanup, Docker prune,
+   external-drive deletion or VHD compaction is performed by this implementation.
+4. Re-run inventory and the backup/recovery checks, retaining their evidence.
+
+The production cadence, generations, capacity alerts and deletion procedure still
+need acceptance before real data. Guard refusal is preferable to silent pruning,
+but a refused backup requires operator action and is not production readiness.
