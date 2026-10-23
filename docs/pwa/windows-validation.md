@@ -6,6 +6,38 @@ Never treat build success or a generic report as host-specific production approv
 
 ## Candidate validation — 23 October 2026
 
+### PR #22 recovery-review follow-up
+
+Both reported P2 regressions were reproduced against the original review head:
+long ASCII/UTF-8 automation filenames failed USTAR packing, and disconnected media,
+absent archives or missing keys did not prevent a recent receipt from reporting PASS.
+The six regression cases fail against that head and pass with the fixes.
+
+- PAX packing preserves long original filenames with controlled file metadata.
+  Real automation imports, verified application snapshots, real age encryption/
+  decryption and clean guarded application restore passed for ASCII and Hebrew
+  names exceeding 100 UTF-8 bytes. Restored source bytes, financial rows, automation
+  provenance, audit and a subsequent verified backup were checked.
+- Status now probes current media identity, finalized readable archive and matching
+  protected recovery key. An explicit integrity option detects ciphertext hash
+  mismatch without changing historical success receipts or acknowledgement state.
+- Full locked Python suite: 286 passed, four documented skips, 36 subtests. The two
+  age round trips executed locally; CI builds the locked tools and requires them.
+  Native Windows backup/startup guards: 30 passed. Lint passed (the extra container
+  check of deployment helpers excluded only Windows-mapped executable-bit metadata).
+- Eight read-only Windows checks passed against the existing synthetic recovery
+  setup, including actual ciphertext hashing and missing/wrong media, archive/key
+  and saved-hash fault detection through in-memory test configuration. No disk was
+  disconnected or changed; backup-state files, all 12 preexisting containers and
+  Serve matched the previous candidate audit and remained unchanged.
+
+These are backup-helper/source tests, not a new runtime-image scan, phone trial,
+physical-media write drill or replacement-PC test. Running trial helpers/images and
+the registered task were not changed. The candidate image findings and all remaining
+production gates below still apply.
+
+### Original candidate build and full stack drill
+
 The candidate is based on the merged application-security update (#21), with the
 complete platform lockfile and normal Next lockfile validation enabled. Clean
 install/offline production build passed without a missing-SWC/repair warning;

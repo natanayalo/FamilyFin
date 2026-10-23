@@ -51,7 +51,10 @@ def pack(root, name, image, output):
     source = root / snapshot_name(name)
     verify(source)
     metadata = json.dumps({"format": 1, "snapshot": name, "image": image}).encode()
-    with tarfile.open(fileobj=output, mode="w|", format=tarfile.USTAR_FORMAT) as archive:
+    # PAX preserves original automation filenames, including long UTF-8 paths.
+    # Construct headers ourselves so only path/size extensions can be generated;
+    # no source ownership, timestamps or other filesystem metadata is exported.
+    with tarfile.open(fileobj=output, mode="w|", format=tarfile.PAX_FORMAT) as archive:
         info = tarfile.TarInfo("bundle.json")
         info.size = len(metadata)
         info.mode = 0o600
@@ -69,9 +72,8 @@ def pack(root, name, image, output):
             total += path.stat().st_size
             if count > MAX_FILES or total > MAX_BYTES:
                 raise ValueError("Backup exceeds configured transport limits")
-            info = archive.gettarinfo(str(path), arcname="snapshot/" + relative)
-            info.uid = info.gid = 0
-            info.uname = info.gname = ""
+            info = tarfile.TarInfo("snapshot/" + relative)
+            info.size = path.stat().st_size
             info.mode = 0o600
             with path.open("rb") as data:
                 archive.addfile(info, data)

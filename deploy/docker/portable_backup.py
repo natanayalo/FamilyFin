@@ -8,6 +8,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import subprocess
 import sys
 import uuid
@@ -35,7 +36,7 @@ def digest(path):
 
 
 def call(command, *, data=None):
-    result = subprocess.run(command, input=data, capture_output=True)
+    result = subprocess.run(command, input=data, capture_output=True, check=False)
     if result.returncode:
         # Child errors can contain archive paths or operational data. Keep them
         # out of notifications/task logs; preserve failure class in private status.
@@ -238,7 +239,7 @@ def restore_stage(config, staged, project):
         raise ValueError("Use a separate explicitly named portable recovery project")
     call(stream_command(config, staged["volume"], "require-verified", token=staged["token"]))
     volume = project + "_financial"
-    existing = subprocess.run(["docker", "volume", "inspect", volume], capture_output=True)
+    existing = subprocess.run(["docker", "volume", "inspect", volume], capture_output=True, check=False)
     if existing.returncode == 0:
         raise ValueError("Restore target already exists; refusing to reuse it")
     call(["docker", "volume", "create", "--label", "com.docker.compose.project=" + project,
@@ -301,6 +302,57 @@ def recent(status, hours=20, now=None):
     stamp = datetime.fromisoformat(status["last_success_at"])
     now = now or datetime.now(UTC)
     return stamp <= now and now - stamp < timedelta(hours=hours)
+
+
+def recovery_readiness(config, receipt, *, verify_integrity=False):
+    """Read-only, current availability checks; never change a success receipt.
+
+    Free-space requirements apply to new exports, not reading existing archives.
+    A quick status checks presence, not ciphertext integrity or a full restore.
+    """
+    result = {"media_identity_valid": False, "archive_available": False,
+              "recovery_key_available": False, "archive_integrity_verified": None,
+              "integrity_check_requested": verify_integrity}
+    failures = {}
+    try:
+        media("check", config["directory"], config)
+        result["media_identity_valid"] = True
+    except Exception as exc:  # noqa: BLE001 -- Any probe error makes readiness unavailable.
+        failures["media"] = type(exc).__name__
+    if result["media_identity_valid"]:
+        try:
+            name = receipt.get("archive", "")
+            if not re.fullmatch(r"[0-9]{8}T[0-9]{6}Z-familyfin-[0-9a-f]{32}\.tar\.age", name):
+                raise ValueError("Invalid saved archive name")
+            archive = Path(config["directory"]) / name
+            info = archive.lstat()
+            if (archive.is_symlink() or archive.is_junction() or not stat.S_ISREG(info.st_mode)
+                    or not 0 < info.st_size <= 65 * 1024**3):
+                raise ValueError("Invalid encrypted archive")
+            # Opening also catches access failures without reading the whole file.
+            with archive.open("rb") as source:
+                if not source.read(1):
+                    raise ValueError("Empty encrypted archive")
+            result["archive_available"] = True
+            if verify_integrity:
+                expected = receipt.get("archive_sha256", "")
+                if not re.fullmatch(r"[0-9a-f]{64}", expected) or digest(archive) != expected:
+                    raise ValueError("Encrypted archive hash mismatch")
+                result["archive_integrity_verified"] = True
+        except Exception as exc:  # noqa: BLE001 -- Preserve structured, fail-closed status.
+            if verify_integrity:
+                result["archive_integrity_verified"] = False
+            failures["archive"] = type(exc).__name__
+    try:
+        identity(config)  # Private ACLs, independent disk, pinned tools, recipient.
+        result["recovery_key_available"] = True
+    except Exception as exc:  # noqa: BLE001 -- Never expose key/tool failure details.
+        failures["recovery_key"] = type(exc).__name__
+    result["recovery_media_available"] = result["media_identity_valid"] and result["archive_available"]
+    result["recovery_ready"] = (result["recovery_media_available"] and result["recovery_key_available"]
+                                and (not verify_integrity or result["archive_integrity_verified"] is True))
+    result["failures"] = failures  # Classes only; no key contents or child/path errors.
+    return result
 
 
 def read_alert(state):
@@ -410,17 +462,27 @@ def main():
     parser.add_argument("--start")
     parser.add_argument("--end")
     parser.add_argument("--alert-id")
+    parser.add_argument("--verify-integrity", action="store_true",
+                        help="For status, hash the encrypted archive against its saved SHA-256")
     args = parser.parse_args()
+    if args.verify_integrity and args.action != "status":
+        parser.error("--verify-integrity requires status")
     config = read_config(args.config)
     state = args.config.parent
     status_path = state / "last-run.json"
     if args.action == "status":
         previous = json.loads(status_path.read_text()) if status_path.exists() else {}
         alert = read_alert(state)
-        healthy = recent(previous, 26)
+        successful = previous.get("status") == "PASS" and bool(previous.get("last_success_at"))
+        fresh = recent(previous, 26)
+        readiness = recovery_readiness(config, previous, verify_integrity=args.verify_integrity)
+        healthy = fresh and readiness["recovery_ready"]
         attention = bool(alert and alert["status"] == "UNACKNOWLEDGED")
-        result = "FAIL_OR_STALE" if not healthy else "ATTENTION_REQUIRED" if attention else "PASS"
+        result = ("FAIL_OR_STALE" if not fresh else "RECOVERY_UNAVAILABLE" if not healthy
+                  else "ATTENTION_REQUIRED" if attention else "PASS")
         print(json.dumps({"status": result, "backup_healthy": healthy,
+                          "last_backup_successful": successful, "last_backup_recent": fresh,
+                          **readiness,
                           "unacknowledged_failure": attention, "alert": alert, "last_run": previous}))
         return 0 if healthy and not attention else 1
     if args.action == "acknowledge-alert":
@@ -479,7 +541,7 @@ def main():
                 log.write(json.dumps({k: v for k, v in result.items() if k != "staged_verification"}) + "\n")
             print(json.dumps({k: v for k, v in result.items() if k != "staged_verification"}))
             return 0
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001 -- Every backup failure must persist an alert.
             failure = {"status": "FAIL", "checked_at": datetime.now(UTC).isoformat(),
                       "failure_type": type(exc).__name__, "last_success_at": prior.get("last_success_at"),
                       "action": "Check backup media/key/Docker; preserve partial archives and staging. No fallback or pruning."}

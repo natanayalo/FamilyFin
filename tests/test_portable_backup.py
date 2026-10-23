@@ -196,6 +196,7 @@ class PersistentAlerts(unittest.TestCase):
     def invoke(self, root, action, *extra):
         with patch("sys.argv", ["backup", action, "--config", str(root / "config.json"), *extra]), \
                 patch.object(host, "read_config", return_value={}), \
+                patch.object(host, "recovery_readiness", return_value={"recovery_ready": True}), \
                 patch("sys.stdout", new_callable=io.StringIO) as output:
             code = host.main()
         return code, json.loads(output.getvalue())

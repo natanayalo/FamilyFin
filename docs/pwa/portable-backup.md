@@ -11,6 +11,10 @@ It streams SQLite and managed source archives from Linux storage through standar
 age encryption into an exclusively created `.tar.age.partial` file. No plaintext
 financial tar is written to Windows/external media. The API signing key is excluded.
 Snapshots retain financial/users/audit/migration state and managed source files.
+The tar stream uses PAX for long and UTF-8 automation filenames. Headers contain
+regular-file paths/sizes with fixed ownership, permissions and timestamps; source
+filesystem metadata is not carried into the export. Existing USTAR backups remain
+readable through the same guarded receiver.
 
 An archive is finalized only after authenticated decryption into a newly owned Linux
 staging volume and application manifest/hash/schema/invariant verification. Extraction
@@ -47,6 +51,7 @@ receipt; no private receipt/configuration is distributed in this repository.
 ```powershell
 python deploy/docker/portable_backup.py run --config CONFIG.json
 python deploy/docker/portable_backup.py status --config CONFIG.json
+python deploy/docker/portable_backup.py status --config CONFIG.json --verify-integrity
 python deploy/docker/portable_backup.py stage --config CONFIG.json --archive BACKUP.tar.age --key COPIED-IDENTITY.txt --linux-age-image REVIEWED_IMAGE_SHA256
 python deploy/docker/portable_backup.py restore --config CONFIG.json --staged VERIFIED-STAGING-RECEIPT.json --project familyfin-m1-portable-recovery-UNIQUE
 ```
@@ -66,7 +71,21 @@ policy issue. A missing/locked/wrong disk never falls back to another location.
 
 `last-run.json`, `history.jsonl` and `last-readiness.json` are private diagnostics.
 A durable `backup-alert.json` and append-only alert history retain failures across
-successful retries. Status distinguishes backup health from unresolved attention.
+successful retries. Status distinguishes the saved `last_backup_successful` result
+and its 26-hour freshness from current `recovery_media_available` and
+`recovery_key_available`. Every status call rechecks the configured disk/volume
+identity, marker, private ACLs, a finalized readable archive and the protected
+independent key's matching recipient. An unavailable recovery component produces
+`RECOVERY_UNAVAILABLE` and a nonzero exit even when the saved success is recent.
+Reading an existing backup does not require the free space reserved for new writes.
+Status does not rewrite receipts or acknowledge alerts.
+
+Quick status checks availability; `archive_integrity_verified: null` means no hash
+check was performed. `status --verify-integrity` streams the complete encrypted
+archive through SHA-256 and compares it to the protected success receipt. A mismatch
+fails readiness; this check does not replace authenticated decryption/application
+verification or prove independent production key custody. Unacknowledged failures
+continue to require attention even when recovery is available.
 Review the incident and current health before acknowledging its exact ID:
 
 ```powershell
