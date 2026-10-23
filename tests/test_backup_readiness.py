@@ -102,8 +102,10 @@ class Readiness(unittest.TestCase):
                     patch.object(backup, "lock", side_effect=lambda _: __import__('contextlib').nullcontext()), \
                     patch.object(ready, "wait_ready", return_value={"status": "READY"}), \
                     patch.object(backup.manage, "engine"), patch.object(backup, "check_media"), \
+                    patch.object(backup, "recovery_readiness", return_value={"recovery_ready": True}) as recovery, \
                     patch("sys.stdout", new_callable=io.StringIO):
                 self.assertEqual(backup.main(), 0)
+                recovery.assert_called_once_with(CONFIG, prior)
             self.assertEqual(json.loads((state / "last-run.json").read_text()), prior)
             self.assertEqual(backup.read_alert(state), alert)
 

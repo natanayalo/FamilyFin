@@ -529,6 +529,11 @@ def main():
             manage.engine()
             if args.if_due and recent(prior):
                 check_media(config)
+                # A recent receipt permits skipping only while its archive and
+                # matching recovery key are still available. Failure goes through
+                # the normal persisted-alert path, never a successful skip.
+                if not recovery_readiness(config, prior)["recovery_ready"]:
+                    raise RuntimeError("Recent backup recovery unavailable; refusing to skip")
                 if args.wait_ready:
                     save_json(status_path, prior)
                 print("Recent successful backup; no new snapshot needed")

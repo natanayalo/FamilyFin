@@ -65,7 +65,12 @@ volumes and ciphertext. A replacement-PC boot test is separate from decryption.
 most five minutes for the pinned local engine and reviewed healthy API, and never
 starts Docker or recreates containers. RUNNING is recorded during work; errors
 record FAIL/nonzero and preserve the last-success timestamp. Success requires full
-verification. The 20-hour duplicate guard also checks media; manual backups can
+verification. The 20-hour duplicate guard checks media plus current archive/key
+recovery readiness before accepting a skip. Missing recovery inputs fail with a
+persisted alert and nonzero task exit, including after startup waiting; the saved
+success is not restored over that failure. It does not automatically replace a
+missing archive or key. This quick check does not hash ciphertext; use explicit
+`status --verify-integrity` for that check. Manual backups can
 cause a subsequent daily trigger to skip, so calendar frequency remains a production
 policy issue. A missing/locked/wrong disk never falls back to another location.
 

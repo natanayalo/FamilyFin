@@ -8,6 +8,18 @@ Never treat build success or a generic report as host-specific production approv
 
 ### PR #22 recovery-review follow-up
 
+The subsequent scheduled-skip review found that `run --if-due` still bypassed the
+new archive/key check. Four regressions (missing ciphertext/key, each with and
+without `--wait-ready`) reproduced exit zero against the reviewed code. The guard
+now requires current recovery readiness before skipping. Unavailable recovery
+persists FAIL/history/unacknowledged alert and returns nonzero, preserving the
+last-success timestamp. It never creates a replacement backup automatically.
+The successful-skip regression also requires the recovery probe and preserves an
+existing warning. Full locked Python suite: 288 passed, four documented skips,
+40 subtests; native Windows backup/startup tests: 32 passed. Lint passed. These
+tests use disposable files; no registered task or running helper was replaced.
+All 12 preexisting containers and Serve matched the prior candidate baseline.
+
 Both reported P2 regressions were reproduced against the original review head:
 long ASCII/UTF-8 automation filenames failed USTAR packing, and disconnected media,
 absent archives or missing keys did not prevent a recent receipt from reporting PASS.

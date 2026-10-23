@@ -183,6 +183,56 @@ class HostGuards(unittest.TestCase):
             self.assertEqual(result["status"], "FAIL")
             self.assertEqual(result["last_success_at"], prior["last_success_at"])
 
+    def recent_skip_with_unavailable_recovery(self, missing):
+        for wait_ready in (False, True):
+            with self.subTest(wait_ready=wait_ready), tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                ciphertext = root / ("20261023T120000Z-" + NAME + ".tar.age")
+                ciphertext.write_bytes(b"disposable encrypted archive")
+                key = root / "disposable-key"
+                key.write_bytes(b"disposable identity fixture")
+                prior = {"status": "PASS", "last_success_at": datetime.now(UTC).isoformat(),
+                         "archive": ciphertext.name, "archive_sha256": host.digest(ciphertext)}
+                host.save_json(root / "last-run.json", prior)
+                (ciphertext if missing == "archive" else key).unlink()
+                config = {"directory": str(root)}
+                extra = ["--wait-ready"] if wait_ready else []
+
+                def identity(_, candidate=key):
+                    candidate.read_bytes()  # Real missing-file failure, not a readiness stub.
+                    return candidate
+
+                native_lock = (nullcontext() if sys.platform == "win32" else
+                               patch.object(host, "lock", side_effect=lambda _: nullcontext()))
+                ready = importlib.import_module("backup_readiness")
+                with patch("sys.argv", ["backup", "run", "--config", str(root / "config.json"), "--if-due", *extra]), \
+                        patch.object(host, "read_config", return_value=config), native_lock, \
+                        patch.object(host.manage, "engine"), \
+                        patch.object(host, "media", return_value={"FreeBytes": 16 * 1024**3}), \
+                        patch.object(host, "identity", side_effect=identity), \
+                        patch.object(ready, "wait_ready", return_value={"status": "READY"}), \
+                        patch.object(host, "backup") as create_backup, \
+                        patch.object(host, "recovery_readiness", wraps=host.recovery_readiness) as readiness, \
+                        patch("sys.stderr", new_callable=io.StringIO), \
+                        patch("sys.stdout", new_callable=io.StringIO) as output:
+                    self.assertEqual(host.main(), 1)
+                    readiness.assert_called_once_with(config, prior)
+                    create_backup.assert_not_called()
+                self.assertNotIn("no new snapshot needed", output.getvalue())
+                failure = json.loads((root / "last-run.json").read_text())
+                self.assertEqual(failure["status"], "FAIL")
+                self.assertEqual(failure["last_success_at"], prior["last_success_at"])
+                self.assertEqual(host.read_alert(root)["status"], "UNACKNOWLEDGED")
+                history = [json.loads(line) for line in (root / "history.jsonl").read_text().splitlines()]
+                self.assertEqual(history, [failure])
+                self.assertFalse((ciphertext if missing == "archive" else key).exists())
+
+    def test_recent_skip_fails_and_alerts_when_ciphertext_is_missing(self):
+        self.recent_skip_with_unavailable_recovery("archive")
+
+    def test_recent_skip_fails_and_alerts_when_identity_is_unavailable(self):
+        self.recent_skip_with_unavailable_recovery("key")
+
 
 class PersistentAlerts(unittest.TestCase):
     def setUp(self):
