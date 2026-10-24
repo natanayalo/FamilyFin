@@ -1,6 +1,6 @@
 """Portable age-encrypted backups. Stdlib host; plaintext stays in Linux volumes.
 
-No scheduler registration, retention deletion, Serve mutation or drive-wide change.
+No scheduler registration, historical pruning, Serve mutation or drive-wide change.
 Each archive is decrypted and application-verified before a success is recorded.
 """
 import argparse
@@ -141,8 +141,12 @@ def source(config):
                 raise ValueError("Not an owned synthetic recovery drill source")
 
 
-def stream_command(config, volume, action, *, token=None, snapshot=None):
-    if action != "pack":
+def stream_command(config, volume, action, *, token=None, snapshot=None, manifest_sha256=None):
+    if action == "remove-exported":
+        if volume != config["project"] + "_backups":
+            raise ValueError("Cleanup requires the configured backup volume")
+        source(config)  # Recheck ownership and reviewed release immediately before cleanup.
+    elif action != "pack":
         item = json.loads(call(["docker", "volume", "inspect", volume]))[0]
         labels = item.get("Labels") or {}
         if (not re.fullmatch(r"familyfin-m1-portable-stage-[0-9a-f]{32}", volume)
@@ -155,6 +159,8 @@ def stream_command(config, volume, action, *, token=None, snapshot=None):
         command += ["--token", token]
     if snapshot:
         command += ["--snapshot", snapshot]
+    if manifest_sha256:
+        command += ["--manifest-sha256", manifest_sha256]
     return command
 
 
@@ -226,7 +232,8 @@ def stage(config, archive, *, key=None, linux_image=None):
         if receiver_code or decryptor_code:
             raise RuntimeError("Decryption/authentication failed; staging remains incomplete")
         result = json.loads(call(stream_command(config, volume, "finalize", token=token)))
-        return {"volume": volume, "token": token, "snapshot": result["snapshot"], "image": result["image"]}
+        return {"volume": volume, "token": token, "snapshot": result["snapshot"], "image": result["image"],
+                "manifest_sha256": result["manifest_sha256"]}
     finally:
         for child in (receiver, decryptor):
             if child is not None and child.poll() is None:
@@ -413,19 +420,37 @@ def backup(config, state):
     target = Path(config["directory"]) / (datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ") + "-" + snapshot + ".tar.age")
     temporary = target.with_name(target.name + ".partial")
     encrypt(config, snapshot, temporary)
+    encrypted_hash = digest(temporary)
     staged = stage(config, temporary)
+    if staged["snapshot"] != snapshot or staged["image"] != config["image"]:
+        raise ValueError("Verified export does not match this run's snapshot and release")
     check_media(config)
     if target.exists():
         raise ValueError("Archive name collision; refusing overwrite")
     temporary.rename(target)  # Windows rename refuses an existing destination.
-    remove_stage(config, staged)
+    if digest(target) != encrypted_hash:
+        raise ValueError("Ciphertext changed during verification; preserve source snapshot")
     receipt = {"status": "PASS", "last_success_at": datetime.now(UTC).isoformat(),
-               "archive": target.name, "archive_sha256": digest(target), "snapshot": snapshot,
-               "image": config["image"], "verification_staging_removed": True,
+               "archive": target.name, "archive_sha256": encrypted_hash, "snapshot": snapshot,
+               "image": config["image"], "verification_staging_removed": False,
+               "plaintext_snapshot_cleanup": {"status": "PENDING"},
                "verification": "age authenticated decryption and full application manifest/schema/invariant audit",
                "synthetic": config.get("synthetic", False)}
     with target.with_name(target.name + ".receipt.json").open("x", encoding="utf-8") as output:
         json.dump({key: value for key, value in receipt.items() if key != "staged_verification"}, output, indent=2)
+        output.flush()
+        os.fsync(output.fileno())
+    # Persist successful recovery evidence before deleting either plaintext copy.
+    # A crash leaves PENDING visible; subsequent runs never retry historical cleanup.
+    save_json(state / "last-run.json", receipt)
+    try:
+        remove_stage(config, staged)
+        receipt["verification_staging_removed"] = True
+        call(stream_command(config, backups, "remove-exported", snapshot=snapshot,
+                            manifest_sha256=staged["manifest_sha256"]))
+        receipt["plaintext_snapshot_cleanup"] = {"status": "REMOVED"}
+    except Exception as exc:  # noqa: BLE001 -- Valid ciphertext remains a successful backup.
+        receipt["plaintext_snapshot_cleanup"] = {"status": "FAILED", "failure_type": type(exc).__name__}
     return receipt
 
 
@@ -477,14 +502,16 @@ def main():
         fresh = recent(previous, 26)
         readiness = recovery_readiness(config, previous, verify_integrity=args.verify_integrity)
         healthy = fresh and readiness["recovery_ready"]
+        cleanup_attention = previous.get("plaintext_snapshot_cleanup", {}).get("status") in {"PENDING", "FAILED"}
         attention = bool(alert and alert["status"] == "UNACKNOWLEDGED")
         result = ("FAIL_OR_STALE" if not fresh else "RECOVERY_UNAVAILABLE" if not healthy
-                  else "ATTENTION_REQUIRED" if attention else "PASS")
+                  else "ATTENTION_REQUIRED" if attention or cleanup_attention else "PASS")
         print(json.dumps({"status": result, "backup_healthy": healthy,
                           "last_backup_successful": successful, "last_backup_recent": fresh,
                           **readiness,
+                          "snapshot_cleanup_attention": cleanup_attention,
                           "unacknowledged_failure": attention, "alert": alert, "last_run": previous}))
-        return 0 if healthy and not attention else 1
+        return 0 if healthy and not attention and not cleanup_attention else 1
     if args.action == "acknowledge-alert":
         alert = acknowledge_alert(state, args.alert_id)
         print(json.dumps({"status": alert["status"], "alert_id": alert["id"], "backup_health_unchanged": True}))
@@ -536,6 +563,11 @@ def main():
                     raise RuntimeError("Recent backup recovery unavailable; refusing to skip")
                 if args.wait_ready:
                     save_json(status_path, prior)
+                if prior.get("plaintext_snapshot_cleanup", {}).get("status") in {"PENDING", "FAILED"}:
+                    record_alert(state, {"checked_at": datetime.now(UTC).isoformat(),
+                                         "failure_type": "PlaintextSnapshotCleanupIncomplete"})
+                    print("Recent verified backup retained; snapshot cleanup needs attention", file=sys.stderr)
+                    return 1
                 print("Recent successful backup; no new snapshot needed")
                 return 0
             save_json(status_path, {"status": "RUNNING", "started_at": datetime.now(UTC).isoformat(),
@@ -545,6 +577,10 @@ def main():
             with (state / "history.jsonl").open("a", encoding="utf-8") as log:
                 log.write(json.dumps({k: v for k, v in result.items() if k != "staged_verification"}) + "\n")
             print(json.dumps({k: v for k, v in result.items() if k != "staged_verification"}))
+            if result.get("plaintext_snapshot_cleanup", {}).get("status") == "FAILED":
+                record_alert(state, {"checked_at": datetime.now(UTC).isoformat(),
+                                     "failure_type": "PlaintextSnapshotCleanupFailed"})
+                return 1
             return 0
         except Exception as exc:  # noqa: BLE001 -- Every backup failure must persist an alert.
             failure = {"status": "FAIL", "checked_at": datetime.now(UTC).isoformat(),

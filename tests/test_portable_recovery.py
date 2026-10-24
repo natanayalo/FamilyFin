@@ -156,7 +156,51 @@ def test_age_encrypted_long_name_snapshot_clean_restore(tmp_path, monkeypatch, n
     stage.mkdir()
     stream.unpack(stage, IMAGE, "token", io.BytesIO(decrypted))
     stream.finalize(stage, IMAGE, "token")
+    if os.name != "nt":
+        # Restore remains possible after deleting the exported Linux snapshot.
+        sibling = snapshot.parent / ("familyfin-" + "c" * 32)
+        sibling.mkdir()
+        (sibling / "keep").write_bytes(b"older retained snapshot")
+        stream.remove_exported(snapshot.parent, snapshot.name,
+                               hashlib.sha256((stage / SNAPSHOT / "manifest.json").read_bytes()).hexdigest())
+        assert not snapshot.exists()
+        assert (sibling / "keep").read_bytes() == b"older retained snapshot"
     verify_and_restore(tmp_path, stage, name, payload, monkeypatch)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="Deletion runs only in the Linux helper container")
+@pytest.mark.parametrize("failure", ["manifest", "content", "root-link", "nested-link", "hardlink", "fifo", "unsafe-name", "unsupported-platform"])
+def test_cleanup_refuses_unsafe_or_changed_snapshots_and_preserves_siblings(tmp_path, monkeypatch, failure):
+    snapshot, _ = make_snapshot(tmp_path, "a" * 100 + ".xlsx")
+    monkeypatch.setenv("FAMILY_FINANCE_DATA_ROOT", str(tmp_path / "unused-settings"))
+    digest = hashlib.sha256((snapshot / "manifest.json").read_bytes()).hexdigest()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    marker = outside / "keep"
+    marker.write_bytes(b"outside and older snapshots stay")
+    name = snapshot.name
+    if failure == "manifest":
+        digest = "0" * 64
+    elif failure == "content":
+        (snapshot / "family_finance.sqlite3").write_bytes(b"tampered")
+    elif failure == "root-link":
+        original = snapshot.with_name("retained-original")
+        snapshot.rename(original)
+        snapshot.symlink_to(original, target_is_directory=True)
+    elif failure == "nested-link":
+        (snapshot / "redirect").symlink_to(outside, target_is_directory=True)
+    elif failure == "hardlink":
+        os.link(marker, snapshot / "linked-file")
+    elif failure == "fifo":
+        os.mkfifo(snapshot / "fifo")
+    elif failure == "unsafe-name":
+        name = "../outside"
+    else:
+        monkeypatch.setattr(stream.shutil.rmtree, "avoids_symlink_attacks", False)
+    with pytest.raises(ValueError):
+        stream.remove_exported(snapshot.parent, name, digest)
+    assert snapshot.exists()
+    assert marker.read_bytes() == b"outside and older snapshots stay"
 
 
 def make_snapshot(tmp_path, name):

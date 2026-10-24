@@ -20,8 +20,9 @@ An archive is finalized only after authenticated decryption into a newly owned L
 staging volume and application manifest/hash/schema/invariant verification. Extraction
 rejects traversal, links, special/sparse/duplicate/secret-key entries and size/count
 abuse. Incomplete or unauthenticated stages never become restore sources. Failed
-stages/partial files and recovery data are retained. Only verified, labelled, unused
-verification stages are eligible for exact-name cleanup; no retention pruning occurs.
+stages/partial files and recovery data are retained. Verified, labelled, unused
+verification stages and only the snapshot created by the successful export are
+eligible for exact-name cleanup. Historical snapshots and ciphertext are never pruned.
 
 The selected destination must be a new dedicated private NTFS directory on a separate
 physical disk, with matching volume/disk IDs and marker, no redirects, private ACLs
@@ -67,7 +68,9 @@ volumes and ciphertext. A replacement-PC boot test is separate from decryption.
 most five minutes for the pinned local engine and reviewed healthy API, and never
 starts Docker or recreates containers. RUNNING is recorded during work; errors
 record FAIL/nonzero and preserve the last-success timestamp. Success requires full
-verification. The 20-hour duplicate guard checks media plus current archive/key
+verification. Snapshot cleanup follows saved success evidence; a cleanup failure
+keeps that successful backup result but returns nonzero and records a persistent
+alert. The 20-hour duplicate guard checks media plus current archive/key
 recovery readiness before accepting a skip. Missing recovery inputs fail with a
 persisted alert and nonzero task exit, including after startup waiting; the saved
 success is not restored over that failure. It does not automatically replace a
@@ -93,6 +96,16 @@ archive through SHA-256 and compares it to the protected success receipt. A mism
 fails readiness; this check does not replace authenticated decryption/application
 verification or prove independent production key custody. Unacknowledged failures
 continue to require attention even when recovery is available.
+`plaintext_snapshot_cleanup` records `REMOVED`, `FAILED` or crash-interrupted
+`PENDING` in local success/history records. The companion external receipt is
+flushed before cleanup and therefore records `PENDING`; it attests to the verified
+export, not the later local deletion. Status reports `ATTENTION_REQUIRED` and
+nonzero for incomplete cleanup even if the archive is healthy or its alert was
+acknowledged. A recent scheduled skip likewise stays nonzero, without retrying
+deletion of a prior run's snapshot. A subsequent successful export does not dismiss
+unacknowledged warnings about earlier retained snapshots.
+After investigating retained entries, a new explicit `run` without `--if-due`
+can create another verified backup; review its result before acknowledging alerts.
 Review the incident and current health before acknowledging its exact ID:
 
 ```powershell
@@ -113,17 +126,39 @@ active financial database. File encryption protects the exported copies; it does
 not encrypt Docker's virtual disk. The API/web/Caddy runtime services do not mount
 the backup volume. Use the host-encryption policy for local disk protection.
 
+After each portable export, the tool removes only the snapshot just created by
+that run. It first authenticates/decrypts and application-verifies the ciphertext,
+checks its snapshot/release identity, publishes the final archive, confirms the
+ciphertext hash did not change, and flushes the external success receipt and
+atomically saves the local success record. Cleanup then rechecks source volume
+ownership/release, exact snapshot name, the manifest hash from the verified export,
+application verification and a regular-file/directory-only tree. The Linux helper
+mounts only the selected backup volume and requires descriptor-safe deletion;
+links and unrelated siblings cannot become cleanup targets. No live financial
+volume, Windows path or external file is mounted for deletion. This removes files,
+not historical plaintext blocks from Docker storage; it does not securely erase
+or compact the virtual disk.
+
+An export/verification/publication/receipt failure never requests snapshot cleanup.
+A cleanup error preserves the verified archive and success timestamp and raises
+an alert; interruption can leave a partially removed snapshot. Such leftovers,
+older/manual snapshots and failed exports require explicit investigation and
+retention review. There is no automatic retry or cleanup of historical entries.
+
 Before creating another snapshot, Docker maintenance now refuses when the volume
 already holds 32 entries, at least 16 GiB of snapshot content, or has less than
 8 GiB free. These conservative admission limits count incomplete/unknown entries
-too and never delete anything. They are capacity guards, not a filesystem quota:
+too; the admission checks themselves never delete anything. They are capacity guards, not a filesystem quota:
 one newly created snapshot can cross the byte threshold, and concurrent writers
 must be excluded by the operational policy. A refusal becomes a backup failure
 and persistent alert in the portable task. Inspect the mounted Linux volume with
 the reviewed image's `operations inventory` command (read-only); its JSON reports
 snapshot names, bytes and filesystem free space.
+Any link or special file in this volume blocks inventory and further backups
+until investigated. The free-space check measures the Linux filesystem, not
+the Windows drive backing Docker's virtual disk; monitor both separately.
 
-Retention review is required before the limits are reached:
+Retention review is required for preexisting snapshots and accumulated failures:
 
 1. Identify exact snapshot names from inventory and their matching successful
    ciphertext receipts. Preserve failed/incomplete entries for investigation.
@@ -132,7 +167,7 @@ Retention review is required before the limits are reached:
    a local snapshot redundant. Keep at least two independently recoverable
    generations, including one matching the current release/schema.
 3. Record the selected generations and obtain approval for exact-name removal
-   inside the dedicated Linux backup volume. No automatic cleanup, Docker prune,
+   inside the dedicated Linux backup volume. No historical pruning, Docker prune,
    external-drive deletion or VHD compaction is performed by this implementation.
 4. Re-run inventory and the backup/recovery checks, retaining their evidence.
 

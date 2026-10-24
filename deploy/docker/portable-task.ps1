@@ -11,7 +11,7 @@ if ($result -ne 0) {
     # Task Scheduler also receives the nonzero exit code; private JSON retains status.
     try {
         $notice = New-Object -ComObject WScript.Shell
-        $response = $notice.Popup('FamilyFin backup failed. Check the backup status before relying on recovery.',15,'FamilyFin backup',48)
+        $response = $notice.Popup('FamilyFin backup needs attention. Check backup status for recovery or cleanup warnings.',15,'FamilyFin backup',48)
         $alert = [ordered]@{Status='POPUP_RETURNED';Response=$response;At=(Get-Date).ToUniversalTime().ToString('o')}
     } catch { $alert = [ordered]@{Status='POPUP_FAILED';At=(Get-Date).ToUniversalTime().ToString('o')} }
     try { $alert | ConvertTo-Json | Set-Content -LiteralPath (Join-Path ([IO.Path]::GetDirectoryName([IO.Path]::GetFullPath($Config))) 'last-alert.json') -Encoding UTF8 } catch { }

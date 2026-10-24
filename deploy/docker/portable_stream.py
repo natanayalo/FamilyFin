@@ -4,10 +4,12 @@ Decrypted staging is deliberately unusable until the host observes both the age
 and receiver exit codes, then explicitly finalizes application verification.
 """
 import argparse
+import hashlib
 import io
 import json
 import os
 import re
+import shutil
 import stat
 import sys
 import tarfile
@@ -134,15 +136,43 @@ def finalize(root, image, token):
     metadata = bundle(json.loads((root / ".bundle.json").read_text()), image)
     verify(root / metadata["snapshot"])
     (root / ".incomplete").rename(root / ".verified")
-    print(json.dumps(metadata))
+    print(json.dumps(metadata | {"manifest_sha256": hashlib.sha256((root / metadata["snapshot"] / "manifest.json").read_bytes()).hexdigest()}))
+
+
+def remove_exported(root, name, manifest_sha256):
+    """Remove one exported snapshot; never traverse a link or prune siblings."""
+    name = snapshot_name(name)
+    if not re.fullmatch(r"[0-9a-f]{64}", manifest_sha256 or "") or not shutil.rmtree.avoids_symlink_attacks:
+        raise ValueError("Verified manifest and descriptor-safe deletion required")
+    source = root / name
+    before = source.lstat()
+    if not stat.S_ISDIR(before.st_mode):
+        raise ValueError("Snapshot must be a real directory")
+    for path in source.rglob("*"):
+        info = path.lstat()
+        safe_name(path.relative_to(source).as_posix())
+        if not stat.S_ISDIR(info.st_mode) and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1):
+            raise ValueError("Unsafe snapshot entry; preserve for investigation")
+    if hashlib.sha256((source / "manifest.json").read_bytes()).hexdigest() != manifest_sha256:
+        raise ValueError("Snapshot differs from the verified encrypted export")
+    verify(source)
+    descriptor = os.open(root, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    try:
+        current = os.stat(name, dir_fd=descriptor, follow_symlinks=False)
+        if (current.st_dev, current.st_ino) != (before.st_dev, before.st_ino):
+            raise ValueError("Snapshot changed before cleanup")
+        shutil.rmtree(name, dir_fd=descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("action", choices=("pack", "unpack", "finalize", "require-verified"))
+    parser.add_argument("action", choices=("pack", "unpack", "finalize", "require-verified", "remove-exported"))
     parser.add_argument("--image", required=True)
     parser.add_argument("--snapshot")
     parser.add_argument("--token")
+    parser.add_argument("--manifest-sha256")
     args = parser.parse_args()
     os.umask(0o077)
     root = Path("/backups")
@@ -154,6 +184,8 @@ def main():
         unpack(root, args.image, args.token, sys.stdin.buffer)
     elif args.action == "finalize":
         finalize(root, args.image, args.token)
+    elif args.action == "remove-exported":
+        remove_exported(root, args.snapshot, args.manifest_sha256)
     else:
         if (root / ".incomplete").exists() or (root / ".verified").read_text() != args.token:
             raise ValueError("Staging is not authenticated and verified for this run")

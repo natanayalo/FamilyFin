@@ -4,6 +4,26 @@ This document contains shareable validation scope; private host receipts, detail
 scan exports, real network identifiers and key material are intentionally excluded.
 Never treat build success or a generic report as host-specific production approval.
 
+## Current-export snapshot cleanup — 24 October 2026
+
+Portable export now removes only its newly created snapshot after ciphertext
+authentication/application verification, publication and flushed/saved success
+receipts. Exact snapshot/release and verified-manifest identities are checked;
+the helper rechecks volume ownership, rejects links/special files and requires
+Linux descriptor-safe deletion. Failed exports and historical entries are retained.
+Cleanup failure retains successful-backup evidence but persists an alert and
+returns nonzero; status and recent scheduled skips also flag incomplete cleanup.
+
+- Locked isolated Python suite: 344 passed, four documented skips, 51 subtests.
+- Native Windows backup/startup checks: 61 passed.
+- Real age round trips restored the application after the exported Linux snapshot
+  was removed, including long ASCII/Hebrew filenames; older sibling data survived.
+- Regressions cover authentication/identity/hash/receipt failures before deletion,
+  cleanup failure after saved success, retained alerts/skips and unsafe Linux trees.
+- Runtime Dockerfiles/application images and running trial/task/Serve are unchanged.
+  No new image scan, physical-media drill or production-readiness claim is implied.
+  Exports/tests used disposable storage; existing external-drive files were untouched.
+
 ## Review cleanup — 24 October 2026
 
 - Restore now rejects signing keys, symlinks, hardlinks and special files before
