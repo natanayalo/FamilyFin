@@ -13,7 +13,7 @@ import subprocess
 import sys
 import uuid
 from contextlib import contextmanager
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime, time, timedelta
 from pathlib import Path
 from xml.sax.saxutils import escape
 
@@ -25,6 +25,7 @@ HASHES = {
     "age.exe": "7622988f8cf6eddee87756a826f5690cf8106e555f91a5e56d4ab8303b0f586d",
     "age-keygen.exe": "9d00ea3f4d6f7ce913c11bd400245749e6661d935df83af0beffbf811383c88f",
 }
+DAILY_BACKUP_TIME = time(3)
 
 
 def digest(path):
@@ -311,6 +312,29 @@ def recent(status, hours=20, now=None):
     return stamp <= now and now - stamp < timedelta(hours=hours)
 
 
+def scheduled_backup_due(status, *, now=None, local_timezone=None):
+    """A success covers only the current local 03:00-to-03:00 schedule period.
+
+    None uses the Windows local timezone, just like the task's offset-free XML.
+    Convert each boundary date separately: yesterday can have a different UTC
+    offset. local_timezone permits deterministic tests with an IANA timezone.
+    """
+    now = now or datetime.now(UTC)
+    if now.utcoffset() is None:
+        raise ValueError("An aware current timestamp is required")
+    day = now.astimezone(local_timezone).date()
+    boundary = datetime.combine(day, DAILY_BACKUP_TIME, tzinfo=local_timezone).astimezone(UTC)
+    if boundary > now:
+        boundary = datetime.combine(day - timedelta(days=1), DAILY_BACKUP_TIME,
+                                    tzinfo=local_timezone).astimezone(UTC)
+    try:
+        success = datetime.fromisoformat(status["last_success_at"])
+    except (KeyError, TypeError, ValueError):
+        return True
+    return not (status.get("status") == "PASS" and success.utcoffset() is not None
+                and boundary <= success <= now)
+
+
 def recovery_readiness(config, receipt, *, verify_integrity=False):
     """Read-only, current availability checks; never change a success receipt.
 
@@ -457,6 +481,8 @@ def backup(config, state):
 def schedule_xml(config_path, sid, start, end=None):
     if not re.fullmatch(r"S-1-[0-9-]+", sid) or not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", start):
         raise ValueError("Explicit SID and local start timestamp required")
+    if start[11:] != DAILY_BACKUP_TIME.isoformat():
+        raise ValueError("Daily task must start at local 03:00 to match its schedule-period guard")
     if end and (not re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", end) or end <= start):
         raise ValueError("End timestamp must be after the start")
     boundary = "<EndBoundary>" + end + "</EndBoundary>" if end else ""
@@ -554,13 +580,13 @@ def main():
                                                              "checked_at": datetime.now(UTC).isoformat()})
                     raise
             manage.engine()
-            if args.if_due and recent(prior):
+            if args.if_due and not scheduled_backup_due(prior):
                 check_media(config)
-                # A recent receipt permits skipping only while its archive and
+                # A success in this schedule period permits skipping only while its archive and
                 # matching recovery key are still available. Failure goes through
                 # the normal persisted-alert path, never a successful skip.
                 if not recovery_readiness(config, prior)["recovery_ready"]:
-                    raise RuntimeError("Recent backup recovery unavailable; refusing to skip")
+                    raise RuntimeError("Scheduled-period backup recovery unavailable; refusing to skip")
                 if args.wait_ready:
                     save_json(status_path, prior)
                 if prior.get("plaintext_snapshot_cleanup", {}).get("status") in {"PENDING", "FAILED"}:
@@ -568,7 +594,7 @@ def main():
                                          "failure_type": "PlaintextSnapshotCleanupIncomplete"})
                     print("Recent verified backup retained; snapshot cleanup needs attention", file=sys.stderr)
                     return 1
-                print("Recent successful backup; no new snapshot needed")
+                print("Current local 03:00 schedule period already has a verified backup; no new snapshot needed")
                 return 0
             save_json(status_path, {"status": "RUNNING", "started_at": datetime.now(UTC).isoformat(),
                                    "last_success_at": prior.get("last_success_at")})

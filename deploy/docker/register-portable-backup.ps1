@@ -27,6 +27,9 @@ $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
 $principal = $definition.Principal.UserId
 if ($principal -match '^S-1-') { $principalSid = $principal } else { $principalSid = ([Security.Principal.NTAccount]$principal).Translate([Security.Principal.SecurityIdentifier]).Value }
 if ($principalSid -ne $sid -or $definition.Principal.LogonType -ne 3 -or $definition.Principal.RunLevel -ne 0 -or -not $definition.Settings.StartWhenAvailable -or $definition.Actions.Count -ne 1 -or $definition.Triggers.Count -ne 2) { throw 'Unexpected privilege, trigger or action settings.' }
+$calendar = @($definition.Triggers | Where-Object { $_.Type -eq 2 })
+$logon = @($definition.Triggers | Where-Object { $_.Type -eq 9 })
+if ($calendar.Count -ne 1 -or $logon.Count -ne 1 -or $calendar[0].DaysInterval -ne 1 -or $calendar[0].StartBoundary -notmatch 'T03:00:00$') { throw 'Daily local 03:00 plus logon triggers are required by the backup period guard.' }
 foreach ($trigger in $definition.Triggers) {
     if (-not $trigger.EndBoundary -or [DateTime]$trigger.EndBoundary -le (Get-Date)) { throw 'A future, explicit trial end boundary is required.' }
 }

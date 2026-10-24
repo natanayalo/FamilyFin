@@ -70,14 +70,23 @@ starts Docker or recreates containers. RUNNING is recorded during work; errors
 record FAIL/nonzero and preserve the last-success timestamp. Success requires full
 verification. Snapshot cleanup follows saved success evidence; a cleanup failure
 keeps that successful backup result but returns nonzero and records a persistent
-alert. The 20-hour duplicate guard checks media plus current archive/key
-recovery readiness before accepting a skip. Missing recovery inputs fail with a
+alert. The duplicate guard uses schedule periods beginning at 03:00 in the Windows
+local timezone. It skips only when a successful backup completed in the current
+period, no later than the current time, and media plus current archive/key recovery
+readiness are available. A manual backup before today's 03:00 cannot suppress
+today's scheduled run. A successful manual/catch-up run after 03:00 covers that
+period; later logons skip until the next 03:00. Each boundary date is converted
+separately, so daylight-saving transitions produce the correct 23/25-hour periods.
+Task generation/registration require the same local 03:00 daily time.
+Missing recovery inputs fail with a
 persisted alert and nonzero task exit, including after startup waiting; the saved
 success is not restored over that failure. It does not automatically replace a
 missing archive or key. This quick check does not hash ciphertext; use explicit
-`status --verify-integrity` for that check. Manual backups can
-cause a subsequent daily trigger to skip, so calendar frequency remains a production
-policy issue. A missing/locked/wrong disk never falls back to another location.
+`status --verify-integrity` for that check. The 26-hour status freshness window is
+separate from schedule-period duplicate suppression. A missing/locked/wrong disk
+never falls back to another location. Windows local-time changes affect the task
+and guard together; review clock/timezone changes operationally. The guard does
+not start Docker, wake a sleeping PC or supply a logged-out Windows identity.
 
 `last-run.json`, `history.jsonl` and `last-readiness.json` are private diagnostics.
 A durable `backup-alert.json` and append-only alert history retain failures across
