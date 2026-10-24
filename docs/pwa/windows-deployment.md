@@ -105,9 +105,12 @@ The task waits at most five minutes for the pinned local engine and reviewed API
 health. Probes are read-only/time-bounded. Wrong endpoint/release or missing
 containers fail closed; it never starts or recreates dependencies. Failures return
 nonzero and retain a warning until exact-ID acknowledgement after review.
-A brief popup does not establish unattended alert delivery. The 20-hour duplicate
-guard can skip a daily trigger after a manual backup; review calendar frequency,
-retention/capacity and a permanent policy before real data. Before-login, signed-out,
+A brief popup does not establish unattended alert delivery. Duplicate suppression
+uses Windows-local schedule periods beginning at 03:00, so a manual backup before
+that boundary cannot suppress the new period's daily run. Successful catch-up or
+manual runs after the boundary cover that period. Status freshness remains a
+separate 26-hour check. Review retention/capacity and a permanent policy before
+real data. Before-login, signed-out,
 locked and sleep/resume availability require their own evidence.
 
 `host_recovery.py prepare --config CONFIG.json` creates a fresh verified backup and private baseline;
