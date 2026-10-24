@@ -4,6 +4,8 @@ Read the [runbook](../../docs/pwa/windows-deployment.md),
 [Linux/Docker security comparison](../../docs/pwa/windows-security-assessment.md),
 [portable backup procedure](../../docs/pwa/portable-backup.md) and
 [validation scope](../../docs/pwa/windows-validation.md).
+See also the [runtime image security investigation](../../docs/pwa/runtime-security.md)
+for the minimal runtime changes, retained scanner findings and validation limits.
 
 Defaults are disposable localhost labs, not household bootstrap or a Tailscale
 cutover. Linux systemd remains supported. The Windows host needs Python 3.12+,
@@ -22,6 +24,9 @@ project/volume ownership and never delete volumes. Ordinary labs use 8090/8091.
 `validate.py` requires fresh financial volumes and creates disposable users/data.
 `test.ps1` builds isolated Python/frontend test targets. `cache.test.mjs` exercises
 the actual service-worker handlers with controlled cache/network objects.
+`check_runtime_images.py --tag candidate-UNIQUE` checks production runtime native
+libraries, workbook/SQLite/archive compatibility and Caddy dependency evidence in
+isolated containers. API/web runtimes have no shell; use their Python/Node entry points.
 
 For a separately built candidate, scan its exact tags first, then use
 `validate_candidate.py --tag candidate-UNIQUE --run-id UNIQUE`. It uses fresh labs

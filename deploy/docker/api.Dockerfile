@@ -26,18 +26,22 @@ RUN find /app/tests -type f -name '*.py' -exec chmod 0644 {} + && chmod 0644 /ap
 USER 10001:10001
 CMD ["/app/.venv/bin/pytest", "-o", "cache_dir=/tmp/pytest-cache", "tests", "-rs"]
 
-FROM python:3.12.15-slim-trixie@sha256:a0f57064cbdcd6285fa45f51237ab0b35ea8ebaed06a1f5973e89e19dfb86704 AS runtime
-# Maintenance uses the locked virtual environment. The base-image installer
-# and its bundled bootstrap wheels are unnecessary in the immutable runtime.
-RUN python -m pip uninstall --yes pip && rm -rf /usr/local/lib/python3.12/ensurepip \
-    && find / -xdev -type f -perm /6000 -exec chmod a-s {} +
+FROM gcr.io/distroless/cc-debian13:nonroot@sha256:3ee00291cf386ec52a552e6a858d555debd74776eb4bfa53fa3df2cd6677515e AS minimal
+FROM build AS python-runtime
+COPY --from=minimal / /runtime-base/
+COPY deploy/docker/python_rootfs.py /python_rootfs.py
+RUN python /python_rootfs.py /runtime-base /runtime-overlay
+
+FROM minimal AS runtime
+COPY --from=python-runtime /runtime-overlay/ /
 WORKDIR /app
-ENV PATH=/app/.venv/bin:$PATH PYTHONPATH=/app/src PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+ENV PATH=/app/.venv/bin:/usr/local/bin:/usr/bin:/bin PYTHONPATH=/app/src PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
 COPY --from=build /app /app
 COPY alembic.ini ./
 COPY alembic ./alembic
 COPY deploy/docker/runtime.py deploy/docker/operations.py ./deploy/docker/
-RUN mkdir -p /var/lib/familyfin /backups && chown 10001:10001 /var/lib/familyfin /backups && chmod 700 /var/lib/familyfin /backups
+USER 0
+RUN ["python", "-c", "import os; [(os.makedirs(p,exist_ok=True),os.chown(p,10001,10001),os.chmod(p,0o700)) for p in ('/var/lib/familyfin','/backups')]"]
 USER 10001:10001
 ENTRYPOINT ["python", "/app/deploy/docker/runtime.py"]
 CMD ["serve"]
