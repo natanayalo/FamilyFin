@@ -30,6 +30,23 @@ REPORT = manage.REPORTS / "mobile-preparation"
 TAG = "mobile-reviewed"
 
 
+def select_profile(receipt):
+    """Follow-up helpers use the same reviewed profile as preparation."""
+    global REPORT, TAG
+    profile = receipt.get("lab_profile")
+    if not isinstance(profile, dict) or set(profile) != {"report_name", "image_tag", "image_configs"}:
+        raise RuntimeError("Explicit lab profile missing; retain the frozen helper or prepare a new reviewed receipt")
+    for key in ("report_name", "image_tag"):
+        if not isinstance(profile[key], str) or not re.fullmatch(r"[a-z0-9][a-z0-9.-]{0,63}", profile[key]):
+            raise RuntimeError("Invalid lab report or image identity")
+    configs = profile["image_configs"]
+    if not isinstance(configs, dict) or set(configs) != {"api", "web", "caddy"} or any(
+            not isinstance(value, str) or not re.fullmatch(r"sha256:[0-9a-f]{64}", value) for value in configs.values()):
+        raise RuntimeError("Invalid reviewed image configuration identities")
+    REPORT, TAG = manage.REPORTS / profile["report_name"], profile["image_tag"]
+    return dict(configs)
+
+
 def private_hostname(serve):
     if set(serve) - {"TCP", "Web", "AllowFunnel"} or any((serve.get("AllowFunnel") or {}).values()):
         raise RuntimeError("Unexpected Serve settings or Funnel enabled")
@@ -255,14 +272,12 @@ def verify(receipt, *, reviewed_preservation=None):
         if not manage.baseline_equal(original, reviewed):
             raise RuntimeError("Reviewed restart baseline changes more than process start times")
         expected_preservation = reviewed_preservation
+    expected_configs = select_profile(receipt)
     hostname = receipt["hostname"]
     check_images(receipt["images"], TAG)
     fixture()
     result = manage.verify(PROJECT, origin="https://"+hostname, host=hostname)
     serving = preserved(expected_preservation, preservation(), hostname, allow_trial=True)
-    expected_configs = json.loads((REPORT / "tested-configs.json").read_text())
-    if set(expected_configs) != {"api", "web", "caddy"}:
-        raise RuntimeError("Selected report lacks the reviewed image configuration identities")
     for item in manage.inspect_all():
         labels=item["Config"].get("Labels") or {}
         if labels.get("com.docker.compose.project")==PROJECT:
@@ -297,13 +312,15 @@ def prepare():
     check_images(images,"security-review")
     for name,value in images.items():
         scan=json.loads((REPORT/f"trivy-familyfin-m1-{name}-security-review-summary.json").read_text())
-        assert scan["docker_image_id"]==value
+        if scan["docker_image_id"] != value or scan["image_id"] != configs[name]:
+            raise RuntimeError("Selected image/config scan evidence does not match preparation")
         existing=manage.run("docker","image","inspect",f"familyfin-m1-{name}:{TAG}",check=False)
         if existing.returncode==0 and json.loads(existing.stdout)[0]["Id"]!=value:
             raise RuntimeError("Refusing to overwrite a different frozen trial image")
     protected_folder()
     receipt={"status":"PREPARING","checked_at":datetime.now(UTC).isoformat(),"hostname":hostname,
              "images":images,"preservation":before,"before":fixture_state,"risk_exceptions_approved":False,
+             "lab_profile":{"report_name":REPORT.name,"image_tag":TAG,"image_configs":configs},
              "Serve_change":"NOT_PERFORMED","phone_password_setup":"PENDING_LOCAL_CONSOLE"}
     save(receipt)
     try:

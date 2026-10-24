@@ -23,9 +23,11 @@ never copy another host's receipt or manufacture a PASS to proceed.
 Default mobile names are stable neutral names, not dated session identifiers;
 an operator may explicitly select a retained report/tag. Backup-config paths are
 required arguments instead of references to one historical host directory.
-Use the same report/tag arguments for subsequent mobile CLI actions. Reviewed
-image configuration identities come from that selected report, not a numbered
-historical security-review directory.
+Preparation records the selected report/tag and reviewed image configuration
+identities in its protected receipt. Subsequent mobile/backup/restart helpers
+follow that profile automatically, rather than a numbered historical directory.
+Receipts lacking the new profile are not silently migrated; keep their frozen
+helper/source checkout and evidence, or prepare a new separately reviewed trial.
 
 The fixture intentionally has `qa-one`/`qa-two` and fixed synthetic counts. The
 mobile migration guard requires the documented M0 loopback route on 8088 and the

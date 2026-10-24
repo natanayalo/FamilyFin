@@ -15,11 +15,13 @@ Never treat build success or a generic report as host-specific production approv
   Acceptance harness imports refuse optimization so their assertions cannot be
   removed while still producing a report. Lab config/evidence paths are explicit;
   fixed topology/fixture requirements are documented separately from runtime tools.
+  Preparation binds the selected report/tag and reviewed image configurations to
+  its protected receipt; follow-up helpers validate and reuse that profile.
 - The unused BitLocker-only export route is retired. Age remains the supported
   Windows export. Snapshot inventory/admission guards and a manual retention
   review procedure bound further growth without deleting retained data.
-- Locked Python suite: 328 passed, four documented skips, 40 subtests. Native
-  Windows safety tests: 53 passed. Lint passed. Actual age long-filename encrypted
+- Locked Python suite: 330 passed, four documented skips, 44 subtests. Native
+  Windows safety tests: 55 passed. Lint passed. Actual age long-filename encrypted
   round trips and clean application restores executed in the suite.
 - A separately tagged production API and fresh localhost stack/clean restore
   passed all eight integration groups. All existing services and Serve were

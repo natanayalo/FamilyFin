@@ -76,7 +76,7 @@ class MobileGuards(unittest.TestCase):
             (report/"reviewed-images.json").write_text(json.dumps(images))
             (report/"tested-configs.json").write_text(json.dumps(images))
             for name,value in images.items():
-                (report/f"trivy-familyfin-m1-{name}-security-review-summary.json").write_text(json.dumps({"docker_image_id":value}))
+                (report/f"trivy-familyfin-m1-{name}-security-review-summary.json").write_text(json.dumps({"docker_image_id":value,"image_id":value}))
             (state/"baseline.json").write_text(json.dumps({"containers":[],"serve":original()}))
             baseline={"containers":[],"serve":original()}
             with patch.object(mobile,"REPORT",report),patch.object(mobile,"STATE",state),patch.object(mobile.manage,"STATE",state),patch.object(mobile.manage,"baseline",return_value=baseline),patch.object(mobile,"preservation",return_value=baseline),patch.object(mobile,"fixture",return_value={}),patch.object(mobile.manage,"verify"),patch.object(mobile,"check_images"),patch.object(mobile,"protected_folder"),patch.object(mobile.manage,"run") as run,patch.object(mobile,"backup",side_effect=RuntimeError("verification failed")),patch.object(mobile,"compose") as compose,patch.object(mobile,"reset_passwords") as reset:
@@ -112,6 +112,27 @@ class MobileGuards(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError,"Mobile preparation owns"):
                     mobile.manage.main()
                 engine.assert_not_called();compose.assert_not_called()
+
+
+class MobileProfile(unittest.TestCase):
+    def test_preparation_profile_follows_receipt_without_repeating_cli_options(self):
+        configs={name:"sha256:"+"a"*64 for name in ("api","web","caddy")}
+        receipt={"lab_profile":{"report_name":"chosen-report","image_tag":"chosen-reviewed","image_configs":configs}}
+        original=copy.deepcopy(receipt)
+        with patch.object(mobile,"REPORT",mobile.REPORT),patch.object(mobile,"TAG",mobile.TAG):
+            self.assertEqual(mobile.select_profile(receipt),configs)
+            self.assertEqual(mobile.REPORT,mobile.manage.REPORTS/"chosen-report")
+            self.assertEqual(mobile.environment("familyfin.example-tailnet.ts.net")["FAMILYFIN_IMAGE_TAG"],"chosen-reviewed")
+        self.assertEqual(receipt,original)
+
+    def test_profile_rejects_legacy_redirected_or_incomplete_evidence_without_mutation(self):
+        good={"report_name":"reviewed-report","image_tag":"reviewed-tag",
+              "image_configs":{name:"sha256:"+"a"*64 for name in ("api","web","caddy")}}
+        before=(mobile.REPORT,mobile.TAG)
+        for profile in (None,good|{"report_name":"../other"},good|{"image_tag":"bad;command"},good|{"image_configs":{}}):
+            with self.subTest(profile=profile),self.assertRaises(RuntimeError):
+                mobile.select_profile({"lab_profile":profile})
+            self.assertEqual((mobile.REPORT,mobile.TAG),before)
 
 
 if __name__=="__main__":
