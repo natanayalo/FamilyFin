@@ -1,0 +1,34 @@
+name: Docker runtime compatibility
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/docker-runtime.yml'
+      - 'deploy/docker/**'
+      - 'frontend/**'
+      - 'src/**'
+      - 'alembic/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.dockerignore'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Build pinned production candidates
+        run: |
+          docker build -f deploy/docker/api.Dockerfile -t familyfin-m1-api:candidate-ci .
+          docker build -f deploy/docker/web.Dockerfile -t familyfin-m1-web:candidate-ci .
+          docker build -f deploy/docker/caddy.Dockerfile -t familyfin-m1-caddy:candidate-ci .
+      - name: Test read-only non-root runtimes without network or financial volumes
+        run: python deploy/docker/check_runtime_images.py --tag candidate-ci
