@@ -11,6 +11,7 @@ import { ClassificationFeature } from "@/features/classification/ClassificationF
 import { PlanningPage } from "@/features/planning/planning-page";
 import { OperationsFeature } from "@/features/operations/operations-feature";
 import { SettingsFeature } from "@/features/settings/settings-feature";
+import { ApartmentFeature } from "@/features/apartment/apartment-feature";
 
 export default function SectionPage() {
   const params = useParams<{ section: string }>();
@@ -30,6 +31,8 @@ export default function SectionPage() {
               ? <OperationsFeature />
               : params.section === "settings"
                 ? <SettingsFeature />
+                : params.section === "apartment-plan"
+                  ? <ApartmentFeature />
                 : undefined;
     return <Workspace sectionId={params.section}>{feature}</Workspace>;
   }
