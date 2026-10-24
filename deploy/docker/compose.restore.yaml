@@ -1,0 +1,10 @@
+# Only for a new project with an empty financial volume. Source remains read-only.
+services:
+  operations:
+    volumes:
+      - financial:/var/lib/familyfin
+      - source-backups:/backups:ro
+volumes:
+  source-backups:
+    external: true
+    name: ${FAMILYFIN_RESTORE_BACKUP_VOLUME:?Select the verified source backup volume}

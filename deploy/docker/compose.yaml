@@ -1,0 +1,86 @@
+name: familyfin-m1-synthetic
+x-common: &common
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+  init: true
+  restart: unless-stopped
+  cpus: 1.0
+  mem_limit: 768m
+  pids_limit: 128
+  stop_grace_period: 30s
+  logging:
+    driver: json-file
+    options: {max-size: 2m, max-file: "2"}
+  networks: [private]
+x-api: &api
+  <<: *common
+  image: familyfin-m1-api:${FAMILYFIN_IMAGE_TAG:-local}
+  build: {context: ../.., dockerfile: deploy/docker/api.Dockerfile, target: runtime}
+  user: "10001:10001"
+  tmpfs: ["/tmp:size=128m,mode=1777,noexec,nosuid"]
+  environment:
+    FAMILY_FINANCE_DATA_ROOT: /var/lib/familyfin
+    FAMILY_FINANCE_API_PUBLIC_ORIGIN: ${FAMILYFIN_ORIGIN:-https://familyfin.test}
+    FAMILY_FINANCE_API_TRUSTED_HOSTS: ${FAMILYFIN_HOST:-familyfin.test},127.0.0.1
+    FAMILY_FINANCE_API_SESSION_HOURS: "8"
+  volumes: [financial:/var/lib/familyfin]
+services:
+  api:
+    <<: *api
+    healthcheck:
+      test: [CMD, python, /app/deploy/docker/runtime.py, health]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 30s
+  web:
+    <<: *common
+    image: familyfin-m1-web:${FAMILYFIN_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: deploy/docker/web.Dockerfile}
+    user: "10002:10002"
+    tmpfs:
+      - /tmp:size=16m,mode=1777,noexec,nosuid
+      - /web/.next/cache:size=64m,uid=10002,gid=10002,mode=0700,noexec,nosuid
+    healthcheck:
+      test: [CMD, node, -e, "fetch('http://127.0.0.1:3000/').then(r=>process.exit(r.status===200?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+      start_period: 30s
+  caddy:
+    <<: *common
+    networks: [private, edge]
+    image: familyfin-m1-caddy:${FAMILYFIN_IMAGE_TAG:-local}
+    build: {context: ../.., dockerfile: deploy/docker/caddy.Dockerfile}
+    user: "10003:10003"
+    cpus: 0.5
+    mem_limit: 128m
+    tmpfs:
+      - /tmp:size=8m,mode=1777,noexec,nosuid
+      - /data:size=8m,uid=10003,gid=10003,mode=0700,noexec,nosuid
+      - /config:size=8m,uid=10003,gid=10003,mode=0700,noexec,nosuid
+    ports: ["127.0.0.1:${FAMILYFIN_PORT:-8090}:8080"]
+    depends_on:
+      api: {condition: service_healthy}
+      web: {condition: service_healthy}
+    healthcheck:
+      test: [CMD-SHELL, "wget -q -O - --header='Host: ${FAMILYFIN_HOST:-familyfin.test}' http://127.0.0.1:8080/api/v1/health | grep -q 'ok'"]
+      interval: 10s
+      timeout: 4s
+      retries: 6
+  operations:
+    <<: *api
+    profiles: [operations]
+    restart: "no"
+    network_mode: none
+    networks: !reset []
+    volumes: [financial:/var/lib/familyfin, backups:/backups]
+    command: [operations, backup]
+networks:
+  private:
+    internal: true
+  edge: {}
+volumes:
+  financial: {}
+  backups: {}
