@@ -26,7 +26,7 @@ and Administrators) before initializing. Do not reuse a folder holding other fil
 
 ```powershell
 $python = (Get-Command python).Source
-$config = Join-Path $PWD 'deploy/docker/.state/local-backup/config.json'
+$config = Join-Path $env:LOCALAPPDATA 'FamilyFin/LocalBackup/config.json'
 python deploy/docker/local_backup.py init --config $config --directory "$env:USERPROFILE\FamilyFinBackups"
 python deploy/docker/local_backup.py run --config $config
 python deploy/docker/local_backup.py status --config $config
@@ -35,7 +35,9 @@ python deploy/docker/local_backup.py status --config $config
 
 Registration requires a successful first backup. It installs the non-admin,
 password-free `FamilyFin-LocalBackup` task, saves the old external task's XML,
-and disables that task. It never deletes the old task, external backups or keys.
+and disables that task. It installs a self-contained runner and private config in
+`%LOCALAPPDATA%\FamilyFin\LocalBackup`, independent of Git branch switches.
+It never deletes the old task, external backups or keys.
 Task Scheduler records a nonzero result on failure; private details are in
 `local-last-run.json` beside the configuration. Check these after a failed run.
 
