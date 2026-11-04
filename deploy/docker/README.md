@@ -20,7 +20,8 @@ Compose 2.24.4+. Those minimums express compatibility, not a security endorsemen
 ```
 
 Helpers reject ambient/remote endpoint overrides, fix lab origins/ports, check
-project/volume ownership and never delete volumes. Ordinary labs use 8090/8091.
+project/volume ownership and never delete financial volumes. Local-backup helpers
+remove only their own disposable verification volumes. Ordinary labs use 8090/8091.
 `validate.py` requires fresh financial volumes and creates disposable users/data.
 `test.ps1` builds isolated Python/frontend test targets. `cache.test.mjs` exercises
 the actual service-worker handlers with controlled cache/network objects.
@@ -40,11 +41,16 @@ exports or host scan logs. Publish only separately reviewed summaries. Mobile,
 portable and host-recovery helpers are guarded synthetic POC workflows; their
 private receipts must be prepared on the target host, never copied from another PC.
 
+For daily local backups without an attached external drive, see the
+[simple local backup runbook](../../docs/pwa/local-backup.md). It retains seven
+verified copies and uses a separate Windows task.
+
 ## Tool boundaries
 
 | Scope | Files and contract |
 | --- | --- |
 | Container runtime | Compose, Dockerfiles, Caddyfile, `runtime.py`, `operations.py`; no lab receipts required |
+| Simple Windows-local backups | `local_backup.py`, local task helpers; seven verified archives in a dedicated local folder |
 | Windows backup core | `portable_backup.py`, `portable_stream.py`, media/task helpers, `backup_readiness.py`; explicit reviewed config, pinned image and independent key/media |
 | Local lab operations | `manage.py` and start/stop/verify/backup wrappers; fixed disposable projects and loopback ports, never a household installer |
 | Synthetic acceptance | `validate*.py`, `mobile.py`, `host_recovery.py`, `portable_setup.py`, `rollout_reviewed.py` and task registration; see [lab prerequisites](lab-workflows.md) |
@@ -52,4 +58,5 @@ private receipts must be prepared on the target host, never copied from another 
 Runtime and management security checks use explicit failures and remain active
 with Python optimization. Synthetic acceptance harnesses retain test assertions
 and reject optimized Python at import, preventing incomplete tests from producing
-a PASS report. The retired BitLocker-only backup route is not supported; use age.
+a PASS report. The retired BitLocker-only external backup route is not supported; use age for
+portable encrypted backups or the local runbook for ordinary local archives.
